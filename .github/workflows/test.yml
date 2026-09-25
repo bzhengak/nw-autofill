@@ -1,0 +1,32 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20.x, 22.x]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: npm install --no-audit --no-fund
+      - name: 单元测试
+        run: npm test
+      - name: 仿真表单命中率（门槛 85%）
+        run: npm run hit
+      - name: 语法检查
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r f; do node --check "$f"; done < <(git ls-files '*.js' '*.mjs')
+      - name: manifest JSON 校验
+        run: node -e "JSON.parse(require('fs').readFileSync('manifest.json','utf8')); console.log('manifest ok')"

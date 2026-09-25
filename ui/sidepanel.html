@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>网申填写面板</title>
+<style>
+  :root { color-scheme: light dark; --g:#22a06b; --y:#e8a33d; --r:#d64545; --o:#8a8f98; }
+  body { font: 13px/1.6 system-ui, "Microsoft YaHei", sans-serif; margin: 0; padding: 12px; }
+  h1 { font-size: 15px; margin: 0 0 10px; }
+  h2 { font-size: 13px; margin: 16px 0 6px; color: #666; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+  button { padding: 7px 12px; border-radius: 6px; border: 1px solid #bbb; background: #f6f6f6; cursor: pointer; }
+  button.primary { background: #1a73e8; color:#fff; border-color:#1a73e8; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  textarea { width: 100%; min-height: 120px; font-family: ui-monospace, Consolas, monospace; font-size: 11px; box-sizing: border-box; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  td { padding: 3px 4px; border-bottom: 1px solid rgba(128,128,128,.2); vertical-align: top; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:5px; }
+  .green{background:var(--g)} .yellow{background:var(--y)} .red{background:var(--r)} .orange{background:var(--o)}
+  .stats { display:flex; gap:10px; flex-wrap:wrap; font-size:12px; }
+  .stats b { font-weight:600; }
+  .note { color:#777; font-size:11px; }
+  .banner { background:#fff6e5; border:1px solid #f0c36d; padding:6px 8px; border-radius:6px; margin:8px 0; }
+  .locked { background:#eef7f1; border:1px solid #bfe3cd; padding:6px 8px; border-radius:6px; margin:8px 0; color:#1c6b45; }
+  label.chk { display:flex; align-items:center; gap:6px; font-size:12px; }
+  #editor { display:none; }
+  #editor.on { display:block; }
+</style>
+</head>
+<body>
+  <h1>网申自动填写 <span class="note">v0.1.0 · P0</span></h1>
+  <div class="locked">硬约束：本扩展不点提交按钮、不解验证码、不做测评、不上传附件。<code>form.submit()</code> 已被页面内劫持。</div>
+
+  <div class="row">
+    <button class="primary" id="btnScan">扫描并填写</button>
+    <button id="btnPreview">只预演不写入</button>
+    <button id="btnUndo">回滚本次填写</button>
+    <button id="btnClear">清除标注</button>
+  </div>
+
+  <h2>本次结果</h2>
+  <div class="stats" id="stats">尚未运行</div>
+  <table id="results"></table>
+
+  <h2>需要你处理的字段</h2>
+  <table id="gaps"></table>
+
+  <h2>简历数据（P1 会换成 Markdown / PDF 导入）</h2>
+  <div class="row">
+    <button id="btnEdit">编辑 / 导入 JSON</button>
+    <button id="btnTemplate">下载空白模板（全字段）</button>
+    <span class="note" id="profileMeta"></span>
+  </div>
+  <div id="editor">
+    <textarea id="profileText" spellcheck="false"></textarea>
+    <div class="row">
+      <button class="primary" id="btnSave">保存</button>
+      <button id="btnCancel">取消</button>
+      <label class="chk"><input type="checkbox" id="fillSensitive">允许填写证件号等敏感字段</label>
+    </div>
+  </div>
+
+  <script type="module" src="sidepanel.js"></script>
+</body>
+</html>

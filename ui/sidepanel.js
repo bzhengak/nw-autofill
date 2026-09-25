@@ -1,0 +1,93 @@
+import { createEmptyProfile, SECTIONS, buildFields } from '../core/profile-schema.js';
+
+const $ = id => document.getElementById(id);
+let tabId = null;
+let lastState = null;
+
+async function activeTab() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tab;
+}
+
+async function refresh() {
+  const tab = await activeTab();
+  tabId = tab?.id ?? null;
+  const state = await chrome.runtime.sendMessage({ type: 'nw:getState', tabId });
+  lastState = state;
+  const profile = state?.profile;
+  $('profileMeta').textContent = profile
+    ? `已载入：${countFilled(profile)} 个字段有值 / 共 ${buildFields().length} 个可填项`
+    : '还没有简历数据，先点「下载空白模板」或「编辑 / 导入 JSON」';
+  if (profile) $('profileText').value = JSON.stringify(profile, null, 2);
+  else $('profileText').value = JSON.stringify(createEmptyProfile(), null, 2);
+}
+
+function countFilled(profile) {
+  let n = 0;
+  for (const f of buildFields()) {
+    let cur = profile;
+    for (const seg of f.path.split('.')) { cur = cur?.[seg]; if (cur == null) break; }
+    if (typeof cur === 'string' && cur.trim()) n++;
+  }
+  return n;
+}
+
+function render(data) {
+  const s = data?.stats || {};
+  $('stats').innerHTML = [
+    ['扫描到', s.scanned || 0], ['计划填', s.planned || 0], ['绿·自动', s.green || s.auto || 0],
+    ['黄·待复核', s.yellow || s.review || 0], ['红·失败', s.red || 0], ['待你处理', s.gaps || 0],
+  ].map(([k, v]) => `<span><b>${k}</b> ${v}</span>`).join('');
+
+  $('results').innerHTML = (data?.results || [])
+    .filter(r => !['skipped', 'planned'].includes(r.status) || r.status === 'planned')
+    .map(r => `<tr><td><span class="dot ${r.status === 'manual' ? 'orange' : r.status}"></span></td>
+      <td>${escapeHtml(r.label || '(无标签)')}</td>
+      <td class="note">${escapeHtml(r.path || '')}<br>${r.score != null ? '置信 ' + r.score : ''} ${r.note ? '· ' + escapeHtml(r.note) : ''} ${r.failReason ? '· ' + escapeHtml(r.failReason) : ''}</td>
+      <td>${escapeHtml(String(r.actual ?? '')).slice(0, 40)}</td></tr>`).join('');
+
+  $('gaps').innerHTML = (data?.gaps || []).map(g =>
+    `<tr><td><span class="dot orange"></span></td><td>${escapeHtml(g.label)}</td><td class="note">${escapeHtml(g.reason)}</td></tr>`).join('')
+    || '<tr><td class="note">无</td></tr>';
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function run(mode) {
+  const tab = await activeTab();
+  tabId = tab?.id;
+  const res = await chrome.runtime.sendMessage({ type: 'nw:scan', tabId, mode, dryRun: mode === 'preview' });
+  if (!res?.ok) {
+    $('stats').innerHTML = `<span class="banner">页面未响应：${escapeHtml(res?.error || '未知错误')}。若是刚装扩展，请刷新目标页面后重试。</span>`;
+    return;
+  }
+  render(res.data);
+}
+
+$('btnScan').onclick = () => run('full');
+$('btnPreview').onclick = () => run('preview');
+$('btnUndo').onclick = async () => { await chrome.runtime.sendMessage({ type: 'nw:undo', tabId }); render({ stats: {}, results: [], gaps: [] }); };
+$('btnClear').onclick = () => chrome.runtime.sendMessage({ type: 'nw:clearMarks', tabId });
+$('btnEdit').onclick = () => $('editor').classList.toggle('on');
+$('btnCancel').onclick = () => { $('editor').classList.remove('on'); refresh(); };
+$('btnSave').onclick = async () => {
+  let parsed;
+  try { parsed = JSON.parse($('profileText').value); }
+  catch (e) { alert('JSON 格式错误：' + e.message); return; }
+  await chrome.runtime.sendMessage({ type: 'nw:saveProfile', profile: parsed });
+  $('editor').classList.remove('on');
+  refresh();
+};
+$('btnTemplate').onclick = () => {
+  const blank = createEmptyProfile();
+  const blob = new Blob([JSON.stringify(blank, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'nw-autofill-profile-template.json';
+  a.click();
+  alert(`空白模板含 ${SECTIONS.length} 个分组、${buildFields().length} 个可填项。\n\n用文本编辑器打开这个 JSON，把你简历里没有但网申会问的条目（家庭成员、档案所在地、港企签证合规等）手动补上，再回到这里「编辑 / 导入 JSON」粘贴保存即可。`);
+};
+
+refresh();

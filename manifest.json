@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "网申自动填写 / Application Form Filler",
+  "version": "0.1.0",
+  "description": "在公司自建网申页面上按你的标准简历填写客观字段，填不出的明确标出，永不替你提交。",
+  "minimum_chrome_version": "114",
+  "permissions": ["storage", "activeTab", "scripting", "sidePanel", "tabs"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "action": {
+    "default_title": "网申自动填写"
+  },
+  "side_panel": {
+    "default_path": "ui/sidepanel.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["dom/content.js"],
+      "all_frames": true,
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["core/*.js", "dom/scanner.js", "dom/filler.js", "dom/safety.js", "ui/overlay.css"],
+      "matches": ["http://*/*", "https://*/*"]
+    }
+  ]
+}

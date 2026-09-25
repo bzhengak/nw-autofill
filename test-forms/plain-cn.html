@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>某银行 2027 届校园招聘报名（仿真：老式自建门户）</title>
+<style>
+  body { font: 14px/1.7 "Microsoft YaHei", sans-serif; margin: 24px; }
+  table { border-collapse: collapse; width: 720px; }
+  td, th { border: 1px solid #ccc; padding: 6px 8px; }
+  th { background: #f4f4f4; text-align: right; width: 150px; font-weight: normal; }
+  h3 { background:#eee; padding:6px 8px; }
+  .req { color:#c00; }
+</style></head>
+<body>
+<form id="appForm" action="/apply" method="post">
+  <h3>一、基本信息</h3>
+  <table>
+    <tr><th><span class="req">*</span> 贵姓：</th><td><input type="text" name="xm" id="xm" placeholder="请输入姓名"></td></tr>
+    <tr><th>性别：</th><td>
+      <label><input type="radio" name="xb" value="M"> 男</label>
+      <label><input type="radio" name="xb" value="F"> 女</label>
+    </td></tr>
+    <tr><th>出生日期：</th><td><input type="text" name="csrq" id="csrq" placeholder="yyyy-MM-dd"></td></tr>
+    <tr><th>身份证号：</th><td><input type="text" name="sfzh" maxlength="18"></td></tr>
+    <tr><th>民族：</th><td><input type="text" name="mz"></td></tr>
+    <tr><th>政治面貌：</th><td><select name="zzmm"><option value="">请选择</option><option value="1">中共党员</option><option value="2">共青团员</option><option value="3">群众</option></select></td></tr>
+    <tr><th>婚姻状况：</th><td><select name="hyzk"><option value="">请选择</option><option value="1">未婚</option><option value="2">已婚</option></select></td></tr>
+    <tr><th>户口所在地：</th><td><input type="text" name="hkszd"></td></tr>
+    <tr><th>籍贯：</th><td><input type="text" name="jg" placeholder="精确到市"></td></tr>
+    <tr><th>身高（cm）：</th><td><input type="text" name="sg"></td></tr>
+    <tr><th>体重（kg）：</th><td><input type="text" name="tz"></td></tr>
+  </table>
+
+  <h3>二、联系方式</h3>
+  <table>
+    <tr><th><span class="req">*</span> 手机号码：</th><td><input type="text" name="sjh" id="phone"></td></tr>
+    <tr><th><span class="req">*</span> Email：</th><td><input type="text" name="email" id="email"></td></tr>
+    <tr><th>通讯地址：</th><td><input type="text" name="txdz" style="width:320px"></td></tr>
+    <tr><th>紧急联系人电话：</th><td><input type="text" name="jjr"></td></tr>
+  </table>
+
+  <h3>三、最高学历（含在读）</h3>
+  <table>
+    <tr><th>毕业院校：</th><td><input type="text" name="byyx"></td></tr>
+    <tr><th>所学专业：</th><td><input type="text" name="sxzy"></td></tr>
+    <tr><th>学历：</th><td><select name="xl"><option value="">请选择</option><option>大专</option><option>本科</option><option>硕士研究生</option><option>博士研究生</option></select></td></tr>
+    <tr><th>学习形式：</th><td><select name="xxxs"><option value="">请选择</option><option>全日制</option><option>非全日制</option></select></td></tr>
+    <tr><th>入学时间：</th><td><input type="text" name="rxsj" placeholder="yyyy-MM"></td></tr>
+    <tr><th>毕业时间：</th><td><input type="text" name="bysj" placeholder="YYYY年MM月"></td></tr>
+    <tr><th>学号：</th><td><input type="text" name="xh"></td></tr>
+    <tr><th>GPA：</th><td><input type="text" name="gpa"></td></tr>
+  </table>
+
+  <h3>四、实习经历</h3>
+  <table class="intern-list">
+    <tr class="intern-item"><th>单位名称</th><td><input type="text" name="company0"></td></tr>
+    <tr class="intern-item"><th>岗位</th><td><input type="text" name="post0"></td></tr>
+    <tr class="intern-item"><th>开始时间</th><td><input type="text" name="start0" placeholder="yyyy-MM"></td></tr>
+    <tr class="intern-item"><th>结束时间</th><td><input type="text" name="end0" placeholder="yyyy-MM"></td></tr>
+  </table>
+
+  <h3>五、求职意向</h3>
+  <table>
+    <tr><th>应聘岗位：</th><td><input type="text" name="pygw"></td></tr>
+    <tr><th>期望工作地：</th><td><input type="text" name="qwgzd"></td></tr>
+    <tr><th>最早到岗时间：</th><td><input type="text" name="dgsj" placeholder="yyyy-MM-dd"></td></tr>
+    <tr><th>是否服从调剂：</th><td>
+      <label><input type="radio" name="tj" value="1"> 是</label>
+      <label><input type="radio" name="tj" value="0"> 否</label>
+    </td></tr>
+    <tr><th>信息来源：</th><td><select name="ly"><option value="">请选择</option><option>官网</option><option>牛客</option><option>学校就业网</option><option>内推</option></select></td></tr>
+    <tr><th>内推码：</th><td><input type="text" name="tdm"></td></tr>
+  </table>
+
+  <h3>六、家庭主要成员</h3>
+  <table>
+    <tr><th>称谓：</th><td><input type="text" name="fam0_rel"></td></tr>
+    <tr><th>姓名：</th><td><input type="text" name="fam0_name"></td></tr>
+    <tr><th>工作单位及职务：</th><td><input type="text" name="fam0_emp"></td></tr>
+  </table>
+
+  <h3>七、档案与证明</h3>
+  <table>
+    <tr><th>档案所在地：</th><td><input type="text" name="dasz"></td></tr>
+    <tr><th>有无犯罪记录：</th><td><label><input type="radio" name="fzjl" value="1"> 有</label><label><input type="radio" name="fzjl" value="0"> 无</label></td></tr>
+    <tr><th>英语等级及分数：</th><td><input type="text" name="eng"></td></tr>
+  </table>
+
+  <h3>八、其他</h3>
+  <table>
+    <tr><th>自我评价</th><td><textarea name="selfintro" rows="4" cols="50"></textarea></td></tr>
+    <tr><th>上传简历附件</th><td><input type="file" name="resume_file"></td></tr>
+    <tr><th>图形验证码</th><td><input type="text" name="captcha" maxlength="4"><img alt="captcha" src=""></td></tr>
+  </table>
+
+  <p><button type="submit" id="submitBtn">提交申请</button> <button type="button" id="draftBtn">暂存草稿</button></p>
+</form>
+</body>
+</html>

@@ -8,7 +8,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test",
+    "test": "node --test tests/",
     "check": "npm test && node tools/hit-rate.mjs",
     "hit": "node tools/hit-rate.mjs"
   },

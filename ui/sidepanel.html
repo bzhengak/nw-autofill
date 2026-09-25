@@ -45,7 +45,16 @@
   <h2>需要你处理的字段</h2>
   <table id="gaps"></table>
 
-  <h2>简历数据（P1 会换成 Markdown / PDF 导入）</h2>
+  <h2>导入简历 Markdown</h2>
+  <textarea id="mdText" spellcheck="false" placeholder="把你的简历 Markdown 全文粘贴到这里" style="min-height:90px"></textarea>
+  <div class="row">
+    <button class="primary" id="btnImportMd">解析并填入</button>
+    <label class="chk"><input type="checkbox" id="mdOverwrite">覆盖已有值（默认只填空着的字段）</label>
+  </div>
+  <div class="note" id="mdReport"></div>
+  <pre id="mdDetail" class="note" style="max-height:140px;overflow:auto;white-space:pre-wrap"></pre>
+
+  <h2>简历数据（JSON，可手改）</h2>
   <div class="row">
     <button id="btnEdit">编辑 / 导入 JSON</button>
     <button id="btnTemplate">下载空白模板（全字段）</button>

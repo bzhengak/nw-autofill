@@ -1,4 +1,5 @@
 import { createEmptyProfile, SECTIONS, buildFields } from '../core/profile-schema.js';
+import { importMarkdown } from '../core/importers/markdown.js';
 
 const $ = id => document.getElementById(id);
 let tabId = null;
@@ -80,8 +81,7 @@ $('btnSave').onclick = async () => {
   $('editor').classList.remove('on');
   refresh();
 };
-$('btnTemplate').onclick = () => {
-  const blank = createEmptyProfile();
+$('btnTemplate').onclick = () => {  const blank = createEmptyProfile();
   const blob = new Blob([JSON.stringify(blank, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -91,3 +91,21 @@ $('btnTemplate').onclick = () => {
 };
 
 refresh();
+
+$('btnImportMd').onclick = () => {
+  const md = $('mdText').value;
+  if (!md.trim()) { $('mdReport').textContent = '先粘贴简历 Markdown 全文'; return; }
+  let base;
+  try { base = JSON.parse($('profileText').value); } catch { base = createEmptyProfile(); }
+  const { profile, report } = importMarkdown(md, { base, overwrite: $('mdOverwrite').checked });
+  $('profileText').value = JSON.stringify(profile, null, 2);
+  $('editor').classList.add('on');
+  $('mdReport').innerHTML = '<b>写入 ' + report.mapped.length + ' 项</b> · 跳过已有 '
+    + report.skippedExisting.length + ' 项 · 未识别标题 ' + report.unmappedHeadings.length + ' 个';
+  const detail = [];
+  if (report.unmappedHeadings.length) detail.push('⚠ 这些标题没被识别，内容可能丢失，请手动补：\n  ' + report.unmappedHeadings.join('\n  '));
+  if (report.warnings.length) detail.push('提示：\n  ' + report.warnings.join('\n  '));
+  if (report.derived && report.derived.length) detail.push('自动推导（请核对）：\n  ' + report.derived.join('\n  '));
+  detail.push('写入明细：\n  ' + report.mapped.map(m => m.path + ' ← ' + m.source).join('\n  '));
+  $('mdDetail').textContent = detail.join('\n\n');
+};

@@ -12,7 +12,7 @@ const NESTED_ALLOWED = {
   skip: new Set(['match', 'reason', 'note']),
   dateFormats: new Set(['match', 'format', 'note']),
   aliases: new Set(['path', 'add']),
-  evidence: new Set(['method', 'checkedAt', 'observed', 'publicApis', 'blocked', 'verified', 'verifiedScope', 'todo', 'browserCheck']),
+  evidence: new Set(['method', 'checkedAt', 'observed', 'publicApis', 'blocked', 'verified', 'verifiedScope', 'todo', 'browserCheck', 'realStructure']),
 };
 
 function scanKeys(node, trail, errors) {

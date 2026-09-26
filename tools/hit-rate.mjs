@@ -62,7 +62,7 @@ for (const file of forms) {
   const fields = scanForm(doc);
   const profile = sampleProfile();
   const plan = planFill(fields, profile, { mode: 'full', adapter });
-  const { results } = applyPlan(fields, plan.assignments, {});
+  const { results } = await applyPlan(fields, plan.assignments, {});
 
   const byName = new Map();
   results.forEach((r) => {

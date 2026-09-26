@@ -5,7 +5,7 @@
 //  3. 钉位（pins）优先于匈牙利分配，但必须回读校验，钉错了照样报红。
 
 const FORBIDDEN_KEYS = /^(fetch|url|endpoint|remote|script|src|inject|eval|postMessage|request|ajax|href)$/i;
-const ALLOWED_KEYS = new Set(['id', 'name', 'domains', 'family', 'notes', 'evidence', 'pins', 'aliases', 'dateFormats', 'skip', 'controlHints', 'version']);
+const ALLOWED_KEYS = new Set(['id', 'name', 'domains', 'paths', 'family', 'notes', 'evidence', 'pins', 'aliases', 'dateFormats', 'skip', 'controlHints', 'version']);
 // 嵌套结构白名单：任何多出来的键（尤其是能发请求的键）都在校验期拒掉
 const NESTED_ALLOWED = {
   pins: new Set(['match', 'path', 'note']),
@@ -71,17 +71,27 @@ export function validateAdapter(raw) {
   return errors;
 }
 
+/**
+ * 域名匹配；同一系统家族下不同公司措辞可能不同，所以支持 paths 做租户级覆盖：
+ * 带 paths 的适配器优先于只带 domains 的家族适配器。
+ */
 export function matchAdapter(url, adapters) {
-  let host = '';
-  try { host = new URL(url).hostname; } catch { return null; }
+  let parsed;
+  try { parsed = new URL(url); } catch { return null; }
+  const host = parsed.hostname;
+  const where = a => (a.domains || []).some(d => {
+    const bare = d.replace(/^\*\./, '');
+    return d.startsWith('*.') ? (host === bare || host.endsWith('.' + bare)) : host === d;
+  });
+  const scored = [];
   for (const a of adapters) {
-    for (const d of a.domains || []) {
-      const bare = d.replace(/^\*\./, '');
-      const ok = d.startsWith('*.') ? host === bare || host.endsWith('.' + bare) : host === d;
-      if (ok) return a;
-    }
+    if (!where(a)) continue;
+    const hit = (a.paths || []).some(p => typeof p === 'string' && p && (parsed.pathname + parsed.hash).includes(p));
+    scored.push({ a, rank: hit ? 2 : (a.paths && a.paths.length ? -1 : 1) });
   }
-  return null;
+  const usable = scored.filter(s => s.rank >= 0);
+  if (!usable.length) return null;
+  return usable.sort((x, y) => y.rank - x.rank)[0].a;
 }
 
 /** 危险的 `re:` 写法：空分支（如 `a|`、`|b`、`a||b`）会匹配一切，曾经一整个表单被误判跳过 */

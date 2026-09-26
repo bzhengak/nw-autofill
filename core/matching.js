@@ -154,15 +154,24 @@ export function scorePair(pageField, profileField) {
       } else if (ac.includes(labelCore) && labelCore.length >= 2) {
         best = Math.max(best, 0.68);
       } else if (/^[a-z ]+$/.test(ac) && ac.length >= 8) {
-        // 英文词形变化：institute/institution、qualify/qualification 应当算同一语义
-        const stem = ac.slice(0, Math.max(6, ac.length - 3));
-        if (labelCore.includes(stem)) best = Math.max(best, 0.55 + 0.4 * Math.min(1, stem.length / Math.max(labelCore.length, 1)));
+        // 英文词形变化只认"长公共前缀 ≥8"：institute/institution 可通，
+        // 而 currently → current（前缀仅 7）不通，避免把"是否在职"填进 Job Title
+        const labelWords = labelCore.split(' ').filter(Boolean);
+        const hit = labelWords.some(w => {
+          if (w.length < 8) return false;
+          let k = 0;
+          while (k < Math.min(w.length, ac.length) && w[k] === ac[k]) k++;
+          return k >= 8;
+        });
+        if (hit) best = Math.max(best, 0.6);
       }
     }
   }
 
-  // 词元重合
-  const overlap = [...labelSigs.tokens].filter(t => aliasSigs.tokens.has(t));
+  // 词元重合：CJK 二元组照用；拉丁词要求 ≥6 字符，否则 'check' 会把
+  // "是否接受背景调查(background check)" 误配到 "Security Check" 这类框上
+  const usable = new Set([...labelSigs.tokens].filter(t => !/^[a-z0-9 .]+$/.test(t) || t.length >= 6));
+  const overlap = [...usable].filter(t => aliasSigs.tokens.has(t));
   if (overlap.length) {
     const w = overlap.reduce((m, t) => Math.max(m, t.length), 0);
     const jaccard = overlap.length / Math.max(2, Math.min(labelSigs.tokens.size, aliasSigs.tokens.size));
@@ -225,6 +234,14 @@ export function scorePair(pageField, profileField) {
     best *= pageField.sectionHint === profileField.section ? 1.12 : 0.55;
   } else if (pageField.sectionHint && profileField.section && pageField.sectionHint === profileField.section) {
     best *= 1.06;
+  } else if (pageField.sectionHint && profileField.section && pageField.sectionHint !== profileField.section) {
+    // 页面明确说了这块是"基本信息"，那"家庭成员"的同名字段就不该赢；
+    // 两侧都封顶到 1.0 时会打平，所以这里必须用乘法惩罚而不是靠排序
+    best *= 0.75;
+  } else if (!pageField.sectionHint && profileField.itemIndex != null) {
+    // 页面没有区块证据时，列表槽位（家庭成员、多段经历）让位于一次性字段：
+    // 否则"政治面貌"会被家庭成员的 political 抢走，而页面上并没有任何"家庭成员"标题
+    best *= 0.9;
   }
 
   return Math.min(1, best);
@@ -385,6 +402,25 @@ export function formatDate(raw, patternId) {
     m: (m[2] || '01').padStart(2, '0'),
     dd: (m[3] || '01').padStart(2, '0'),
   });
+}
+
+/**
+ * 否定词护栏：'全日制' 不得命中 '非全日制'，'婚' 不得命中 '未婚'。
+ * 来自 TshyGO 的 ai-helpers 与 ailock 的社区经验——枚举字段一旦选反，
+ * 站点不会报错，会安静地把错误答案交上去，是最糟的失败模式。
+ */
+export function negationMismatch(optionText, target) {
+  const ot = normalize(optionText), t = normalize(target);
+  if (!ot || !t || ot === t) return false;
+  const occurrences = [];
+  for (let i = ot.indexOf(t); i >= 0; i = ot.indexOf(t, i + 1)) occurrences.push(i);
+  if (!occurrences.length) return false;
+  const negatedAt = idx => {
+    const before = ot.slice(0, idx);
+    return /[非不无未]$/.test(before) || /(?:^|[^a-z])(?:non|un|dis|ex|anti|without|no)[-_ ]?$/.test(before);
+  };
+  // 只有当目标词每一次出现都被否定词修饰时才算"选反"，否则仍可用
+  return occurrences.every(negatedAt);
 }
 
 export function boolLike(value) {

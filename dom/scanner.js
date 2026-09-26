@@ -103,22 +103,23 @@ function labelFor(el, doc) {
   if (id) {
     const esc = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(id) : id.replace(/([^\w-])/g, '\\$1');
     const lab = doc.querySelector(`label[for="${esc}"]`);
-    if (lab) { const t = textOf(lab); if (t) return { text: t, source: 'label-for' }; }
+    if (lab) { const t = textOf(lab); if (t) return { text: t, raw: normRaw(lab.textContent), source: 'label-for' }; }
   }
   const labelledby = el.getAttribute('aria-labelledby');
   if (labelledby) {
     const parts = labelledby.split(/\s+/).map(x => textOf(doc.getElementById(x))).filter(Boolean);
-    if (parts.length) return { text: parts.join(' '), source: 'aria-labelledby' };
+    if (parts.length) return { text: parts.join(' '), raw: normRaw(parts.join(' ')), source: 'aria-labelledby' };
   }
-  const aria = clean(el.getAttribute('aria-label'));
-  if (aria) return { text: aria, source: 'aria-label' };
+  const ariaRaw = el.getAttribute('aria-label');
+  const aria = clean(ariaRaw);
+  if (aria) return { text: aria, raw: normRaw(ariaRaw), source: 'aria-label' };
 
   const wrap = el.closest?.('label');
   if (wrap) {
     const clone = wrap.cloneNode(true);
     clone.querySelectorAll(CONTROL_SELECTOR).forEach(n => n.remove());
     const t = clean(clone.textContent);
-    if (t) return { text: t, source: 'wrapped-label' };
+    if (t) return { text: t, raw: normRaw(wrap.textContent), source: 'wrapped-label' };
   }
 
   // 常见结构：<div class="form-item-label">姓名</div><div><input/></div>
@@ -129,17 +130,17 @@ function labelFor(el, doc) {
     while (sib && guard++ < 6) {
       if (sib.nodeType === 1) {
         const t = textOf(sib);
-        if (t && t.length <= 40) return { text: t, source: 'prev-sibling' };
+        if (t && t.length <= 40) return { text: t, raw: normRaw(sib.textContent), source: 'prev-sibling' };
       } else if (sib.nodeType === 3) {
         const t = clean(sib.nodeValue);
-        if (t && t.length <= 40) return { text: t, source: 'prev-text' };
+        if (t && t.length <= 40) return { text: t, raw: normRaw(sib.nodeValue), source: 'prev-text' };
       }
       sib = sib.previousSibling;
     }
     const cell = node.tagName === 'TD' || node.tagName === 'TH' ? node : null;
     if (cell && cell.previousElementSibling) {
       const t = textOf(cell.previousElementSibling);
-      if (t) return { text: t, source: 'table-cell' };
+      if (t) return { text: t, raw: normRaw(cell.previousElementSibling.textContent), source: 'table-cell' };
     }
     node = node.parentElement;
   }
@@ -148,12 +149,12 @@ function labelFor(el, doc) {
   if (holder) {
     const lab = holder.querySelector(':scope > label, :scope > .label, :scope > [class*="label"], :scope > [class*="title"], :scope > [class*="name"]');
     const t = textOf(lab);
-    if (t) return { text: t, source: 'holder-label' };
+    if (t) return { text: t, raw: normRaw(lab.textContent), source: 'holder-label' };
   }
 
   const ph = clean(el.getAttribute('placeholder'));
-  if (ph) return { text: ph, source: 'placeholder' };
-  return { text: '', source: '' };
+  if (ph) return { text: ph, raw: ph, source: 'placeholder' };
+  return { text: '', raw: '', source: '' };
 }
 
 /**
@@ -179,12 +180,16 @@ function groupLabelOf(el, groupEls, doc) {
       const residual = loose(rawText).split(/[\s|｜·]+/).filter(w => w && !drop.has(w)).join(' ');
       const v = core(residual);
       if (v && v.length >= 2 && v.length <= 90 && !/^(男|女|是|否|有|无|请选择|必填|限\d+字)$/.test(v)) {
-        return { text: v, source: 'group-container' };
+        return { text: v, raw: normRaw(rawText), source: 'group-container' };
       }
     }
     node = node.parentElement;
   }
   return { text: '', source: '' };
+}
+
+export function normRaw(s) {
+  return String(s || '').replace(/s+/g, ' ').trim();
 }
 
 function nearbyLabels(el, doc) {
@@ -297,6 +302,7 @@ export function scanForm(root = document) {
       fields.push({
         kind,
         label: groupLabel.text || '',
+        labelRaw: groupLabel.raw || groupLabel.text || '',
         labelSource: groupLabel.source,
         name,
         id: el.id || '',
@@ -322,6 +328,7 @@ export function scanForm(root = document) {
     fields.push({
       kind,
       label: label.text || '',
+      labelRaw: label.raw || label.text || '',
       labelSource: label.source,
       name,
       id: el.id || '',

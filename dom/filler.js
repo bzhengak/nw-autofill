@@ -51,14 +51,36 @@ function tolerant(actual, desired) {
   return a.includes(d) || d.includes(a);
 }
 
-function writeText(el, value) {
+/**
+ * 社区实测里最高频的失败不是"匹配不到"，而是"值看得见、站点仍报必填"：
+ * 受控组件在 focus 之前被写入会被重绘抹掉。所以顺序必须是
+ * focus → 让出一个宏任务 → 写值 → input/change → blur → 复查站点自己的校验状态。
+ */
+const tick = (ms = 0) => new Promise(r => setTimeout(r, ms));
+
+const ERROR_SELECTOR = '.ant-form-item-explain-error,.el-form-item__error,.Validform_wrong,[role="alert"]';
+
+/** 写入后站点亮起的错误提示：存在就说明"填进去了但没被承认" */
+function validationErrorNear(el) {
+  const item = el.closest?.('[class*="form-item"],[class*="form-row"],[class*="field"],li,tr,dd,p,div');
+  if (!item || !item.querySelector) return '';
+  const err = item.querySelector(ERROR_SELECTOR);
+  const t = (err?.textContent || '').trim();
+  return t ? t.slice(0, 40) : '';
+}
+
+async function writeText(el, value) {
   el.focus?.();
+  await tick(0);
   const actual = setNativeValue(el, value);
   if (!tolerant(actual, value)) {
     el.value = value;
     dispatch(el, 'input');
     dispatch(el, 'change');
   }
+  await tick(0);
+  el.blur?.();
+  dispatch(el, 'blur');
   return String(el.value ?? '').trim();
 }
 
@@ -66,7 +88,7 @@ function writeText(el, value) {
  * @param {Object} field  scanner 产出的字段描述（含 el）
  * @param {Object} entry  matcher 产出的分配项
  */
-export function fillField(field, entry) {
+export async function fillField(field, entry) {
   const el = field.el;
   if (!el) return { ok: false, reason: 'no_element' };
   const kind = field.kind;
@@ -75,14 +97,19 @@ export function fillField(field, entry) {
 
   if (kind === 'select') {
     const target = entry.optionValue ?? entry.value;
-    const opt = Array.from(el.options || []).find(o => o.value === target)
-      || Array.from(el.options || []).find(o => tolerant(o.textContent, target));
+    const list = Array.from(el.options || []);
+    const opt = list.find(o => o.value === target && String(o.value) !== '')
+      || list.find(o => tolerant(o.textContent, target));
     if (!opt) return { ok: false, reason: 'option_missing', actual: el.value };
     el.focus?.();
+    // 很多站点的 option 全部 value=""（按文本区分），只设 el.value 会落到第一个空值项
+    const idx = list.indexOf(opt);
+    if (idx >= 0) el.selectedIndex = idx;
     el.value = opt.value;
     dispatch(el, 'change');
     dispatch(el, 'blur');
-    return { ok: tolerant(el.value, opt.value) || tolerant(opt.textContent, target), actual: el.value, shown: opt.textContent };
+    const shown = (el.selectedIndex >= 0 ? el.options[el.selectedIndex]?.textContent : '') || opt.textContent;
+    return { ok: tolerant(shown, target) || tolerant(opt.textContent, target), actual: String(shown || '').trim(), shown: String(shown || '').trim(), error: validationErrorNear(el) };
   }
 
   if (kind === 'radio' || kind === 'checkbox') {
@@ -117,7 +144,9 @@ export function fillField(field, entry) {
   if (entry.dateFormat) value = formatDate(value, entry.dateFormat);
   if (field.maxLength && value.length > field.maxLength) value = value.slice(0, field.maxLength);
 
-  const actual = writeText(el, value);
+  const actual = await writeText(el, value);
+  const error = validationErrorNear(el);
+  if (error) return { ok: false, reason: 'validation_not_cleared', actual, error };
   if (tolerant(actual, value)) return { ok: true, actual };
   if (el.readOnly) return { ok: false, reason: 'readonly_control', actual };
   return { ok: false, reason: 'value_rejected', actual };
@@ -126,7 +155,7 @@ export function fillField(field, entry) {
 /**
  * 执行分配方案。返回每条的状态：green / orange / red，并记录原值供回滚。
  */
-export function applyPlan(fields, assignments, opts = {}) {
+export async function applyPlan(fields, assignments, opts = {}) {
   const results = [];
   const rollback = [];
   for (const entry of assignments) {
@@ -137,7 +166,7 @@ export function applyPlan(fields, assignments, opts = {}) {
 
     const original = field.el ? readBack(field.el, field.kind) : '';
     if (field.kind === 'radio' || field.kind === 'checkbox') field.__group = collectGroup(field);
-    const outcome = fillField(field, entry);
+    const outcome = await fillField(field, entry);
     // 没写进去就把原值还原：只读框、受控组件可能接受了赋值又被框架改回去，
     // 留半截错误内容比留空更糟（站点校验会把它当已填）。单选/多选保守不动。
     if (!outcome.ok && original) {

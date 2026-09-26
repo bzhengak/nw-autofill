@@ -3,7 +3,7 @@
 
 import { buildFields, getValueByPath, equivalentsOf } from './profile-schema.js';
 import { planFromAdapter, dateFormatOverride } from './adapters.js';
-import { assignMaxWeight, scorePair, normalize, core, inferDateFormat, boolLike, signals } from './matching.js';
+import { assignMaxWeight, scorePair, normalize, core, inferDateFormat, boolLike, signals, negationMismatch } from './matching.js';
 
 const AUTO_THRESHOLD = 0.75;   // 绿：直接填
 const REVIEW_THRESHOLD = 0.52; // 黄：填了但要求你复核
@@ -11,12 +11,15 @@ const TOP_K = 6;
 
 // 绝对不碰的东西。type=file 按你的要求（附件你自己上传）只定位不操作。
 const BLOCK_PATTERNS = [
-  { re: /(captcha|recaptcha|滑块|验证码|校验码|语音验证码|短信验证码|人机验证|行为验证|图形验证|verif(?:ication)?\s*code|otp\b|security\s*code)/i, reason: 'captcha' },
+  { re: /(captcha|recaptcha|滑块|验证码|校验码|语音验证码|短信验证码|人机验证|行为验证|图形验证|verif(?:ication)?\s*(?:code|check)|(?<![a-z])otp(?![a-z])|security\s*(?:code|check|question)|check\s*code)/i, reason: 'captcha' },
   { re: /(password|密码|口令|api\s*key|secret)/i, reason: 'credential' },
   { re: /(上传|附件|简历文件|upload|attachment|portfolio\s*file)/i, reason: 'file', whenFile: true },
   { re: /(自我评价|自我介绍|个人总结|个人优势|self[\s-]?introduction|about\s*me|为什么|动机|why\s*(us|you)|cover\s*letter|career\s*plan|职业规划|describe\s*your|short\s*answer|essay)/i, reason: 'subjective' },
   { re: /(测评|笔试|性格测试|认知能力|assessment|aptitude|psychometric)/i, reason: 'assessment' },
-  { re: /(电子签名|签名|signature|同意并|授权)/i, reason: 'signature' },
+  { re: /(电子签名|签名|signature)/i, reason: 'signature' },
+  // 同意类声明必须由本人勾选：某同类开源项目自动勾选"已阅读并同意隐私政策"并自动应答合规声明，
+  // 这等于代替用户做法律意思表示，绝不做。
+  { re: /(已阅读|已阅读并|同意并|同意本|用户协议|隐私政策|服务条款|知情同意|承诺书|声明与承诺|授权须知|i\s+agree|user\s+agreement|privacy\s+policy|terms\s+(of|and)|accept\s+the\s+terms|consent)/i, reason: 'consent_declaration' },
 ];
 
 const SUBJECTIVE_OK = /(姓名|手机|电话|邮箱|身份证|证件|学历|学位|学校|专业|公司|职位|城市|日期|时间|薪资|到岗|编号|地址)/i;
@@ -27,7 +30,9 @@ function blockReason(pageField) {
   const ph = String(pageField.placeholder || '').trim();
   if (pageField.compositeDate) return 'composite_date';
   if (pageField.kind === 'text' && /^(please\s+select|请选择|选择|pick\s+an?|请选取)/i.test(ph)) return 'custom_control';
-  const hay = [pageField.label, pageField.name, pageField.id, pageField.placeholder, pageField.ownerText, pageField.className]
+  // labelRaw 是未清洗的原文：安全规则必须看到它，否则 "Security Check (CAPTCHA)"
+  // 会被为匹配而做的括号剥离把 captcha 关键词洗掉
+  const hay = [pageField.label, pageField.labelRaw, pageField.name, pageField.id, pageField.placeholder, pageField.ownerText, pageField.className]
     .filter(Boolean).join(' ');
   for (const rule of BLOCK_PATTERNS) {
     if (rule.whenFile && pageField.kind !== 'file') continue;
@@ -40,7 +45,7 @@ function blockReason(pageField) {
   // 兜底：标签没写"验证码"但形态是短码框（tel + 极短 maxLength，或 name/id 含 code）
   const meta = [pageField.name, pageField.id, pageField.testId, pageField.className].filter(Boolean).join(' ');
   const shortCode = (pageField.maxLength && pageField.maxLength <= 8) || /^(tel|number)$/i.test(pageField.type || pageField.inputType || '');
-  if (shortCode && /(code|verif|otp|captcha|check\s*code)/i.test(meta)) return 'captcha';
+  if (shortCode && !/(zip|post|area|country|phone)\s*code|(邮编|区号)/i.test(meta) && /(^|[^a-z])(code|verif|otp|captcha)/i.test(meta)) return 'captcha';
   if (pageField.maxLength && pageField.maxLength <= 6 && /^(tel|number)$/i.test(pageField.type || pageField.inputType || '')) return 'captcha';
   return null;
 }
@@ -59,9 +64,9 @@ export function resolveOption(pageField, value) {
   for (const o of opts) {
     const ot = normalize(o.text);
     if (!ot) continue;
-    if (eqs.some(eq => ot.includes(eq) || eq.includes(ot))) {
+    if (eqs.some(eq => !negationMismatch(o.text, eq) && (ot.includes(eq) || eq.includes(ot)))) {
       // 包含即视为强匹配：'硕士' → '硕士研究生' / 'Master of Science'
-      const eq = eqs.find(e => ot.includes(e) || e.includes(ot)) || target;
+      const eq = eqs.find(e => !negationMismatch(o.text, e) && (ot.includes(e) || e.includes(ot))) || target;
       const ratio = Math.min(ot.length, eq.length) / Math.max(ot.length, eq.length);
       const s = 0.62 + 0.38 * ratio;
       if (s > bestScore) { bestScore = s; best = o; }

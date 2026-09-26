@@ -146,6 +146,48 @@ test('真实站点教出来的三条拦截：自定义下拉 / 年月成对 / �
   assert.equal(plan.assignments.length, 0, '四个字段都不应产生写入');
 });
 
+test('安全规则必须看到未清洗的原文（括号里的 CAPTCHA 不能被剥掉）', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'records.backgroundOk', '是');
+  setValueByPath(p, 'intent.salary', '15000');
+  const fields = [{
+    ...pageField({ label: 'security check', name: 'security' }),
+    labelRaw: 'Security Check (CAPTCHA)',
+    maxLength: 6,
+  }];
+  const plan = planFill(fields, p, {});
+  assert.equal(plan.gaps[0]?.reason, 'captcha', '括号里的 captcha 关键词被 core() 剥掉后仍要拦住');
+  assert.equal(plan.assignments.length, 0);
+});
+
+test('同意与声明类勾选永不代做', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'intent.acceptOvertime', '是');
+  const fields = [
+    pageField({ label: '我已阅读并同意隐私政策', kind: 'checkbox' }),
+    pageField({ label: 'I agree to the terms of service', kind: 'checkbox' }),
+    pageField({ label: '知情同意书', kind: 'checkbox' }),
+  ];
+  const plan = planFill(fields, p, {});
+  assert.deepEqual(plan.gaps.map(g => g.reason), ['consent_declaration', 'consent_declaration', 'consent_declaration']);
+  assert.equal(plan.assignments.length, 0);
+});
+
+test('否定护栏：全日制绝不落到「非全日制」选项上', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'education.0.trainingMode', '全日制');
+  const fields = [pageField({
+    label: '学习形式',
+    kind: 'select',
+    options: [{ text: '非全日制', value: 'a' }, { text: '全日制', value: 'b' }],
+  })];
+  const plan = planFill(fields, p, {});
+  assert.equal(plan.assignments[0].optionValue, 'b');
+  const only = [pageField({ label: '学习形式', kind: 'select', options: [{ text: '非全日制', value: 'a' }] })];
+  const p2 = planFill(only, p, {});
+  assert.notEqual(p2.assignments[0]?.optionValue, 'a', '只有否定式选项时不能选它');
+});
+
 test('安全闸门：提交类按钮与导航按钮都在拒绝名单', () => {
   assert.ok(SUBMIT_TEXT_RE.test('提交申请'));
   assert.ok(SUBMIT_TEXT_RE.test('Apply Now'));

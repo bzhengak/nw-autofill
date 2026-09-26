@@ -458,7 +458,7 @@ export const EXTRA_ALIASES = {
   'contact.emergencyPhone': ['紧急联系人电话', '紧急联系电话', '亲属电话'],
   'contact.address': ['通讯地址', '寄信地址', '现详细住址', '联系地址'],
   'intent.position': ['应聘岗位', '申请职位', '志愿岗位', '应聘职位'],
-  'intent.cities': ['期望工作地', '意向工作地', '期望工作地点', '工作地点偏好'],
+  'intent.cities': ['期望工作地', '意向工作地', '期望工作地点', '工作地点偏好', 'expected city', 'desired city', 'expected work location', 'preferred work location'],
   'intent.acceptRelocation': ['是否服从调剂', '服从调剂', '愿意调剂', '接受工作地点调剂'],
   'intent.channel': ['信息来源', '获知渠道', '如何得知本公司', '招聘渠道来源'],
   'intent.availableDate': ['最早到岗时间', '可到岗日期', '入职时间'],

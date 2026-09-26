@@ -45,7 +45,7 @@ async function handleScan({ profile, mode = 'full', dryRun = false }) {
   safety.armSubmitGuard(window, auditLog);
   const fields = scanner.scanForm(document);
   const plan = matcher.planFill(fields, profile, { mode });
-  const applied = filler.applyPlan(fields, plan.assignments, { dryRun });
+  const applied = await filler.applyPlan(fields, plan.assignments, { dryRun });
 
   clearMarks();
   for (const r of applied.results) {

@@ -3,7 +3,7 @@
  *
  * 用途：在你已登录的网申页面上运行，把"字段结构"导出成 JSON，用来生成/校准站点适配器。
  * 设计上不碰用户数据：全程不读 el.value、不读 textarea 内容、不读用户输入的任何文本。
- * 你可以自己确认：本文件里对表单元素只读取 name/id/role/placeholder/aria-*/type/required/
+ * 你可以自己确认：本文件里对表单元素只读取 name/id/role/placeholder/aria 系列与 type/required/
  * readOnly/disabled/accept/maxLength，以及 select 的 option 文案（那是站点提供的候选项，不是你的答案）。
  *
  * 用法：F12 打开 DevTools → Console → 整段粘贴本文件内容并回车 → 输出会自动进剪贴板，

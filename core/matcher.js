@@ -19,7 +19,7 @@ const BLOCK_PATTERNS = [
   { re: /(电子签名|签名|signature)/i, reason: 'signature' },
   // 同意类声明必须由本人勾选：某同类开源项目自动勾选"已阅读并同意隐私政策"并自动应答合规声明，
   // 这等于代替用户做法律意思表示，绝不做。
-  { re: /(已阅读|已阅读并|同意并|同意本|用户协议|隐私政策|服务条款|知情同意|承诺书|声明与承诺|授权须知|i\s+agree|user\s+agreement|privacy\s+policy|terms\s+(of|and)|accept\s+the\s+terms|consent)/i, reason: 'consent_declaration' },
+  { re: /(已阅读|已阅读并|同意并|同意本|用户协议|隐私政策|服务条款|知情同意|承诺书|声明与承诺|授权须知|i\s+agree|user\s+agreement|privacy\s+policy|terms\s+(of|and)|accept\s+the\s+terms|consent|cookie)/i, reason: 'consent_declaration' },
 ];
 
 const SUBJECTIVE_OK = /(姓名|手机|电话|邮箱|身份证|证件|学历|学位|学校|专业|公司|职位|城市|日期|时间|薪资|到岗|编号|地址)/i;
@@ -58,7 +58,13 @@ function blockReason(pageField) {
   // 往里打字不会选中任何值，反而可能把站点自己的校验搞乱 → 一律标为待人工处理。
   const ph = String(pageField.placeholder || '').trim();
   if (pageField.compositeDate) return 'composite_date';
-  if (pageField.kind === 'text' && /^(please\s+select|请选择|选择|pick\s+an?|请选取)/i.test(ph)) return 'custom_control';
+  if (pageField.kind === 'text' && /^(please\s+select|no\s+selection|请选择|选择|pick\s+an?|请选取|select\s+an?)/i.test(ph)) return 'custom_control';
+  // 真身是自定义控件（<a role=combobox>、AntD 的 div[role=combobox]）：打字不会选中任何值。
+  // 在计划阶段就拒，而不是等 filler 写失败——用户看到的应该是橙色"需人工"，不是红色"填错了"。
+  if (pageField.kind === 'combobox' || pageField.kind === 'listbox') return 'custom_control';
+  // 密码类：label 可能为空而只靠 type=password 识别（汇丰 SF 注册面板里 "Choose Password" 的
+  // 显隐按钮就是 label 空 + type=password 的形态）
+  if (String(pageField.type || pageField.inputType || '').toLowerCase() === 'password') return 'credential';
   // labelRaw 是未清洗的原文：安全规则必须看到它，否则 "Security Check (CAPTCHA)"
   // 会被为匹配而做的括号剥离把 captcha 关键词洗掉
   const hay = [pageField.label, pageField.labelRaw, pageField.name, pageField.id, pageField.placeholder, pageField.ownerText, pageField.className]

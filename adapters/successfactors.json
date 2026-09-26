@@ -9,7 +9,16 @@
     "checkedAt": "2026-09-26",
     "observed": "career10.successfactors.com?company=hkjc（香港赛马会）返回 201KB 服务端渲染 HTML，含原生 <input>，CSS 中 .ant-*/.el-*/.van-* 均为 0，JS 标记为 jQuery/JSF 风格 → 属于传统表单，现有引擎可直接处理",
     "verified": true,
-    "verifiedScope": "仅验证到『服务端渲染 + 原生控件』这一层；具体字段标签与日期格式仍需登录后确认"
+    "verifiedScope": "仅验证到『服务端渲染 + 原生控件』这一层；具体字段标签与日期格式仍需登录后确认",
+    "realStructure": {
+      "observed": "2026-09-27 两份零取值导出：career10.successfactors.com/portalcareer?company=johnswireP2（太古/Johnnie Walker，frame#0 · 97 控件 · 39 可见 · 6 个跨源 iframe · 3 个 shadow host）与 career2.successfactors.eu/careers?company=hsbcholdin（汇丰，frame#0 · 179 控件 · 63 可见）",
+      "combo": "下拉不是 <select>：是 <input type=text role=combobox placeholder=No Selection>，语言切换甚至是 <a role=combobox> → 打字不会选中任何值，必须走 custom_control 拒绝路径",
+      "naming": "字段普遍没有 name，标签靠 <label for>（labelVia=for），少数靠 aria-label（Start Date/End Date/Search by …）",
+      "locale": "en-GB 区域下日期占位符就是 DD/MM/YYYY，模板推断已覆盖",
+      "searchBoxes": "职位搜索区的 Search by Keyword / Search by Location 与简历字段同页共存，误填等于把城市名打进取框",
+      "cookies": "页尾有 cookie 同意开关（checkbox role=switch，标签含 Required/Consent），永不代勾",
+      "hsbcCaveat": "汇丰那份落在登录/注册面板（fbclc_* 字段），不是简历表单；说明导出必须在填简历的那一步做"
+    }
   },
   "pins": [
     { "match": "re:(require sponsorship|需要签证担保|需要担保)", "path": "hkGlobal.needSponsorship", "note": "SF/港企必问合规项，标签措辞稳定，钉位比让匈牙利去抢更可靠" },
@@ -30,7 +39,10 @@
     { "path": "hkGlobal.expectedCtc", "add": ["expected remuneration", "salary expectation", "desired package", "期望薪酬"] }
   ],
   "skip": [
-    { "match": "re:(ethnicity|race|disability|veteran|婚姻狀況)", "reason": "declaration_optional", "note": "这类合规自报项由你决定，不自动代填" }
+    { "match": "re:(ethnicity|race|disability|veteran|婚姻狀況)", "reason": "declaration_optional", "note": "这类合规自报项由你决定，不自动代填" },
+    { "match": "re:(^search by |^keyword$|^locationsearch$|搜索职位|职位关键字)", "reason": "site_search", "note": "太古导出实测：职位搜索框与简历字段同页，误填等于把城市名打进取框" },
+    { "match": "re:(cookie|cookies)", "reason": "consent_declaration", "note": "SF 页尾的 cookie 开关（checkbox role=switch）永不代勾" },
+    { "match": "re:(if other.*specify|如选其他|其他.*请说明)", "reason": "conditional_other", "note": "SF 实测：这是「上面那个下拉选了 Other 才填」的条件框，同一个值填两遍等于把学校名重复写进说明框" }
   ],
   "notes": "港企与外企大量使用 SF；它的价值在于表单朴素、可预测，是英文侧最省力的一类。"
 }

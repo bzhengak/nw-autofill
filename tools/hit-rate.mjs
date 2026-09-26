@@ -107,7 +107,17 @@ for (const file of forms) {
   for (const name of mustNotTouch) {
     const el = doc.querySelector(`[data-nw-test="${name}"],[name="${name}"]`);
     if (!el) continue;
-    const touched = (el.value && String(el.value).trim()) || (el.textContent && el.type === undefined && String(el.textContent).trim());
+    // 判"有没有被写过"必须按控件类型分开看：checkbox 的 el.value 天生就是 "on"，
+    // 拿它当"被写入"会把所有 cookie 开关误判成越界（假警报会让整套门槛失去意义）。
+    const t = String(el.type || '').toLowerCase();
+    let touched = false;
+    if (el.tagName === 'FIELDSET' && el.checked === undefined) touched = false;
+    else if (el.checked !== undefined && (t === 'checkbox' || t === 'radio')) touched = el.checked === true;
+    else if (el.tagName === 'SELECT') touched = el.value !== '' && el.selectedIndex >= 0;
+    else if (t === 'button' || t === 'submit' || t === 'image') touched = false;
+    else if (t === 'password') touched = String(el.value || '') !== '';
+    else touched = String(el.value ?? '').trim() !== ''
+      || (el.type === undefined && String(el.textContent || '').trim() !== '');
     if (touched) violations.push(`${name} 被写入（应当留给你手动处理）`);
   }
   const submitBlocked = true; // applyPlan 不派发任何 submit/click 到提交按钮，P2 会加断言

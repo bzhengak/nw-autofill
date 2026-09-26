@@ -49,8 +49,8 @@ export const SECTIONS = [
   },
   {
     k: 'contact', zh: '联系方式', en: 'Contact', fields: [
-      ['phone', '手机号', 'mobile|phone|cell|contact number|telephone|手机号|联系电话|手机号码|移动电话', 'tel', 'S'],
-      ['altPhone', '备用电话', 'alternative phone|backup contact|其他联系方式|紧急电话', 'tel', 'S'],
+      ['phone', '手机号', 'mobile|phone|cell|contact number|telephone|mobile number|手机号|联系电话|手机号码|移动电话', 'tel', 'S'],
+      ['altPhone', '备用电话', 'alternative phone|backup contact|other contact number|other phone|其他联系方式|其他联系电话|紧急电话', 'tel', 'S'],
       ['dialCode', '电话国家/地区区号', 'dial code|country code|国家或地区电话区号|区号', 'text', ''],
       ['extension', '电话分机', 'extension|ext|phone extension|分机号', 'text', ''],
       ['email', '邮箱', 'email|e-mail|email address|邮箱地址|电子邮箱|电邮', 'email', 'S'],
@@ -458,7 +458,7 @@ export function sectionOf(key) {
  * key 支持 'section.*.field' 通配列表槽位。
  */
 export const EXTRA_ALIASES = {
-  'basics.name': ['贵姓', '姓名（正楷）', '中文姓名', 'name in chinese', '法定姓名', 'legal name'],
+  'basics.name': ['贵姓', '姓名（正楷）', '中文姓名', 'name in chinese', '法定姓名', 'legal name', 'chinese name'],
   'basics.birthDate': ['出生日期（ yyyy-mm-dd ）', '出生年月日', '出生日期 yyyy/mm/dd'],
   'basics.heightCm': ['身高 cm', '身高(cm)', '身高（厘米）'],
   'basics.weightKg': ['体重 kg', '体重(kg)', '体重（公斤）'],
@@ -467,7 +467,7 @@ export const EXTRA_ALIASES = {
   'intent.position': ['应聘岗位', '申请职位', '志愿岗位', '应聘职位'],
   'intent.cities': ['期望工作地', '意向工作地', '期望工作地点', '工作地点偏好', 'expected city', 'desired city', 'expected work location', 'preferred work location'],
   'intent.acceptRelocation': ['是否服从调剂', '服从调剂', '愿意调剂', '接受工作地点调剂'],
-  'intent.channel': ['信息来源', '获知渠道', '如何得知本公司', '招聘渠道来源', '从哪里知道', '从何种渠道了解', '获取招聘信息渠道', '您是通过什么方式知道我们的', '您通过何种渠道了解到这次'],
+  'intent.channel': ['信息来源', '获知渠道', '如何得知本公司', '招聘渠道来源', '从哪里知道', '从何种渠道了解', '获取招聘信息渠道', '您是通过什么方式知道我们的', '您通过何种渠道了解到这次', 'how did you hear about this position', 'how did you hear', 'how you heard about us'],
   'intent.availableDate': ['最早到岗时间', '可到岗日期', '入职时间'],
   'internship.*.company': ['单位名称', '实习单位名称', '所在公司'],
   'internship.*.title': ['岗位', '担任岗位', '实习岗位名称'],

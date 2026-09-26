@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>仿真 SuccessFactors Portal（Swire / Johnnie Walker 结构复刻）</title>
+<style>
+  body { font: 13px/1.7 Arial, sans-serif; margin: 18px; }
+  h3 { font-size: 14px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
+  .sf-row { margin-bottom: 10px; }
+  .sf-label { display: block; }
+  .sf-req { color: #c00; }
+  input[type=text] { width: 260px; padding: 5px 6px; border: 1px solid #bbb; border-radius: 3px; }
+  a.sf-combo { display: inline-block; border: 1px solid #bbb; border-radius: 3px; padding: 4px 8px; color: #333; text-decoration: none; }
+  .sf-hint { color: #888; font-size: 11px; }
+</style>
+</head>
+<body>
+<!--
+  复刻 2026-09-27 从 career10.successfactors.com/portalcareer?company=johnswireP2 导出的真实结构
+  （那份导出是修好 frame 选路之后拿到的：frame#0 · 97 控件 · 39 可见 · 6 个跨源 iframe · 3 个 shadow host）：
+  · 下拉不是 <select>：是 <input type=text role=combobox placeholder="No Selection">，语言切换甚至是 <a role=combobox>
+  · 字段没有 name，标签靠 <label for>；小部分是 aria-label
+  · 日期是 DD/MM/YYYY 文本框（en-GB 区域）
+  · 页尾有 cookie 同意开关（role=switch 的 checkbox），永远不许代勾
+  只复刻结构与命名，用于回归。
+-->
+<form id="sfPortal">
+  <div class="sf-row"><a id="lang" class="sf-combo" role="combobox" aria-label="Language" aria-haspopup="true">English UK</a></div>
+  <div class="sf-row"><label class="sf-label" for="kw">Search by Keyword</label><input type="text" id="kw" name="q" maxlength="50" data-nw-test="keyword"></div>
+  <div class="sf-row"><label class="sf-label" for="loc">Search by Location</label><input type="text" id="loc" name="locationsearch" data-nw-test="location_search"></div>
+
+  <h3>Personal Information</h3>
+  <div class="sf-row"><label class="sf-label" for="title"><span class="sf-req">*</span> Title</label>
+    <input type="text" id="title" role="combobox" placeholder="No Selection" aria-haspopup="true" data-nw-test="title"></div>
+  <div class="sf-row"><label class="sf-label" for="fn"><span class="sf-req">*</span> First Name</label>
+    <input type="text" id="fn" name="firstName" data-nw-test="first_name"></div>
+  <div class="sf-row"><label class="sf-label" for="ln"><span class="sf-req">*</span> Last Name</label>
+    <input type="text" id="ln" name="lastName" data-nw-test="last_name"></div>
+  <div class="sf-row"><label class="sf-label" for="cn">Chinese Name (if applicable)</label>
+    <input type="text" id="cn" name="chineseName" data-nw-test="chinese_name"></div>
+  <div class="sf-row"><label class="sf-label" for="pn">Preferred Name</label>
+    <input type="text" id="pn" name="preferredName" data-nw-test="preferred_name"></div>
+  <div class="sf-row"><label class="sf-label" for="em"><span class="sf-req">*</span> Email</label>
+    <input type="text" id="em" name="email" data-nw-test="email"></div>
+  <div class="sf-row"><label class="sf-label" for="mob"><span class="sf-req">*</span> Mobile Number (e.g. +8529600xxxx or +44xxxx)</label>
+    <input type="text" id="mob" name="mobile" data-nw-test="mobile"></div>
+  <div class="sf-row"><label class="sf-label" for="other">Other Contact Number</label>
+    <input type="text" id="other" name="phone2" data-nw-test="other_phone"></div>
+  <div class="sf-row"><label class="sf-label" for="res"><span class="sf-req">*</span> Country/Region of Residence</label>
+    <input type="text" id="res" role="combobox" placeholder="No Selection" data-nw-test="residence"></div>
+
+  <h3>Work Experience</h3>
+  <div class="sf-row"><label class="sf-label" for="latest"><span class="sf-req">*</span> Latest Job?</label>
+    <input type="text" id="latest" role="combobox" placeholder="No Selection" data-nw-test="latest_job"></div>
+  <div class="sf-row"><label class="sf-label" for="wstart">Start Date</label>
+    <input type="text" id="wstart" aria-label="Start Date" placeholder="DD/MM/YYYY" data-nw-test="work_start"></div>
+  <div class="sf-row"><label class="sf-label" for="wend">End Date</label>
+    <input type="text" id="wend" aria-label="End Date" placeholder="DD/MM/YYYY" data-nw-test="work_end"></div>
+  <div class="sf-row"><label class="sf-label" for="emp"><span class="sf-req">*</span> Name of employer</label>
+    <input type="text" id="emp" data-nw-test="employer"></div>
+  <div class="sf-row"><label class="sf-label" for="jt"><span class="sf-req">*</span> Job Title</label>
+    <input type="text" id="jt" data-nw-test="job_title"></div>
+  <div class="sf-row"><label class="sf-label" for="ls">Last Salary (if applicable)</label>
+    <input type="text" id="ls" data-nw-test="last_salary"></div>
+
+  <h3>Education</h3>
+  <div class="sf-row"><label class="sf-label" for="yoc"><span class="sf-req">*</span> Year of Completion</label>
+    <input type="text" id="yoc" placeholder="YYYY" data-nw-test="year_completion"></div>
+  <div class="sf-row"><label class="sf-label" for="uni"><span class="sf-req">*</span> University/College</label>
+    <input type="text" id="uni" role="combobox" placeholder="No Selection" data-nw-test="university"></div>
+  <div class="sf-row"><label class="sf-label" for="uni2">If other University/College, please specify</label>
+    <input type="text" id="uni2" data-nw-test="university_other"></div>
+  <div class="sf-row"><label class="sf-label" for="lvl"><span class="sf-req">*</span> Education Level</label>
+    <input type="text" id="lvl" role="combobox" placeholder="No Selection" data-nw-test="edu_level"></div>
+  <div class="sf-row"><label class="sf-label" for="maj">Major</label>
+    <input type="text" id="maj" data-nw-test="major"></div>
+
+  <h3>Data Privacy</h3>
+  <div class="sf-row"><label class="sf-label" for="ck1">Required Cookies</label>
+    <input type="checkbox" id="ck1" role="switch" data-nw-test="cookie_required"></div>
+  <div class="sf-row"><label class="sf-label" for="ck2">Consent to all Advertising Cookies</label>
+    <input type="checkbox" id="ck2" role="switch" data-nw-test="cookie_ads"></div>
+  <div class="sf-row"><label class="sf-label" for="pw">Choose Password: <span class="sf-req">*</span></label>
+    <input type="password" id="pw" name="fbclc_pwd" data-nw-test="password"></div>
+
+  <p><input type="submit" value="Apply"></p>
+</form>
+</body>
+</html>

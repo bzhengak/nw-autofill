@@ -70,3 +70,28 @@ Shopee 同一页里同时出现：`硕士毕业学校（本科无需填写）`�
   这是不可接受的行为；表单确实在首方 iframe 里的站点，宁可明确不支持也不能误写。
 
 教训沉淀：**任何"多框广播 + 取第一个应答"的实现都是竞态**，与页面轻重无关。
+
+## SuccessFactors Portal 真实结构（2026-09-27，frame 选路修好后拿到的两份）
+
+`career10.successfactors.com/portalcareer?company=johnswireP2`：frame#0 · 97 控件 · 39 可见 · 6 个跨源 iframe · 3 个 shadow host。
+`career2.successfactors.eu/careers?company=hsbcholdin`：frame#0 · 179 控件 · 63 可见（**落在登录/注册面板**，不是简历表单——导出必须在填简历那一步做）。
+
+家族级事实（不是某一家租户的措辞）：
+1. **它的"下拉"是 `<input type=text role=combobox placeholder="No Selection">`**，语言切换甚至是 `<a role=combobox>`。
+   原来 `kindOf()` 按标签名判：`input` 分支先 return 'text'，role 永远看不到 → 会往下拉里打字。
+   现在 role 先于标签名，且计划阶段就归 `custom_control`（不是等 filler 失败再报红）。
+2. 日期占位符就是 `DD/MM/YYYY`（en-GB），模板推断已覆盖；`labelVia=for` 是主力，`aria-label` 次之。
+3. **`If other University/College, please specify` 是条件框**：上面那个下拉选了 Other 才填。
+   把它当普通学校字段填 = 同一个值写两遍。租户级 skip 掉（`conditional_other`）。
+4. 职位搜索区的 `Search by Keyword` / `Search by Location` 与简历字段同页 → 误填等于把城市名打进取框。
+
+这四条换来三条打分层的通用修正（都在 `tests/core.test.js` 里有断言）：
+- **显式 `<label for>` 不该被长度上限杀掉**：那条 42 字符的 SF 标签被丢弃后，上一节的 `<h3>Personal Information</h3>` 冒充了它的标签。显式来源的上限放宽到 90。
+- **英文右分支**：`Current Job Title` 问的是 title，`current job` 只是修饰词；别名不含标签中心词时降权，否则"是否在职"会赢过"职位名称"。
+- **精确别名能扛住错的章节线索，扛不住列表槽位**：SF 把 Expected Salary 放在 Employment 小节里（章节线索是错的），字面命中该保住；但「政治面貌」在基本信息里时，`family.0.political` 同样是字面命中，却因为是可重复槽位必须让位。
+
+## 判分器自己也要有回归（一次假警报换来的）
+
+`mustNotTouch` 原来用 `el.value` 判"有没有被写过"，而 **checkbox 的 `value` 天生是 `"on"`** →
+所有 cookie 开关都被误判成越界。假警报比漏报更危险：它会让整套门槛失去意义。
+现在按控件类型分开判（checkbox/radio 看 `checked`，select 看 `selectedIndex`，button/submit 永不判）。

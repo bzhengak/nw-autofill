@@ -260,6 +260,10 @@ function detectRepeatedBlocks(root) {
 
 function kindOf(el) {
   if (el.isContentEditable) return 'contenteditable';
+  const role = el.getAttribute?.('role');
+  // role 先于标签判断：SuccessFactors 的"下拉"是 <input role=combobox>（placeholder「No Selection」），
+  // 按标签名判成 text 就会往里打字——不会选中任何值，还会把站点自己的校验搞乱。
+  if (role === 'combobox' || role === 'listbox') return 'combobox';
   const tag = el.tagName.toLowerCase();
   if (tag === 'textarea') return 'textarea';
   if (tag === 'select') return 'select';
@@ -276,8 +280,8 @@ function kindOf(el) {
     if (t === 'url') return 'url';
     return 'text';
   }
-  const role = el.getAttribute?.('role');
-  if (role === 'combobox' || role === 'listbox') return 'combobox';
+  const roleAttr = el.getAttribute?.('role');
+  if (roleAttr === 'combobox' || roleAttr === 'listbox') return 'combobox';
   return 'text';
 }
 

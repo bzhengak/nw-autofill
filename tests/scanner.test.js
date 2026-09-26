@@ -115,6 +115,17 @@ test('itemIndex 按"同一章节内第几块"编号，不被其他 fieldset 顶�
   for (const f of edu) assert.equal(f.itemIndex, 0, `教育经历被编成第 ${f.itemIndex} 块，会把硕士槽漂到本科槽`);
 });
 
+test('SF 的 <input role=combobox> 判成自定义控件，不当成可以打字的文本框', () => {
+  const fields = scan(`
+    <div><label for="title">* Title</label>
+      <input id="title" type="text" role="combobox" placeholder="No Selection" data-nw-test="title"></div>
+    <div><a id="lang" role="combobox" aria-label="Language">English</a></div>`);
+  assert.equal(fields[0].kind, 'combobox', 'role 必须优先于标签名');
+  assert.equal(fields[0].label, 'title');
+  assert.equal(fields[1].kind, 'combobox');
+  assert.equal(fields[1].label, 'language');
+});
+
 test('打分函数：显式来源加分、标题减分、噪声直接淘汰', () => {
   assert.ok(scoreLabelCandidate('Highest Qualification', 0, false, 'label-for')
     > scoreLabelCandidate('Education', 1, true, 'prev-sibling'));

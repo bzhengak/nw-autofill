@@ -206,3 +206,42 @@ test('别名补丁里没有重复键（对象字面量会静默覆盖，加一�
   assert.deepEqual(dup, [], `EXTRA_ALIASES 重复键：${dup.join(', ')}`);
   assert.ok(keys.length > 30, `别名补丁块没抓到内容（keys=${keys.length}）`);
 });
+
+test('英文右分支中心词：Current Job Title 问的是 title，不是"是否在职"', () => {
+  const mk = label => pageField({ label, sectionHint: 'work' });
+  const fs2 = buildFields();
+  const title = fs2.find(f => f.path === 'work.0.title');
+  const current = fs2.find(f => f.path === 'work.0.current');
+  assert.ok(scorePair(mk('Current Most Recent Job Title'), title)
+    > scorePair(mk('Current Most Recent Job Title'), current), '带中心词的别名必须赢过只命中修饰词的别名');
+});
+
+test('精确别名能扛住错的章节线索，但扛不住可重复列表槽位', () => {
+  const fs2 = buildFields();
+  // SF 把 Expected Salary 摆在 Employment 小节里：intent.salary（一次性字段）应赢过 work.0.salary
+  const exp = pageField({ label: 'Expected Salary', sectionHint: 'work' });
+  assert.ok(scorePair(exp, fs2.find(f => f.path === 'intent.salary'))
+    > scorePair(exp, fs2.find(f => f.path === 'work.0.salary')));
+  // 「政治面貌」在基本信息里：family.0.political 也是字面命中，但它是列表槽位，不得反超
+  const pol = pageField({ label: '政治面貌', kind: 'select', sectionHint: 'basics', options: [{ text: '中共党员', value: 'a' }] });
+  assert.ok(scorePair(pol, fs2.find(f => f.path === 'basics.politicalStatus'))
+    > scorePair(pol, fs2.find(f => f.path === 'family.0.political')));
+});
+
+test('SuccessFactors 实测形态：自定义下拉 / 无标签密码框 / cookie 开关都在计划阶段挡下', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'basics.name', '张伟');
+  const fields = [
+    pageField({ label: 'Title', kind: 'combobox', placeholder: 'No Selection' }),
+    pageField({ label: 'Country/Region of Residence', kind: 'combobox' }),
+    pageField({ label: 'Country', kind: 'text', placeholder: 'No Selection' }),
+    pageField({ label: 'Choose Password', type: 'password' }),
+    pageField({ label: 'Retype Password', type: 'password' }),
+    pageField({ label: 'Required Cookies', kind: 'checkbox', options: [{ text: 'Required Cookies', value: 'on' }] }),
+    pageField({ label: 'Consent to all Advertising Cookies', kind: 'checkbox', options: [{ text: 'x', value: 'on' }] }),
+  ];
+  const plan = planFill(fields, p, {});
+  assert.deepEqual(plan.gaps.map(g => g.reason),
+    ['custom_control', 'custom_control', 'custom_control', 'credential', 'credential', 'consent_declaration', 'consent_declaration']);
+  assert.equal(plan.assignments.length, 0, '这些字段一个都不该进入填写计划');
+});

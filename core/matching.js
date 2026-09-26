@@ -139,12 +139,13 @@ export function scorePair(pageField, profileField) {
   let best = 0;
 
   const normLabel = normalize(pageField.label);
+  let exactHit = false;
   for (const alias of profileField.labels) {
     const a = normalize(alias);
     if (!a) continue;
     // 精确命中也要继续走后面的章节/类型调制，
     // 否则"单位名称"这类在 work 与 internship 里都出现的别名会变成平局随机漂移。
-    if (normLabel === a) { best = 1; continue; }
+    if (normLabel === a) { best = 1; exactHit = true; continue; }
     const ac = core(a);
     if (ac && normLabel && core(normLabel) === ac) best = Math.max(best, 0.95);
     if (ac && ac.length >= 2) {
@@ -152,7 +153,22 @@ export function scorePair(pageField, profileField) {
       if (labelCore.includes(ac)) {
         // 按"别名覆盖了标签多少内容"给分：'last name' 命中 'Last Name / Surname' 要比 'name' 更可信
         const cover = Math.min(1, ac.length / Math.max(labelCore.length, 1));
-        best = Math.max(best, 0.55 + 0.4 * cover);
+        // 覆盖率不到一半的包含关系是弱信号：'id number' ⊂ 'other contact number'（0.47）
+        // 一度让证件号字段以 0.599 赢过真正的备用电话，属于"短别名蹭长标签"。
+        // 例外：别名正好落在标签结尾（'job title' ⊂ 'current most recent job title'）是中心词命中，不弱化。
+        if (cover >= 0.5 || labelCore.endsWith(ac)) {
+          let s = 0.55 + 0.4 * cover;
+          // 英文是右分支结构："Current Job Title" 问的是 title，'current job' 只是修饰。
+          // 不带中心词（label 末词）的别名要让位，否则"是否在职"会赢过"职位名称"。
+          const lw = labelCore.split(' ').filter(Boolean);
+          const aw = ac.split(' ').filter(Boolean);
+          const head = lw.length > 1 ? lw[lw.length - 1] : '';
+          const tail = aw.length ? aw[aw.length - 1] : '';
+          const pureLatin = /^[a-z0-9. ]+$/.test(labelCore) && /^[a-z0-9. ]+$/.test(ac);
+          const headHit = !head || !tail || head === tail || head.startsWith(tail) || tail.startsWith(head);
+          if (pureLatin && lw.length > 1 && !headHit) s *= 0.8;
+          best = Math.max(best, s);
+        }
       } else if (ac.includes(labelCore) && labelCore.length >= 2) {
         best = Math.max(best, 0.68);
       } else if (/^[a-z ]+$/.test(ac) && ac.length >= 8) {
@@ -238,8 +254,11 @@ export function scorePair(pageField, profileField) {
     best *= 1.06;
   } else if (pageField.sectionHint && profileField.section && pageField.sectionHint !== profileField.section) {
     // 页面明确说了这块是"基本信息"，那"家庭成员"的同名字段就不该赢；
-    // 两侧都封顶到 1.0 时会打平，所以这里必须用乘法惩罚而不是靠排序
-    best *= 0.75;
+    // 两侧都封顶到 1.0 时会打平，所以这里必须用乘法惩罚而不是靠排序。
+    // 精确别名命中可以扛住一次*启发式章节判定*（SF 把 Expected Salary 摆在 Employment 小节里，
+    // 章节线索是错的而 'expected salary' 是字面命中）；但目标若是 work/family/education 这类
+    // 可重复列表槽位，就不给这个面子——"政治面貌"曾被 0.9 的宽松系数推进 family.0.political。
+    best *= (exactHit && !AMBIGUOUS_SECTIONS.has(profileField.section)) ? 0.9 : 0.75;
   } else if (!pageField.sectionHint && profileField.itemIndex != null) {
     // 页面没有区块证据时，列表槽位（家庭成员、多段经历）让位于一次性字段：
     // 否则"政治面貌"会被家庭成员的 political 抢走，而页面上并没有任何"家庭成员"标题
@@ -453,7 +472,10 @@ export function scoreLabelCandidate(text, depth = 0, isHeading = false, source =
   const raw = String(text || '').trim();
   if (!raw || isNoiseLabel(raw)) return Number.NEGATIVE_INFINITY;
   const t = core(raw);
-  if (!t || t.length > 40) return Number.NEGATIVE_INFINITY;
+  // 长度上限只对"推断出来的邻近文本"生效：<label for> 这种作者显式声明的标签即使很长也是正解
+  // （SF 的「If other University/College, please specify」42 字符，旧上限把它直接丢掉，
+  // 结果让上一节的 h3「Personal Information」冒充标签）
+  if (!t || t.length > (EXPLICIT_LABEL_SOURCES.has(source) ? 90 : 40)) return Number.NEGATIVE_INFINITY;
   let s = 0;
   s += isGenericLabel(raw) ? -7 : 7;
   if (LABEL_KEYWORD_RE.test(t)) s += 8;

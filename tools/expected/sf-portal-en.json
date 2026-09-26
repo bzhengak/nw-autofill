@@ -1,0 +1,24 @@
+{
+  "pageUrl": "https://career10.successfactors.com/portalcareer?company=johnswireP2&rcm_site_locale=en_GB",
+  "expect": {
+    "first_name": "basics.firstName",
+    "last_name": "basics.lastName",
+    "chinese_name": "basics.name",
+    "preferred_name": "basics.preferredName",
+    "email": "contact.email",
+    "mobile": "contact.phone",
+    "other_phone": "contact.altPhone",
+    "work_start": "work.0.startDate",
+    "work_end": "work.0.endDate",
+    "employer": "work.0.company",
+    "job_title": "work.0.title",
+    "last_salary": "work.0.salary",
+    "major": "education.0.major"
+  },
+  "mustNotTouch": [
+    "keyword", "location_search", "title", "residence", "latest_job",
+    "edu_level", "university", "university_other", "year_completion",
+    "cookie_required", "cookie_ads", "password"
+  ],
+  "notes": "SF Portal 的判分重点不是填得多，而是认得出它的下拉不是下拉：<input role=combobox> 打字不会选中任何值，语言切换甚至是 <a role=combobox>；cookie 开关与密码框一个都不能代做。university_other / year_completion 这类「资料里没有对应栏」的字段必须留空，不能拿相近栏位凑数。"
+}

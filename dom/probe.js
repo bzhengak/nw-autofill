@@ -59,14 +59,35 @@ function labelOf(el, doc) {
 }
 
 function componentLibs(doc) {
+  // SuccessFactors 这类页面有 40+ 张样式表、上百个 JS，全量拼字符串会拖到超时
+  // （太古、汇丰两页导出失败最可能的原因）。这里做硬性上限，并在结果里如实标 partial。
   let css = '';
-  for (const s of doc.styleSheets || []) { try { css += [...s.cssRules].map(r => r.cssText).join('\n'); } catch { /* 跨域样式表读不到 */ } }
-  for (const st of doc.querySelectorAll('style')) css += st.textContent || '';
+  let sheets = 0;
+  let truncated = false;
+  for (const s of doc.styleSheets || []) {
+    if (sheets++ >= 12) { truncated = true; break; }
+    try {
+      for (const r of s.cssRules || []) {
+        css += r.cssText || '';
+        if (css.length > 4_000_000) { truncated = true; break; }
+      }
+    } catch { /* 跨域样式表读不到 */ }
+    if (css.length > 4_000_000) break;
+  }
+  for (const st of doc.querySelectorAll('style')) {
+    css += st.textContent || '';
+    if (css.length > 4_000_000) { truncated = true; break; }
+  }
   const cnt = re => (css.match(re) || []).length;
   return {
-    ant: cnt(/\.ant-[a-z-]+/g), element: cnt(/\.el-[a-z-]+/g), vant: cnt(/\.van-[a-z-]+/g),
-    arco: cnt(/\.arco-[a-z-]+/g), rc: cnt(/\.rc-[a-z-]+/g), formily: cnt(/formily/gi), mui: cnt(/\.Mui[A-Za-z]+/g),
-    naive: cnt(/\.n-[a-z]+-[a-z]/g),
+    counts: {
+      ant: cnt(/\.ant-[a-z-]+/g), element: cnt(/\.el-[a-z-]+/g), vant: cnt(/\.van-[a-z-]+/g),
+      arco: cnt(/\.arco-[a-z-]+/g), rc: cnt(/\.rc-[a-z-]+/g), formily: cnt(/formily/gi), mui: cnt(/\.Mui[A-Za-z]+/g),
+      naive: cnt(/\.n-[a-z]+-[a-z]/g),
+    },
+    scannedSheets: sheets,
+    cssSampled: css.length,
+    truncated,
   };
 }
 
@@ -120,9 +141,11 @@ export function probePageStructure(doc, locationHref = '', win = doc.defaultView
     };
   });
 
-  const libs = componentLibs(doc);
+  const libScan = componentLibs(doc);
+  const libs = libScan.counts;
   let shadowHosts = 0;
   doc.querySelectorAll('*').forEach(e => { if (e.shadowRoot) shadowHosts++; });
+  const ranked = Object.entries(libs).sort((a, b) => b[1] - a[1]);
 
   return {
     at: new Date().toISOString(),
@@ -133,8 +156,9 @@ export function probePageStructure(doc, locationHref = '', win = doc.defaultView
       vue: !!(win && (win.Vue || win.__VUE__ || doc.querySelector('[data-v-]'))),
     },
     componentLibs: libs,
-    topLibrary: Object.entries(libs).sort((a, b) => b[1] - a[1])[0][1] > 20
-      ? Object.entries(libs).sort((a, b) => b[1] - a[1])[0][0] : 'none/自定义组件',
+    cssScan: { scannedSheets: libScan.scannedSheets, sampledChars: libScan.cssSampled, truncated: libScan.truncated },
+    topLibrary: (ranked[0]?.[1] || 0) > 20
+      ? ranked[0][0] : 'none/自定义组件',
     totals: {
       controls: fields.length,
       visible: fields.filter(f => f.vis).length,

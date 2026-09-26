@@ -1,7 +1,7 @@
 // 表单扫描：把页面上"可填写的东西"抽成 core/matcher.js 能消费的描述对象。
 // 覆盖 open Shadow DOM、同源 iframe 内的控件、radio/checkbox 分组、重复经历区块。
 
-import { normalize, core, simplify, toHalfWidth } from '../core/matching.js';
+import { normalize, core, simplify, toHalfWidth, pickLabelCandidate } from '../core/matching.js';
 
 const IGNORE_INPUT_TYPES = new Set(['hidden', 'submit', 'button', 'image', 'reset']);
 const CONTROL_SELECTOR = 'input, textarea, select, [contenteditable="true"], [role="combobox"], [role="listbox"]';
@@ -97,64 +97,91 @@ function textOf(node) {
   return clean(node.textContent || node.innerText || '');
 }
 
-/** 尽力而为地找一个控件的标签：label[for] → aria → 祖先 label → 前一个兄弟 → 表格单元 → 最近文本 */
+/** 卡片/小节标题：Moka 把 "Experience"、"Projects" 这类区块题目放在字段旁边，
+ *  当成标签会让整块字段糊到同一个槽位上，必须识别并降权而不是当作普通候选。 */
+const BLOCK_TITLE_CLASS_RE = /(card|section|panel|group|page|list|block|form|item)-(title|header|heading|name)|(?:title|header|heading)$/i;
+
+function isBlockTitle(node) {
+  if (!node || node.nodeType !== 1) return false;
+  if (/^(h[1-6]|legend|caption|summary)$/i.test(node.tagName || '')) return true;
+  const cls = node.className && typeof node.className === 'object' ? String(node.className.baseVal || '') : String(node.className || '');
+  return BLOCK_TITLE_CLASS_RE.test(cls.trim());
+}
+
+/**
+ * 标签解析：收集多个候选再打分选优。
+ * 单一策略在真实站点必错——招行的日期框"标签"全是 placeholder「请选择时间」，
+ * 拼多多有「毕业学院」这种笔误叫法，携程的 SVG 会把 "Created with Sketch." 当文本吐出来。
+ */
 function labelFor(el, doc) {
+  const cands = [];
+  const push = (node, source, depth) => {
+    if (!node) return;
+    if (node.nodeType === 3) {
+      const txt = clean(node.nodeValue);
+      if (txt) cands.push({ text: txt, raw: normRaw(node.nodeValue), source, depth: depth || 0 });
+      return;
+    }
+    // 含表单控件的兄弟节点是"上一个字段"，不是这个字段的标签
+    if (node.querySelector && node.querySelector(CONTROL_SELECTOR)) return;
+    if (node.contains && node.contains(el) && node !== el) return;
+    const txt = textOf(node);
+    if (txt) cands.push({ text: txt, raw: normRaw(node.textContent), source, depth: depth || 0, heading: isBlockTitle(node) });
+  };
+
   const id = el.getAttribute('id');
-  if (id) {
-    const esc = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(id) : id.replace(/([^\w-])/g, '\\$1');
-    const lab = doc.querySelector(`label[for="${esc}"]`);
-    if (lab) { const t = textOf(lab); if (t) return { text: t, raw: normRaw(lab.textContent), source: 'label-for' }; }
-  }
+  if (id) { try { push(doc.querySelector(`label[for="${CSS_escape(id)}"]`), 'label-for', 0); } catch { /* 非法 id */ } }
   const labelledby = el.getAttribute('aria-labelledby');
   if (labelledby) {
-    const parts = labelledby.split(/\s+/).map(x => textOf(doc.getElementById(x))).filter(Boolean);
-    if (parts.length) return { text: parts.join(' '), raw: normRaw(parts.join(' ')), source: 'aria-labelledby' };
+    const parts = labelledby.split(/s+/).map(x => doc.getElementById(x)).filter(Boolean);
+    if (parts.length === 1) push(parts[0], 'aria-labelledby', 0);
+    else if (parts.length > 1) {
+      const txt = parts.map(x => textOf(x)).filter(Boolean).join(' ');
+      if (txt) cands.push({ text: txt, raw: normRaw(txt), source: 'aria-labelledby', depth: 0 });
+    }
   }
-  const ariaRaw = el.getAttribute('aria-label');
-  const aria = clean(ariaRaw);
-  if (aria) return { text: aria, raw: normRaw(ariaRaw), source: 'aria-label' };
-
+  push2(el, cands);
   const wrap = el.closest?.('label');
   if (wrap) {
     const clone = wrap.cloneNode(true);
     clone.querySelectorAll(CONTROL_SELECTOR).forEach(n => n.remove());
-    const t = clean(clone.textContent);
-    if (t) return { text: t, raw: normRaw(wrap.textContent), source: 'wrapped-label' };
+    const txt = clean(clone.textContent);
+    if (txt) cands.push({ text: txt, raw: normRaw(wrap.textContent), source: 'wrapped-label', depth: 0 });
   }
 
-  // 常见结构：<div class="form-item-label">姓名</div><div><input/></div>
   let node = el;
-  for (let hops = 0; hops < 4 && node; hops++) {
-    let sib = node.previousSibling;
-    let guard = 0;
+  for (let hops = 0; hops < 5 && node; hops++) {
+    let sib = node.previousSibling, guard = 0;
     while (sib && guard++ < 6) {
-      if (sib.nodeType === 1) {
-        const t = textOf(sib);
-        if (t && t.length <= 40) return { text: t, raw: normRaw(sib.textContent), source: 'prev-sibling' };
-      } else if (sib.nodeType === 3) {
-        const t = clean(sib.nodeValue);
-        if (t && t.length <= 40) return { text: t, raw: normRaw(sib.nodeValue), source: 'prev-text' };
-      }
+      // 碰到兄弟里另一个字段块就收手：再往前是"别人的标签"，跨块取文本会把卡片题目当成标签
+      if (sib.nodeType === 1 && sib.querySelector?.(CONTROL_SELECTOR)) break;
+      push(sib, 'prev-sibling', hops);
       sib = sib.previousSibling;
     }
-    const cell = node.tagName === 'TD' || node.tagName === 'TH' ? node : null;
-    if (cell && cell.previousElementSibling) {
-      const t = textOf(cell.previousElementSibling);
-      if (t) return { text: t, raw: normRaw(cell.previousElementSibling.textContent), source: 'table-cell' };
+    if (node.tagName === 'TD' || node.tagName === 'TH') push(node.previousElementSibling, 'table-cell', hops);
+    const holder = node.parentElement;
+    if (!holder) break;
+    push(holder.querySelector(':scope > label, :scope > [class*="label"], :scope > [class*="title"], :scope > dt, :scope > th'), 'container-label', hops + 1);
+    const kids = Array.from(holder.children || []).slice(0, 12);
+    for (const k of kids) {
+      if (k === node || (k.contains && k.contains(el))) break;
+      if (k.querySelector && k.querySelector(CONTROL_SELECTOR)) continue;
+      const txt = textOf(k);
+      if (txt && txt.length <= 24) cands.push({ text: txt, raw: normRaw(k.textContent), source: 'container-text', depth: hops + 2, heading: isBlockTitle(k) });
     }
-    node = node.parentElement;
-  }
-
-  const holder = el.closest?.('[class*="item"],[class*="field"],[class*="row"],[class*="form-group"],[class*="Cell"],li,dd');
-  if (holder) {
-    const lab = holder.querySelector(':scope > label, :scope > .label, :scope > [class*="label"], :scope > [class*="title"], :scope > [class*="name"]');
-    const t = textOf(lab);
-    if (t) return { text: t, raw: normRaw(lab.textContent), source: 'holder-label' };
+    if (kids.length && kids[0] === node && hops >= 2) break;
+    node = holder;
   }
 
   const ph = clean(el.getAttribute('placeholder'));
-  if (ph) return { text: ph, raw: ph, source: 'placeholder' };
-  return { text: '', raw: '', source: '' };
+  if (ph) cands.push({ text: ph, raw: ph, source: 'placeholder', depth: 9 });
+  return pickLabelCandidate(cands);
+}
+
+function push2(el, cands) {
+  const ariaRaw = el.getAttribute('aria-label');
+  const aria = clean(ariaRaw);
+  if (aria) cands.push({ text: aria, raw: normRaw(ariaRaw), source: 'aria-label', depth: 0 });
 }
 
 /**
@@ -290,6 +317,10 @@ export function scanForm(root = document) {
   const seenGroups = new Set();
 
   for (const el of raw) {
+    // AntD/五矿/招行式自定义下拉：真身是 div[role=combobox]，里面的 input 没有标签。
+    // 若把它当独立文本框打字进去，值根本不会选中，还可能搞乱站点校验。
+    if ((el.tagName || '').toLowerCase() === 'input' && el.closest?.('[role="combobox"]') !== null
+      && el.closest('[role="combobox"]') !== el) continue;
     let kind = kindOf(el);
     const name = el.getAttribute('name') || '';
 

@@ -423,6 +423,61 @@ export function negationMismatch(optionText, target) {
   return occurrences.every(negatedAt);
 }
 
+/**
+ * 标签质量评估（招行真实结构教出来的：一整排日期字段的"标签"都是 placeholder「请选择时间」，
+ * 直接用会把开始时间/结束时间/获奖时间糊成同一题）。借鉴同类项目 shared/field-text.js 的打分思路，独立实现。
+ */
+const GENERIC_LABEL_RE = /^(请选择.*|请输入.*|请填写.*|请填入.*|请选取.*|please\s*(select|enter|input|choose).*|select.*|enter.*|choose.*|items selected|搜索|search|type to add.*|键入以.*)$/i;
+const NOISE_LABEL_RE = /^(created with sketch|image|icon|logo|svg|picture|photo icon|[\s\W]*)$/i;
+const LABEL_KEYWORD_RE = /(姓名|曾用名|手机|电话|邮箱|邮件|证件|身份|学历|学位|学校|院校|学院|班级|导师|实验室|职位|职务|岗位|公司|单位|企业|部门|城市|地区|籍贯|户口|生源|出生|日期|时间|开始|结束|毕业|入学|成绩|排名|绩点|gpa|外语|英语|等级|证书|奖项|获奖|奖学金|技能|婚姻|政治|面貌|民族|身高|体重|健康|宗教|爱好|特长|期望|意向|到岗|薪资|薪酬|推荐|渠道|理由|评价|描述|职责|内容|关系|联系人|备注|编号|类型|方式|地点|状态|经历|项目|研究|方向|志愿|调剂|微信|邮箱|键入|添加|qualification|nationality|marital|surname|given name|postcode|postal|hometown|guardian|referee|emergency|mobile|telephone|passport|student id|notice period|salary)/i;
+
+/** 作者显式声明的标签来源，优先级高于一切推断文本（SF 的 `<label for>` 旁边就站着 `<legend>Education</legend>`） */
+const EXPLICIT_LABEL_SOURCES = new Set(['label-for', 'aria-labelledby', 'aria-label', 'wrapped-label']);
+
+export function isGenericLabel(text) {
+  const t = core(text);
+  return !t || GENERIC_LABEL_RE.test(String(text || '').trim()) || GENERIC_LABEL_RE.test(t);
+}
+
+export function isNoiseLabel(text) {
+  const raw = String(text || '').trim().replace(/[.!。！？?、,，;；:：]+$/, '');
+  // JS 的 \W 不认中日韩字符，直接套用会把整段中文标签判成噪声（回归时中文表单命中率从 100% 掉到 26%）。
+  if (/[㐀-䶿一-鿿぀-ヿ]/.test(raw)) return false;
+  return NOISE_LABEL_RE.test(raw);
+}
+
+/** @param {boolean} [isHeading] 候选来自小节/卡片标题时降权：它是"这一块的题目"，不是这个字段的标签 */
+export function scoreLabelCandidate(text, depth = 0, isHeading = false, source = '') {
+  const raw = String(text || '').trim();
+  if (!raw || isNoiseLabel(raw)) return Number.NEGATIVE_INFINITY;
+  const t = core(raw);
+  if (!t || t.length > 40) return Number.NEGATIVE_INFINITY;
+  let s = 0;
+  s += isGenericLabel(raw) ? -7 : 7;
+  if (LABEL_KEYWORD_RE.test(t)) s += 8;
+  if (t.length >= 2 && t.length <= 14) s += 4; else if (t.length <= 22) s += 1; else s -= 3;
+  if (!/[，,。;；]/.test(raw)) s += 2;
+  if (/[*＊?？]/.test(raw)) s += 1;               // 带必填/说明星号的通常就是字段名
+  if (/^\d+$/.test(raw)) s -= 10;
+  if (/\d{4}[-/.年]\d{1,2}/.test(raw)) s -= 6;   // 像示例值而不是标签
+  if (isHeading) s -= 9;
+  if (EXPLICIT_LABEL_SOURCES.has(source)) s += 8;
+  s -= depth * 1.5;
+  return s;
+}
+
+/** @param {Array<{text:string, raw?:string, source:string, depth?:number, heading?:boolean}>} cands */
+export function pickLabelCandidate(cands) {
+  let best = null, bestScore = Number.NEGATIVE_INFINITY;
+  for (const c of Array.isArray(cands) ? cands : []) {
+    const s = scoreLabelCandidate(c.text, c.depth || 0, !!c.heading, c.source);
+    if (s > bestScore) { bestScore = s; best = { ...c, score: s }; }
+  }
+  // 全部候选都不合格时宁可返回空：labelRaw 一旦被"落选候选"污染，下游会以为这就是页面标签去猜
+  if (!best || !Number.isFinite(bestScore) || bestScore < -5) return { text: '', raw: '', source: '' };
+  return { text: best.text, raw: best.raw || best.text, source: best.source };
+}
+
 export function boolLike(value) {
   const s = normalize(value);
   if (['是', 'y', 'yes', 'true', '1', '有', '同意', '接受', '需要', 'male'].includes(s)) return true;

@@ -121,7 +121,7 @@ for (const file of forms) {
   if (violations.length) console.log('⚠ 越界：', violations.join('; '));
   if (rows.length) {
     console.log('未命中明细：');
-    for (const r of rows) console.log(`  - ${r.name.padEnd(10)} 期望 ${r.wantPath.padEnd(26)} 实得 ${(r.gotPath || '-').padEnd(26)} [${r.status}] 值 "${r.gotValue}" vs "${r.want}"`);
+    for (const r of rows) console.log(`  - ${String(r.name).padEnd(12)} 期望 ${String(r.wantPath).padEnd(26)} 实得 ${String(r.gotPath || '-').padEnd(26)} [${r.status}] 值 "${String(r.gotValue).slice(0,22)}" vs "${String(r.want).slice(0,22)}"`);
   }
 }
 

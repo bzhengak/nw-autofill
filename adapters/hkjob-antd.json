@@ -10,6 +10,12 @@
     "observed": "德勤租户 /pb/css/vendor.css 内 .ant-* 类 5822 个、.el-* 0 个；另一租户 SU6a8fb99e 同样 6401 个 .ant-*、0 个 .el-*；JS 内含 React/antd 标记",
     "publicApis": "/mc/position/campus、/resume/info/get/、/delivery/resume/、/delivery/templateResume/get/（从公开 bundle 提取，未调用）",
     "verified": false,
+    "realStructure": {
+      "antdSkin": "wecruit /pb/resumeOperation.html（两份租户导出）：topLibrary=ant（.ant-* 7489/7498 个），级联字段成对出现「现居住地*」+ 一个 (无) 标签控件 → 下拉真身是 div[role=combobox]，内部匿名 input 必须合并不字段",
+      "legacySkin": "www.hotjob.cn/wt/…/showNewResume（221 控件）：无 ant/el 计数，原生 <select> + 服务器渲染，选项文本形如 --请选择--/初中及以下/高中/技校，可直接走 select 写入路径",
+      "flattenedFamily": "两套皮肤都把家庭成员摊平成带称谓的字段：「父亲姓名」「父亲工作单位」「父亲职务」「父亲现居住地」「母亲姓名…」，槽位号必须由 relationSlotPins 按资料里 family.N.relation 定位",
+      "genericDateLabels": "招行（AntD 系）日期字段标签全是「请选择时间」，真实语义只在邻近文本里 → 标签候选打分兜住"
+    },
     "todo": "表单控件的真实交互（Select 虚拟列表、级联、日期面板）必须在已登录会话里确认后才能置 verified:true"
   },
   "controlHints": {
@@ -25,6 +31,20 @@
     { "path": "education.*.school", "add": ["最高学历毕业院校", "毕业院校", "学校名称"] },
     { "path": "intent.cities", "add": ["意向工作城市", "期望工作地", "工作地点"] },
     { "path": "intent.position", "add": ["应聘职位", "志愿职位"] }
+  ],
+  "relationSlotPins": [
+    { "match": "re:(父亲|爸爸).*(姓名|名字)", "relation": "父亲", "subfield": "name" },
+    { "match": "re:(父亲|爸爸).*(工作单位|单位)", "relation": "父亲", "subfield": "employer" },
+    { "match": "re:(父亲|爸爸).*职务", "relation": "父亲", "subfield": "position" },
+    { "match": "re:(父亲|爸爸).*联系电话", "relation": "父亲", "subfield": "phone" },
+    { "match": "re:(母亲|妈妈).*(姓名|名字)", "relation": "母亲", "subfield": "name" },
+    { "match": "re:(母亲|妈妈).*(工作单位|单位)", "relation": "母亲", "subfield": "employer" },
+    { "match": "re:(母亲|妈妈).*职务", "relation": "母亲", "subfield": "position" },
+    { "match": "re:(母亲|妈妈).*联系电话", "relation": "母亲", "subfield": "phone" },
+    { "match": "re:(配偶|爱人).*(姓名|名字)", "relation": "配偶", "subfield": "name" },
+    { "match": "re:(配偶|爱人).*(工作单位|单位)", "relation": "配偶", "subfield": "employer" },
+    { "match": "re:(配偶|爱人).*职务", "relation": "配偶", "subfield": "position" },
+    { "match": "re:(配偶|爱人).*联系电话", "relation": "配偶", "subfield": "phone" }
   ],
   "skip": [
     { "match": "身份证正面", "reason": "photo_upload" },

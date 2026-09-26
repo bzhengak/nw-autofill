@@ -24,8 +24,8 @@ const BLOCK_PATTERNS = [
 
 const SUBJECTIVE_OK = /(姓名|手机|电话|邮箱|身份证|证件|学历|学位|学校|专业|公司|职位|城市|日期|时间|薪资|到岗|编号|地址)/i;
 
-/** 学位名等价：站点的「硕士」与资料里的「硕士研究生 / Master」要能对上 */
-function degreeEquivalent(a, b) {
+/** 摊平字段里的"归属"等价：站点的「硕士」要能对上资料里的「硕士研究生 / Master」，「父亲」对上 Father */
+function slotValueEquivalent(a, b) {
   const x = normalize(a), y = normalize(b);
   if (!x || !y) return false;
   if (x === y || core(x) === core(y)) return true;
@@ -36,17 +36,17 @@ function degreeEquivalent(a, b) {
 }
 
 /**
- * 摊平式学历字段（Moka：「硕士毕业学校（本科无需填写）」「本科毕业学校」）→ profile 里真正读那个学位的槽位。
- * 定位不到返回 null，交人工；绝不用"最像的那个学历"猜，猜错就是把硕士学校填进本科栏。
+ * 摊平型列表字段（学历：「硕士毕业学校」；家庭成员：「父亲工作单位」）→ profile 里真正属于那个归属的槽位。
+ * 定位不到返回 null，交人工；绝不用"最像的那一行"猜，猜错就是把母亲单位填进父亲那行。
  */
-function resolveDegreeSlot(profile, schemaFields, slot) {
+function resolveListSlot(profile, schemaFields, slot) {
   const hits = [];
   for (let i = 0; i < 12; i++) {
-    const degreeValue = String(getValueByPath(profile, `education.${i}.degree`) ?? '').trim();
-    if (degreeValue && degreeEquivalent(degreeValue, slot.degree)) hits.push(i);
+    const got = String(getValueByPath(profile, `${slot.section}.${i}.${slot.keyField}`) ?? '').trim();
+    if (got && slotValueEquivalent(got, slot.want)) hits.push(i);
   }
   if (!hits.length) return null;
-  const path = `education.${hits[0]}.${slot.subfield}`;
+  const path = `${slot.section}.${hits[0]}.${slot.subfield}`;
   const field = schemaFields.find(f => f.path === path);
   const value = String(getValueByPath(profile, path) ?? '').trim();
   if (!field || !value) return null;
@@ -83,15 +83,17 @@ function blockReason(pageField) {
 export function resolveOption(pageField, value) {
   const opts = pageField.options || [];
   if (!opts.length) return null;
-  const target = normalize(value);
+  // 站点选项里夹空格是常态（"前 10%"、"1 年以内"、"GPA 3.5"），归一化不去内嵌空格就会选不中
+  const sq = s => String(s || '').replace(/\s+/g, '');
+  const target = sq(normalize(value));
   if (!target) return null;
-  const eqs = equivalentsOf(value).map(x => normalize(x)).filter(Boolean);
-  const exact = opts.find(o => eqs.includes(normalize(o.text)) || eqs.includes(core(o.text)));
+  const eqs = [...new Set([target, ...equivalentsOf(value).map(x => sq(normalize(x)))])].filter(Boolean);
+  const exact = opts.find(o => eqs.includes(sq(normalize(o.text))) || eqs.includes(sq(core(o.text))));
   if (exact) return exact;
   const targetSig = signals(target);
   let best = null, bestScore = 0;
   for (const o of opts) {
-    const ot = normalize(o.text);
+    const ot = sq(normalize(o.text));
     if (!ot) continue;
     if (eqs.some(eq => !negationMismatch(o.text, eq) && (ot.includes(eq) || eq.includes(ot)))) {
       // 包含即视为强匹配：'硕士' → '硕士研究生' / 'Master of Science'
@@ -140,16 +142,16 @@ export function planFill(pageFields, profile, opts = {}) {
     }
     const slot = (slotPins || new Map()).get(index);
     if (slot) {
-      const hit = resolveDegreeSlot(profile, schemaFields, slot);
+      const hit = resolveListSlot(profile, schemaFields, slot);
       if (hit) {
         pinned.push({
           index, path: hit.path, label: pf.label || '', score: 1, value: hit.value,
           profileType: hit.field.type, sensitive: hit.field.sensitive,
           tier: hit.ambiguous || hit.field.sensitive ? 'review' : 'auto', pinned: true,
-          note: hit.ambiguous ? `资料里有 ${hit.slots.length} 段「${slot.degree}」，取第一段，请复核` : `按学位「${slot.degree}」定位学历槽位`,
+          note: hit.ambiguous ? `资料里有 ${hit.slots.length} 行「${slot.want}」，取第一行，请复核` : `按「${slot.want}」定位槽位`,
         });
       } else {
-        gaps.push({ index, label: pf.label || '(无标签)', reason: 'degree_slot_unresolved', kind: pf.kind, note: `资料里没有「${slot.degree}」这一段学历或该栏为空，需人工填写` });
+        gaps.push({ index, label: pf.label || '(无标签)', reason: slot.gapReason, kind: pf.kind, note: `资料里没有「${slot.want}」这一行（或该栏为空），需人工填写` });
       }
       return;
     }

@@ -47,7 +47,7 @@ export const SECTIONS = [
   },
   {
     k: 'contact', zh: '联系方式', en: 'Contact', fields: [
-      ['phone', '手机号', 'mobile|phone|cell|contact number|telephone|手机号|联系电话|手机号码', 'tel', 'S'],
+      ['phone', '手机号', 'mobile|phone|cell|contact number|telephone|手机号|联系电话|手机号码|移动电话', 'tel', 'S'],
       ['altPhone', '备用电话', 'alternative phone|backup contact|其他联系方式|紧急电话', 'tel', 'S'],
       ['email', '邮箱', 'email|e-mail|email address|邮箱地址|电子邮箱|电邮', 'email', 'S'],
       ['wechat', '微信号', 'wechat|weixin id|微信', 'text', ''],
@@ -75,7 +75,7 @@ export const SECTIONS = [
       ['lab', '实验室/课题组', 'lab|laboratory|research group|课题组|实验室', 'text', ''],
       ['trainingMode', '培养方式', 'study mode|training mode|full time|学习形式|培养方式|全日制', 'enum', 'O:trainingMode'],
       ['enrollDate', '入学时间', 'start date|enrollment date|from|入学|开始时间', 'month', ''],
-      ['gradDate', '毕业时间', 'graduation date|end date|to|毕业|毕业年月', 'month', ''],
+      ['gradDate', '毕业时间', 'graduation date|end date|to|毕业|毕业年月|结束时间', 'month', ''],
       ['graduateYear', '毕业年份', 'graduation year|expected graduation|毕业年份', 'year', ''],
       ['gpa', 'GPA', 'gpa|grade point average|绩点|平均绩点', 'text', ''],
       ['gpaScale', 'GPA 满分', 'gpa scale|out of 4|满分', 'text', ''],
@@ -215,7 +215,7 @@ export const SECTIONS = [
       ['cities', '意向城市', 'preferred city|desired location|work location|意向城市|期望工作地|工作地点', 'text', 'L'],
       ['acceptRelocation', '是否接受调剂/异地', 'relocation|accept transfer|是否接受调剂|服从分配|接受调剂|是否接受工作地点调剂|可接受调剂公司|期望工作性质', 'bool', ''],
       ['acceptPositionAdjust', '是否接受岗位调剂', 'position adjustment|accept role adjustment|是否接受岗位调剂|岗位调剂', 'bool', ''],
-      ['interviewCity', '面试地点', 'interview location|interview city|面试地点|意向面试城市', 'text', ''],
+      ['interviewCity', '面试地点', 'interview location|interview city|面试地点|意向面试城市|期望面试地点|面试城市', 'text', ''],
       ['availableDate', '最早到岗时间', 'available date|available from|earliest available date|earliest start date|到岗时间|最早入职|可入职时间', 'date', ''],
       ['durationMonths', '可实习时长（月）', 'internship duration|available months|duration|实习时长|可实习几个月', 'num', ''],
       ['weeklyDays', '每周可出勤天数', 'days per week|weekly availability|每周天数|实习天数', 'num', ''],

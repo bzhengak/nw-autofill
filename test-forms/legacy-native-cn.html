@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>仿真老式门户（hotjob /wt 服务器渲染 + 原生 select）</title>
+<style>
+  body { font: 14px/1.8 "SimSun", serif; margin: 18px; }
+  table { border-collapse: collapse; }
+  td { border: 1px solid #ccc; padding: 4px 6px; }
+  th { background: #f5f5f5; text-align: right; padding: 4px 6px; border: 1px solid #ccc; }
+  h2 { font-size: 15px; background: #eee; padding: 4px 8px; }
+</style>
+</head>
+<body>
+<!--
+  复刻 2026-09-26 导出的 www.hotjob.cn/wt/…/showNewResume（中移/国企银行常用老式门户）：
+  · 无 React/Vue 组件库，表单是服务器渲染的 table + 原生 <select>（选项里带 --请选择--）
+  · 小节用 <h2> 标题，字段名在 <th> 里
+  · "家庭主要成员"不是可增删列表，而是按称谓摊平：父亲姓名/父亲工作单位/父亲职务/母亲…
+  · 有独立的简历附件上传（用户自己处理）
+  仅复刻结构与命名，用于回归；真实站点的级联下拉与保存动作未验证，也不在本插件职责内。
+-->
+<form id="legacyForm" method="post" action="#">
+  <h2>一、基本信息</h2>
+  <table>
+    <tr><th>姓名*</th><td><input type="text" name="username" data-nw-test="name"></td></tr>
+    <tr><th>性别*</th><td><select name="sex" data-nw-test="gender"><option value="">--请选择--</option><option>男</option><option>女</option></select></td></tr>
+    <tr><th>出生日期*</th><td><input type="text" name="birthdate" data-nw-test="birth" placeholder="YYYY-MM-DD"></td></tr>
+    <tr><th>民族*</th><td><select name="nation" data-nw-test="nation"><option value="">--请选择--</option><option>汉族</option><option>回族</option></select></td></tr>
+    <tr><th>婚姻状况*</th><td><select name="marriage" data-nw-test="marriage"><option value="">--请选择--</option><option>未婚</option><option>已婚</option></select></td></tr>
+    <tr><th>政治面貌*</th><td><select name="polity" data-nw-test="polity"><option value="">--请选择--</option><option>中共党员</option><option>共青团员</option><option>群众</option></select></td></tr>
+    <tr><th>证件类型*</th><td><select name="idtype" data-nw-test="idtype"><option value="">--请选择--</option><option>身份证</option><option>护照</option></select></td></tr>
+    <tr><th>证件号码*</th><td><input type="text" name="idno" data-nw-test="idno"></td></tr>
+    <tr><th>移动电话*</th><td><input type="text" name="mobile" data-nw-test="mobile"></td></tr>
+    <tr><th>电子邮箱*</th><td><input type="text" name="email" data-nw-test="email"></td></tr>
+    <tr><th>户口所在地*</th><td><select name="hukou" data-nw-test="hukou"><option value="">请选择</option><option>北京</option><option>上海</option><option>江苏省</option></select></td></tr>
+    <tr><th>籍贯*</th><td><input type="text" name="native" data-nw-test="native"></td></tr>
+    <tr><th>高考生源地*</th><td><select name="gaokao" data-nw-test="gaokao"><option value="">请选择</option><option>北京</option><option>江苏省</option></select></td></tr>
+    <tr><th>身高(CM)*</th><td><input type="text" name="height" data-nw-test="height"></td></tr>
+    <tr><th>体重(KG)*</th><td><input type="text" name="weight" data-nw-test="weight"></td></tr>
+  </table>
+
+  <h2>二、求职意向</h2>
+  <table>
+    <tr><th>接受调剂*</th><td><select name="adjust" data-nw-test="adjust"><option value="">--请选择--</option><option>是</option><option>否</option></select></td></tr>
+    <tr><th>期望面试地点*</th><td><select name="interviewcity" data-nw-test="interview"><option value="">--请选择--</option><option>广州</option><option>北京</option><option>南京</option></select></td></tr>
+    <tr><th>期望工作地点*</th><td><input type="text" name="wisharea" data-nw-test="wisharea"></td></tr>
+    <tr><th>您通过何种渠道了解到这次招聘*</th><td><select name="channel" data-nw-test="channel"><option value="">--请选择--</option><option>学校就业网</option><option>企业官网</option><option>微信公众号</option></select></td></tr>
+  </table>
+
+  <h2>三、教育经历</h2>
+  <table>
+    <tr><th>开始时间*</th><td><input type="text" name="edu_start" data-nw-test="edu_start" placeholder="YYYY-MM-DD"></td></tr>
+    <tr><th>结束时间*</th><td><input type="text" name="edu_end" data-nw-test="edu_end" placeholder="YYYY-MM-DD"></td></tr>
+    <tr><th>学校*</th><td><input type="text" name="school" data-nw-test="school"></td></tr>
+    <tr><th>学历*</th><td><select name="edulevel" data-nw-test="edulevel"><option value="">--请选择--</option><option>大专</option><option>本科</option><option>硕士研究生</option><option>博士研究生</option></select></td></tr>
+    <tr><th>学位*</th><td><select name="edudegree" data-nw-test="edudegree"><option value="">--请选择--</option><option>学士</option><option>硕士</option><option>博士</option></select></td></tr>
+    <tr><th>专业*</th><td><input type="text" name="major" data-nw-test="major"></td></tr>
+    <tr><th>是否全日制*</th><td><select name="fulltime" data-nw-test="fulltime"><option value="">--请选择--</option><option>是</option><option>否</option></select></td></tr>
+    <tr><th>成绩排名*</th><td><select name="rank" data-nw-test="rank"><option value="">--请选择--</option><option>前10%</option><option>前20%</option><option>前30%</option></select></td></tr>
+  </table>
+
+  <h2>四、家庭主要成员</h2>
+  <table>
+    <tr><th>父亲姓名*</th><td><input type="text" name="f_name" data-nw-test="father_name"></td>
+      <th>父亲工作单位*</th><td><input type="text" name="f_unit" data-nw-test="father_unit"></td></tr>
+    <tr><th>父亲职务*</th><td><input type="text" name="f_post" data-nw-test="father_post"></td>
+      <th>父亲联系电话*</th><td><input type="text" name="f_tel" data-nw-test="father_tel"></td></tr>
+    <tr><th>母亲姓名*</th><td><input type="text" name="m_name" data-nw-test="mother_name"></td>
+      <th>母亲工作单位*</th><td><input type="text" name="m_unit" data-nw-test="mother_unit"></td></tr>
+    <tr><th>配偶姓名*</th><td><input type="text" name="s_name" data-nw-test="spouse_name"></td>
+      <th>配偶工作单位*</th><td><input type="text" name="s_unit" data-nw-test="spouse_unit"></td></tr>
+  </table>
+
+  <h2>五、其他</h2>
+  <table>
+    <tr><th>兴趣爱好、特长*</th><td><textarea name="hobby" data-nw-test="hobby"></textarea></td></tr>
+    <tr><th>自我评价</th><td><textarea name="selfeval" data-nw-test="selfeval"></textarea></td></tr>
+    <tr><th>简历附件</th><td><input type="file" name="attachment" data-nw-test="attachment"></td></tr>
+    <tr><th>验证码*</th><td><input type="text" name="captcha" data-nw-test="captcha"><img src="about:blank" alt="captcha"></td></tr>
+  </table>
+
+  <p><input type="button" value="保 存"> <input type="submit" value="提 交"></p>
+</form>
+</body>
+</html>

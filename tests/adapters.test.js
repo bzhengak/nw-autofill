@@ -98,8 +98,9 @@ test('degreeSlotPins：摊平学历按资料里的学位定位槽位，定位不
     pf({ label: '高中毕业学校' }),
   ];
   const { slotPins } = planFromAdapter(fields, moka);
-  assert.deepEqual(slotPins.get(0), { degree: '硕士', subfield: 'school' });
-  assert.deepEqual(slotPins.get(1), { degree: '本科', subfield: 'school' });
+  const s0 = slotPins.get(0), s1 = slotPins.get(1);
+  assert.deepEqual([s0.section, s0.keyField, s0.want, s0.subfield, s0.gapReason], ['education', 'degree', '硕士', 'school', 'degree_slot_unresolved']);
+  assert.deepEqual([s1.want, s1.subfield], ['本科', 'school']);
   const plan = planFill(fields, sampleProfile(), { adapter: moka });
   assert.deepEqual(plan.assignments.map(a => a.path), ['education.0.school', 'education.1.school']);
   assert.deepEqual(plan.gaps.map(g => g.reason), ['degree_slot_unresolved'], '资料里没有高中学位，高中栏必须留在待人工');
@@ -108,7 +109,24 @@ test('degreeSlotPins：摊平学历按资料里的学位定位槽位，定位不
 test('degreeSlotPins 不看 placeholder：「请输入本科学校」不能把硕士栏串到本科槽', () => {
   const moka = ADAPTERS.find(a => a.id === 'moka');
   const fields = [pf({ label: '硕士专业（本科无需填写）', placeholder: '请输入本科专业' })];
-  assert.deepEqual(planFromAdapter(fields, moka).slotPins.get(0), { degree: '硕士', subfield: 'major' });
+  const slot = planFromAdapter(fields, moka).slotPins.get(0);
+  assert.deepEqual([slot.want, slot.subfield], ['硕士', 'major']);
+});
+
+test('relationSlotPins：「父亲工作单位」按资料里的称谓定位 family 槽位，没有配偶就交人工', () => {
+  const hj = ADAPTERS.find(a => a.id === 'hkjob-antd');
+  const fields = [
+    pf({ label: '父亲姓名' }),
+    pf({ label: '父亲工作单位' }),
+    pf({ label: '母亲姓名' }),
+    pf({ label: '配偶姓名' }),
+  ];
+  const { slotPins } = planFromAdapter(fields, hj);
+  assert.deepEqual([slotPins.get(0).section, slotPins.get(0).want, slotPins.get(0).subfield], ['family', '父亲', 'name']);
+  assert.deepEqual([slotPins.get(1).want, slotPins.get(1).subfield], ['父亲', 'employer']);
+  const plan = planFill(fields, sampleProfile(), { adapter: hj });
+  assert.deepEqual(plan.assignments.map(a => a.path), ['family.0.name', 'family.0.employer', 'family.1.name']);
+  assert.deepEqual(plan.gaps.map(g => g.reason), ['relation_slot_unresolved'], '资料里没有配偶这一行，配偶栏必须留在待人工');
 });
 
 test('适配器校验拒绝不存在的教育子字段', () => {

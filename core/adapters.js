@@ -7,11 +7,12 @@
 import { SECTIONS } from './profile-schema.js';
 
 const FORBIDDEN_KEYS = /^(fetch|url|endpoint|remote|script|src|inject|eval|postMessage|request|ajax|href)$/i;
-const ALLOWED_KEYS = new Set(['id', 'name', 'domains', 'paths', 'family', 'notes', 'evidence', 'pins', 'degreeSlotPins', 'aliases', 'dateFormats', 'skip', 'controlHints', 'version']);
+const ALLOWED_KEYS = new Set(['id', 'name', 'domains', 'paths', 'family', 'notes', 'evidence', 'pins', 'degreeSlotPins', 'relationSlotPins', 'aliases', 'dateFormats', 'skip', 'controlHints', 'version']);
 // 嵌套结构白名单：任何多出来的键（尤其是能发请求的键）都在校验期拒掉
 const NESTED_ALLOWED = {
   pins: new Set(['match', 'path', 'note']),
   degreeSlotPins: new Set(['match', 'degree', 'subfield', 'note']),
+  relationSlotPins: new Set(['match', 'relation', 'subfield', 'note']),
   skip: new Set(['match', 'reason', 'note']),
   dateFormats: new Set(['match', 'format', 'note']),
   aliases: new Set(['path', 'add']),
@@ -19,9 +20,15 @@ const NESTED_ALLOWED = {
 };
 
 /** Moka 把每段学历摊平成带学位名的字段（「硕士毕业学校（本科无需填写）」「本科毕业学校」），
- *  这类字段不能靠标签相似度猜槽位：必须由 degreeSlotPins 声明"这条规则属于哪个学位、哪个子字段"，
- *  再到 profile 的 education.N.degree 里找实际读的那个学位。 */
+ *  老式门户把家庭成员摊平成带称谓的字段（「父亲姓名」「母亲工作单位」）。
+ *  两类都不能靠标签相似度猜槽位：必须由规则声明"这条属于哪个学位/称谓、哪个子字段"，
+ *  再到 profile 的 education.N.degree / family.N.relation 里找实际是那一行的资料。 */
 const EDUCATION_SUBFIELDS = new Set((((SECTIONS.find(s => s.k === 'education') || {}).fields) || []).map(t => t[0]));
+const FAMILY_SUBFIELDS = new Set((((SECTIONS.find(s => s.k === 'family') || {}).fields) || []).map(t => t[0]));
+const SLOT_RULE_KINDS = {
+  degreeSlotPins: { section: 'education', wantKey: 'degree', subfields: EDUCATION_SUBFIELDS, gapReason: 'degree_slot_unresolved' },
+  relationSlotPins: { section: 'family', wantKey: 'relation', subfields: FAMILY_SUBFIELDS, gapReason: 'relation_slot_unresolved' },
+};
 
 function scanKeys(node, trail, errors) {
   if (!node || typeof node !== 'object') return;
@@ -75,10 +82,12 @@ export function validateAdapter(raw) {
   checkRules(raw.pins, 'pins');
   checkRules(raw.skip, 'skip');
   checkRules(raw.dateFormats, 'dateFormats');
-  for (const r of raw.degreeSlotPins || []) {
-    if (!r.match) errors.push(`degreeSlotPins 规则缺少 match`);
-    if (!r.degree) errors.push(`degreeSlotPins 规则缺少 degree（硕士/本科/高中…）：${r.match}`);
-    if (!EDUCATION_SUBFIELDS.has(String(r.subfield || ''))) errors.push(`degreeSlotPins.subfield 不是教育经历的字段：${r.subfield}`);
+  for (const [kind, spec] of Object.entries(SLOT_RULE_KINDS)) {
+    for (const r of raw[kind] || []) {
+      if (!r.match) errors.push(`${kind} 规则缺少 match`);
+      if (!r[spec.wantKey]) errors.push(`${kind} 规则缺少 ${spec.wantKey}（硕士/本科 或 父亲/母亲…）：${r.match}`);
+      if (!spec.subfields.has(String(r.subfield || ''))) errors.push(`${kind}.subfield 不是 ${spec.section} 的字段：${r.subfield}`);
+    }
   }
   for (const a of raw.aliases || []) if (!a.path || !Array.isArray(a.add)) errors.push(`aliases 条目需要 path 与 add 数组`);
   return errors;
@@ -144,16 +153,21 @@ export function planFromAdapter(pageFields, adapter) {
     for (const s of adapter.skip || []) {
       if (labelHits(hay, s.match)) { skip.set(i, s.reason || 'adapter_skip'); return; }
     }
-    // 学历槽位优先于普通钉位：Moka 把每段学历摊平成"硕士毕业学校/本科毕业学校"，
-    // 槽位号取决于用户资料里那条学历是哪一级，不能像 pins 那样写死。
+    // 摊平型槽位规则优先于普通钉位：学历（硕士/本科）与家庭成员（父亲/母亲）都是
+    // "标签里写着 belonging，槽位号却要去看资料"的字段，猜错就是把母亲单位填进父亲那行。
     // 只在标签/name/id 上判定（placeholder 常写"请输入本科学校"这种示例，拿它定槽位会串档）；
-    // 一条标签同时提到两个学位时（"硕士毕业学校（本科无需填写）"），取学位名出现最早的那个。
+    // 一条标签同时提到两个归属时（"硕士毕业学校（本科无需填写）"），取字样出现最早的那个。
     let bestSlot = null;
-    for (const sp of adapter.degreeSlotPins || []) {
-      if (!labelHits(slotHay, sp.match)) continue;
-      const at = slotHay.toLowerCase().indexOf(String(sp.degree || '').toLowerCase());
-      const rank = at < 0 ? 999 : at;
-      if (!bestSlot || rank < bestSlot.rank) bestSlot = { rank, slot: { degree: sp.degree, subfield: sp.subfield } };
+    for (const [kind, spec] of Object.entries(SLOT_RULE_KINDS)) {
+      for (const sp of adapter[kind] || []) {
+        if (!labelHits(slotHay, sp.match)) continue;
+        const want = String(sp[spec.wantKey] || '');
+        const at = slotHay.toLowerCase().indexOf(want.toLowerCase());
+        const rank = at < 0 ? 999 : at;
+        if (!bestSlot || rank < bestSlot.rank) {
+          bestSlot = { rank, slot: { section: spec.section, keyField: spec.wantKey, want, subfield: sp.subfield, gapReason: spec.gapReason } };
+        }
+      }
     }
     if (bestSlot) { slotPins.set(i, bestSlot.slot); return; }
     for (const p of adapter.pins || []) {

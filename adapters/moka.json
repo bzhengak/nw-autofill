@@ -11,7 +11,7 @@
     "blocked": "对 app.mokahr.com 的 direct HTTP 抓取失败；改由真实浏览器（Edge，只读、未登录）验证",
     "browserCheck": {
       "at": "2026-09-26",
-      "url": "app.mokahr.com/campus-recruitment/kpmg/74217",
+      "site": "app.mokahr.com/campus-recruitment/kpmg/74217",
       "observed": "落地页 readyState=complete，mount=#app，window.React 存在；聚合 CSS 中 .ant-* / .el-* / .van-* / .arco-* 均为 0 → 确认 React + Moka 自研组件；可见 input 仅 2 个，简历表单体在登录后才渲染"
     },
     "verified": "partial",

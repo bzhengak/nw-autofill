@@ -6,6 +6,9 @@ import { core, normalize } from '../core/matching.js';
 
 const CONTROL_SELECTOR = 'input, textarea, select, [contenteditable="true"], [role="combobox"], [role="spinbutton"], [role="listbox"]';
 const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
+// 导出物自带版本号：用户贴回来的 JSON 能直接证明"他浏览器里跑的是哪一版探针"，
+// 不用再靠"你是不是重载了扩展"这种对话去猜。
+const PROBE_BUILD = '2026-09-27-1';
 
 function escapeId(id) {
   return (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(id) : String(id).replace(/([^\w-])/g, '\\$1');
@@ -147,7 +150,31 @@ export function probePageStructure(doc, locationHref = '', win = doc.defaultView
   doc.querySelectorAll('*').forEach(e => { if (e.shadowRoot) shadowHosts++; });
   const ranked = Object.entries(libs).sort((a, b) => b[1] - a[1]);
 
+  // 子框地图：导出取到 0 控件时，这份地图就是"表单藏在哪个框里"的证据。
+  // 同源判定按 origin 比对（不能只靠"访问 contentDocument 会不会抛"——jsdom 不实施同源隔离，
+  // 真浏览器会抛，两者行为不一致会让这里的诊断失真）。
+  const here = (() => { try { return new URL(String(locationHref)).origin; } catch { return ''; } })();
+  const iframeMap = Array.from(doc.querySelectorAll('iframe')).slice(0, 24).map(f => {
+    const src = String(f.src || f.getAttribute('data-src') || '').slice(0, 110);
+    let sameOrigin = false, controls = null;
+    try {
+      const iwin = f.contentWindow;
+      const idoc = f.contentDocument;
+      const there = iwin && iwin.location ? iwin.location.origin : '';
+      const childUrl = iwin && iwin.location ? String(iwin.location.href || '') : '';
+      // about:blank / srcdoc 由父页派生，真浏览器里同源（jsdom 会把 origin 报成 'null'，所以按 URL 判）
+      const isBlank = !childUrl || /^about:(blank|srcdoc)/.test(childUrl);
+      sameOrigin = isBlank || Boolean(here && there && there === here);
+      if (sameOrigin && idoc && idoc.querySelectorAll) {
+        controls = idoc.querySelectorAll('input,textarea,select,[role="combobox"],[contenteditable="true"]').length;
+      }
+    } catch { /* 跨源访问会抛：这正是我们要报告的边界，不重试 */ }
+    return { src, frameName: f.getAttribute('name') || undefined, sameOrigin, controls };
+  });
+
   return {
+    probeBuild: PROBE_BUILD,
+    isTopFrame: (() => { try { return win ? win.top === win : true; } catch { return false; } })(),
     at: new Date().toISOString(),
     url: String(locationHref).slice(0, 110),
     title: norm(doc.title).slice(0, 40),
@@ -172,6 +199,7 @@ export function probePageStructure(doc, locationHref = '', win = doc.defaultView
     },
     sections: [...new Set([...doc.querySelectorAll('h1,h2,h3,h4,legend,caption,[class*="step"],[role="tab"]')]
       .map(e => norm(e.textContent)).filter(t => t && t.length <= 16))].slice(0, 24),
+    iframeMap,
     fields: fields.filter(f => f.vis).slice(0, 200),
     note: '本输出不含任何已填写内容，只有字段结构与站点自带候选项文案。',
   };

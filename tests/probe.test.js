@@ -61,3 +61,23 @@ test('框架与组件库判定不抛错并给出结构', () => {
   assert.ok(['none/自定义组件', 'ant', 'element'].includes(out.topLibrary) || typeof out.topLibrary === 'string');
   assert.equal(typeof out.at, 'string');
 });
+
+test('导出物自带探针版本与子框地图（SF/汇丰 靠它定位表单藏在哪个框）', () => {
+  const dom = new JSDOM('<!doctype html><html><body><iframe name="app" src="about:blank"></iframe>'
+    + '<iframe src="https://match.adsrvr.org/track/cei"></iframe></body></html>', { url: 'https://career10.successfactors.com/portalcareer' });
+  const { doc, win } = { doc: dom.window.document, win: dom.window };
+  // 同源框里塞几个控件，验证"能量到的就报控件数，能量不到的只报 src"
+  const inner = doc.querySelector('iframe[name="app"]').contentDocument;
+  inner.body.innerHTML = '<input name="a"><input name="b"><select name="c"></select>';
+  const out = probePageStructure(doc, win.location.href, win);
+  assert.equal(typeof out.probeBuild, 'string', '探针必须自带版本号');
+  assert.equal(out.isTopFrame, true);
+  assert.equal(out.iframeMap.length, 2);
+  const first = out.iframeMap.find(x => x.frameName === 'app');
+  assert.equal(first.sameOrigin, true);
+  assert.equal(first.controls, 3);
+  const ad = out.iframeMap.find(x => /adsrvr/.test(x.src));
+  assert.equal(ad.sameOrigin, false, '跨源框不得伪报控件数');
+  assert.equal(ad.controls, null);
+  assert.ok(!JSON.stringify(out).includes('value'), '子框地图同样不得带出任何填写值');
+});

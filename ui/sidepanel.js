@@ -122,22 +122,34 @@ $('btnProbe').onclick = async () => {
   probeJson = JSON.stringify({
     at: d.at, url: d.url, title: d.title, framework: d.framework,
     componentLibs: d.componentLibs, topLibrary: d.topLibrary, totals: d.totals,
-    sections: d.sections, fields: d.fields, frames: fr?.tried || undefined,
+    sections: d.sections, fields: d.fields,
+    probeBuild: d.probeBuild, isTopFrame: d.isTopFrame, iframeMap: d.iframeMap,
+    frames: fr?.tried || undefined,
     note: d.note,
   }, null, 1);
   $('probeOut').value = probeJson;
   $('btnProbeCopy').disabled = false;
   $('btnProbeSave').disabled = false;
-  $('probeMeta').innerHTML = '控件 <b>' + d.totals.controls + '</b> · 可见 <b>' + d.totals.visible + '</b> · 下拉 ' + d.totals.selects
+  $('probeMeta').innerHTML = '探针 ' + escapeHtml(d.probeBuild || '(旧版)') + (d.isTopFrame === false ? ' · 非顶层框' : ' · 顶层框')
+    + ' · 控件 <b>' + d.totals.controls + '</b> · 可见 <b>' + d.totals.visible + '</b> · 下拉 ' + d.totals.selects
     + ' · 单选 ' + d.totals.radios + ' · 文件 ' + d.totals.fileInputs + ' · iframe ' + d.totals.iframes
     + ' · Shadow ' + d.totals.shadowHosts + ' · 组件库判定: <b>' + d.topLibrary + '</b>'
     + (fr ? ' · 取自 frame#' + fr.chosen + '（共遍历 ' + fr.tried.length + ' 个框）' : '');
-  // 空结果一定要说清楚"取的是哪个框"，否则用户只知道失败，维护者只知道可能是广告/同意框抢占
-  if (!d.totals.controls && fr) {
-    const picked = fr.tried.find(x => x.frameId === fr.chosen);
+  // 空结果必须自己说清"取的是哪个框"，否则用户只知道失败、维护者只能靠猜
+  if (!d.totals.controls) {
+    const picked = fr?.tried?.find(x => x.frameId === fr.chosen);
+    const framesTxt = fr?.tried?.length
+      ? '各框控件数：' + fr.tried.map(x => '#' + x.frameId + ' ' + x.controls).join('，')
+      : (d.probeBuild
+        ? '（框清单缺失：探针是新版但枚举 frame 失败，多为扩展需要重新授权，请在 edge://extensions 重新加载一次）'
+        : '（探针是旧版：请在 edge://extensions 点「重新加载」，关掉侧边栏再重开，然后刷新目标页面）');
+    const sub = (d.iframeMap || []).filter(x => x.sameOrigin && x.controls > 0)
+      .map(x => '同源 iframe 有 ' + x.controls + ' 个控件（name=' + (x.frameName || '无名') + '）');
     $('probeMeta').innerHTML += '<br><span style="color:var(--warn-fg);background:var(--warn-bg);border:1px solid var(--warn-line);border-radius:4px;padding:2px 6px;display:inline-block">'
-      + '这个框里没有表单控件（URL: ' + escapeHtml(picked?.url || '未知') + '）。'
-      + '请先滚动到简历表单再点一次；若仍为空，把上面"共遍历 N 个框"的信息一起发我。</span>';
+      + '这个框里没有表单控件（URL: ' + escapeHtml(picked?.url || d.url || '未知') + '）。'
+      + escapeHtml(framesTxt)
+      + (sub.length ? '。' + escapeHtml(sub.join('；')) + ' → 表单可能在首方 iframe 里' : '')
+      + '。把这一段一起发我。</span>';
   }
 };
 $('btnProbeCopy').onclick = async () => {

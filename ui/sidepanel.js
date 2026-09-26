@@ -109,3 +109,34 @@ $('btnImportMd').onclick = () => {
   detail.push('写入明细：\n  ' + report.mapped.map(m => m.path + ' ← ' + m.source).join('\n  '));
   $('mdDetail').textContent = detail.join('\n\n');
 };
+
+let probeJson = '';
+$('btnProbe').onclick = async () => {
+  const tab = await activeTab();
+  tabId = tab?.id;
+  $('probeMeta').textContent = '正在只读扫描页面结构…';
+  const res = await chrome.runtime.sendMessage({ type: 'nw:probe', tabId });
+  if (!res?.ok) { $('probeMeta').textContent = '本页无响应：' + (res?.error || '未知错误') + '（刚装扩展请刷新目标页面）'; return; }
+  const d = res.data;
+  probeJson = JSON.stringify({
+    at: d.at, url: d.url, title: d.title, framework: d.framework,
+    componentLibs: d.componentLibs, topLibrary: d.topLibrary, totals: d.totals,
+    sections: d.sections, fields: d.fields, note: d.note,
+  }, null, 1);
+  $('probeOut').value = probeJson;
+  $('btnProbeCopy').disabled = false;
+  $('btnProbeSave').disabled = false;
+  $('probeMeta').innerHTML = '控件 <b>' + d.totals.controls + '</b> · 可见 <b>' + d.totals.visible + '</b> · 下拉 ' + d.totals.selects
+    + ' · 单选 ' + d.totals.radios + ' · 文件 ' + d.totals.fileInputs + ' · iframe ' + d.totals.iframes
+    + ' · Shadow ' + d.totals.shadowHosts + ' · 组件库判定: <b>' + d.topLibrary + '</b>';
+};
+$('btnProbeCopy').onclick = async () => {
+  try { await navigator.clipboard.writeText(probeJson); $('probeMeta').textContent = '已复制，直接粘贴给维护者即可。'; }
+  catch { $('probeOut').select(); document.execCommand('copy'); $('probeMeta').textContent = '已选中并尝试复制。'; }
+};
+$('btnProbeSave').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([probeJson], { type: 'application/json' }));
+  a.download = 'page-structure-' + new Date().toISOString().slice(0, 10) + '.json';
+  a.click();
+};

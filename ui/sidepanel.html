@@ -54,6 +54,15 @@
   <div class="note" id="mdReport"></div>
   <pre id="mdDetail" class="note" style="max-height:140px;overflow:auto;white-space:pre-wrap"></pre>
 
+  <h2>站点结构导出（只读，不读取你填的内容）</h2>
+  <div class="row">
+    <button id="btnProbe">导出本页字段结构</button>
+    <button id="btnProbeCopy" disabled>复制到剪贴板</button>
+    <button id="btnProbeSave" disabled>下载 JSON</button>
+  </div>
+  <div class="note" id="probeMeta">用于给新站点写适配器：导出后把 JSON 发给维护者即可。</div>
+  <textarea id="probeOut" spellcheck="false" style="min-height:70px" readonly placeholder="尚未导出"></textarea>
+
   <h2>简历数据（JSON，可手改）</h2>
   <div class="row">
     <button id="btnEdit">编辑 / 导入 JSON</button>

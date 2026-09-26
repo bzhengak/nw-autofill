@@ -25,7 +25,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["core/*.js", "dom/scanner.js", "dom/filler.js", "dom/safety.js", "ui/overlay.css"],
+      "resources": ["core/*.js", "dom/scanner.js", "dom/filler.js", "dom/safety.js", "dom/probe.js", "ui/overlay.css"],
       "matches": ["http://*/*", "https://*/*"]
     }
   ]

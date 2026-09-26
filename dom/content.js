@@ -6,15 +6,16 @@ let mods = null;
 async function loadModules() {
   if (mods) return mods;
   const u = p => chrome.runtime.getURL(p);
-  const [scanner, filler, safety, matcher, schema, matching] = await Promise.all([
+  const [scanner, filler, safety, matcher, schema, matching, probe] = await Promise.all([
     import(u('dom/scanner.js')),
     import(u('dom/filler.js')),
     import(u('dom/safety.js')),
     import(u('core/matcher.js')),
     import(u('core/profile-schema.js')),
     import(u('core/matching.js')),
+    import(u('dom/probe.js')),
   ]);
-  mods = { scanner, filler, safety, matcher, schema, matching };
+  mods = { scanner, filler, safety, matcher, schema, matching, probe };
   return mods;
 }
 
@@ -78,6 +79,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         const r = window.__nwLast?.applied?.undo?.();
         clearMarks();
         sendResponse({ ok: Boolean(r) });
+      } else if (msg?.type === 'nw:probe') {
+        const { probe } = await loadModules();
+        sendResponse({ ok: true, data: probe.probePageStructure(document, location.href, window) });
       } else if (msg?.type === 'nw:ping') {
         await loadModules();
         sendResponse({ ok: true, armed: Boolean(window.__nwSubmitGuardArmed) });

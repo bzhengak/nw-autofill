@@ -76,6 +76,7 @@ export function sampleProfile() {
     'others.selfIntro': '三年后端开发相关实践经历，熟悉分布式系统设计。',
     'projects.0.name': '校园二手交易平台',
     'projects.0.role': '后端负责人',
+    'projects.0.description': '负责商品检索链路与交易服务的设计与实现。',
     'hkGlobal.needSponsorship': '否',
     'hkGlobal.workAuth': '本地居民',
   };

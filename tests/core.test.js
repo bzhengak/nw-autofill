@@ -7,7 +7,7 @@ import { planFill, resolveOption } from '../core/matcher.js';
 import { SUBMIT_TEXT_RE, classifyClick } from '../dom/safety.js';
 
 const profileField = (o) => ({ path: o.path, key: o.key || o.path.split('.').pop(), section: o.section || 'basics', itemIndex: o.itemIndex ?? null, zh: o.zh, labels: [o.zh, ...(o.al || [])].map(s => s.toLowerCase()), type: o.type || 'text', options: o.options || [], sensitive: Boolean(o.sensitive) });
-const pageField = (o) => ({ kind: o.kind || 'text', label: o.label || '', name: o.name || '', id: o.id || '', placeholder: o.placeholder || '', currentValue: o.currentValue ?? '', options: o.options || [], required: Boolean(o.required), sectionHint: o.sectionHint || '', itemIndex: o.itemIndex ?? null, nearbyLabels: o.nearbyLabels || [], autocomplete: o.autocomplete || '', type: o.type || '' });
+const pageField = (o) => ({ kind: o.kind || 'text', label: o.label || '', name: o.name || '', id: o.id || '', placeholder: o.placeholder || '', currentValue: o.currentValue ?? '', options: o.options || [], required: Boolean(o.required), sectionHint: o.sectionHint || '', itemIndex: o.itemIndex ?? null, nearbyLabels: o.nearbyLabels || [], autocomplete: o.autocomplete || '', type: o.type || '', compositeDate: o.compositeDate, maxLength: o.maxLength });
 
 test('归一化：全半角 / 简繁 / 括号降级', () => {
   assert.equal(normalize('姓　名：'), '姓名:');
@@ -124,6 +124,26 @@ test('planFill：incremental 模式跳过已填字段', () => {
   const plan = planFill(fields, p, { mode: 'incremental' });
   assert.ok(plan.assignments.find(a => a.index === 0 && a.skip));
   assert.ok(plan.assignments.find(a => a.index === 1 && !a.skip));
+});
+
+test('真实站点教出来的三条拦截：自定义下拉 / 年月成对 / 语音验证码', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'basics.gender', '男');
+  setValueByPath(p, 'education.0.enrollDate', '2023-09-01');
+  setValueByPath(p, 'basics.idNumber', '320102200103150011');
+  const fields = [
+    pageField({ label: 'Highest degree', placeholder: 'Please select' }),
+    pageField({ label: 'Study period', placeholder: 'Year', compositeDate: 'year' }),
+    pageField({ label: 'Study period', placeholder: 'Month', compositeDate: 'month' }),
+    { ...pageField({ label: 'Security check', placeholder: 'Enter the verification code you hear', type: 'tel' }), maxLength: 10 },
+  ];
+  const plan = planFill(fields, p, {});
+  const reasons = Object.fromEntries(plan.gaps.map(g => [g.index, g.reason]));
+  assert.equal(reasons[0], 'custom_control', 'placeholder=Please select 的自定义下拉不得打字硬填');
+  assert.equal(reasons[1], 'composite_date');
+  assert.equal(reasons[2], 'composite_date');
+  assert.equal(reasons[3], 'captcha', '英文 "verification code" 也要当验证码拦下');
+  assert.equal(plan.assignments.length, 0, '四个字段都不应产生写入');
 });
 
 test('安全闸门：提交类按钮与导航按钮都在拒绝名单', () => {

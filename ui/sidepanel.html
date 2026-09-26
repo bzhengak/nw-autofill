@@ -4,25 +4,47 @@
 <meta charset="utf-8">
 <title>网申填写面板</title>
 <style>
+  /* 显式给出前景/背景色：之前只在 :root 声明 color-scheme，深色主题下浏览器把按钮文字
+     画成白色、而背景还是浅灰，字就看不见了 */
+  :root {
+    --bg: #ffffff; --fg: #1c1e21; --muted: #6b7280; --line: #d7dadf;
+    --btn-bg: #f4f5f7; --btn-fg: #1c1e21; --btn-line: #c9ccd1;
+    --primary-bg: #1a56b8; --primary-fg: #ffffff;
+    --ok-bg: #eef7f1; --ok-fg: #1c6b45; --ok-line: #bfe3cd;
+    --warn-bg: #fff6e5; --warn-fg: #7a5310; --warn-line: #f0c36d;
+    --field-bg: #ffffff; --field-fg: #1c1e21;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1b1d21; --fg: #e8eaed; --muted: #9aa0a6; --line: #3c4045;
+      --btn-bg: #2f3338; --btn-fg: #e8eaed; --btn-line: #4a4f55;
+      --primary-bg: #2b6cd4; --primary-fg: #ffffff;
+      --ok-bg: #16321f; --ok-fg: #85d6a5; --ok-line: #245c39;
+      --warn-bg: #33270f; --warn-fg: #f0c36d; --warn-line: #6b5320;
+      --field-bg: #131518; --field-fg: #e8eaed;
+    }
+  }
   :root { color-scheme: light dark; --g:#22a06b; --y:#e8a33d; --r:#d64545; --o:#8a8f98; }
-  body { font: 13px/1.6 system-ui, "Microsoft YaHei", sans-serif; margin: 0; padding: 12px; }
-  h1 { font-size: 15px; margin: 0 0 10px; }
-  h2 { font-size: 13px; margin: 16px 0 6px; color: #666; }
+  body { font: 13px/1.6 system-ui, "Microsoft YaHei", sans-serif; margin: 0; padding: 12px; background: var(--bg); color: var(--fg); }
+  h1 { font-size: 15px; margin: 0 0 10px; color: var(--fg); }
+  h2 { font-size: 13px; margin: 16px 0 6px; color: var(--muted); }
   .row { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
-  button { padding: 7px 12px; border-radius: 6px; border: 1px solid #bbb; background: #f6f6f6; cursor: pointer; }
-  button.primary { background: #1a73e8; color:#fff; border-color:#1a73e8; }
-  button:disabled { opacity:.5; cursor:not-allowed; }
-  textarea { width: 100%; min-height: 120px; font-family: ui-monospace, Consolas, monospace; font-size: 11px; box-sizing: border-box; }
+  button { padding: 7px 12px; border-radius: 6px; border: 1px solid var(--btn-line); background: var(--btn-bg); color: var(--btn-fg); cursor: pointer; font: inherit; }
+  button:hover { border-color: var(--primary-bg); }
+  button.primary { background: var(--primary-bg); color: var(--primary-fg); border-color: var(--primary-bg); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  textarea { width: 100%; min-height: 120px; font-family: ui-monospace, Consolas, monospace; font-size: 11px; box-sizing: border-box; background: var(--field-bg); color: var(--field-fg); border: 1px solid var(--line); }
   table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  td { padding: 3px 4px; border-bottom: 1px solid rgba(128,128,128,.2); vertical-align: top; }
+  td { padding: 3px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
   .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:5px; }
   .green{background:var(--g)} .yellow{background:var(--y)} .red{background:var(--r)} .orange{background:var(--o)}
-  .stats { display:flex; gap:10px; flex-wrap:wrap; font-size:12px; }
+  .stats { display:flex; gap:10px; flex-wrap:wrap; font-size:12px; color: var(--fg); }
   .stats b { font-weight:600; }
-  .note { color:#777; font-size:11px; }
-  .banner { background:#fff6e5; border:1px solid #f0c36d; padding:6px 8px; border-radius:6px; margin:8px 0; }
-  .locked { background:#eef7f1; border:1px solid #bfe3cd; padding:6px 8px; border-radius:6px; margin:8px 0; color:#1c6b45; }
-  label.chk { display:flex; align-items:center; gap:6px; font-size:12px; }
+  .note { color: var(--muted); font-size:11px; }
+  .banner { background: var(--warn-bg); color: var(--warn-fg); border: 1px solid var(--warn-line); padding: 6px 8px; border-radius: 6px; margin: 8px 0; }
+  .locked { background: var(--ok-bg); color: var(--ok-fg); border: 1px solid var(--ok-line); padding: 6px 8px; border-radius: 6px; margin: 8px 0; }
+  label.chk { display:flex; align-items:center; gap:6px; font-size:12px; color: var(--fg); }
+  pre { color: var(--muted); }
   #editor { display:none; }
   #editor.on { display:block; }
 </style>

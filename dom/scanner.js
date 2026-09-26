@@ -345,7 +345,9 @@ export function scanForm(root = document) {
       el,
     });
   }
-  return fields.filter(f => f.label || f.name || f.id || f.placeholder || f.testId || f.autocomplete);
+  const out = fields.filter(f => f.label || f.name || f.id || f.placeholder || f.testId || f.autocomplete);
+  markCompositeDatePairs(out);
+  return out;
 }
 
 function blockOf(el, blockIndex) {
@@ -356,6 +358,34 @@ function blockOf(el, blockIndex) {
 function nullIndexFrom(blockIndex, el) {
   for (const [container, i] of blockIndex) if (container.contains?.(el)) return i;
   return null;
+}
+
+/**
+ * 标记"年 + 月"成对输入框（Moka 等的日期实现）：同一容器里既有 year 框又有 month 框时，
+ * 单个框无法承载一个完整日期值，必须整组交给人工，否则会出现两个框被填成同一个值。
+ */
+function markCompositeDatePairs(fields) {
+  const byParent = new Map();
+  for (const f of fields) {
+    if (!f.el?.parentElement) continue;
+    const key = f.el.parentElement;
+    if (!byParent.has(key)) byParent.set(key, []);
+    byParent.get(key).push(f);
+  }
+  for (const group of byParent.values()) {
+    const isYear = f => /^(year|年|yyyy)$/i.test(normText(f.placeholder)) || /^(year|年|yyyy)$/i.test(normText(f.label));
+    const isMonth = f => /^(month|月|mm)$/i.test(normText(f.placeholder)) || /^(month|月|mm)$/i.test(normText(f.label));
+    const years = group.filter(f => f.kind === 'text' && isYear(f));
+    const months = group.filter(f => f.kind === 'text' && isMonth(f));
+    if (years.length && months.length) {
+      for (const f of years) f.compositeDate = 'year';
+      for (const f of months) f.compositeDate = 'month';
+    }
+  }
+}
+
+function normText(s) {
+  return String(s || '').trim().toLowerCase();
 }
 
 export function describeForDebug(fields) {

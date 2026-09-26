@@ -1,0 +1,23 @@
+{
+  "pageUrl": "https://app.mokahr.com/campus-recruitment/kpmg/74217",
+  "expect": {
+    "school": "education.0.school",
+    "major": "education.0.major",
+    "id_number": "basics.idNumber",
+    "expected_city": "intent.cities",
+    "expected_salary": "intent.salary",
+    "company": "work.0.company",
+    "job_title": "work.0.title",
+    "responsibilities": ["work.0.summary", "internship.0.summary"],
+    "project_name": "projects.0.name",
+    "project_role": "projects.0.role",
+    "project_desc": "projects.0.description",
+    "language": "languages.0.language",
+    "award_name": "awards.0.title"
+  },
+  "mustNotTouch": [
+    "gender", "work_exp", "highest_degree", "edu_degree", "proficiency", "listening",
+    "about_me", "audio_code", "name", "mobile", "edu_year_a", "edu_month_a"
+  ],
+  "notes": "必须不碰的两类：Please select 自定义下拉（打字进去不会选中值，反而搞乱站点校验）与语音验证码框。Year/Month 成对日期是 Moka 已知限制，需要专门的复合日期规则，暂不宣称支持。"
+}

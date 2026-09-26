@@ -14,18 +14,46 @@
       "site": "app.mokahr.com/campus-recruitment/kpmg/74217",
       "observed": "落地页 readyState=complete，mount=#app，window.React 存在；聚合 CSS 中 .ant-* / .el-* / .van-* / .arco-* 均为 0 → 确认 React + Moka 自研组件；可见 input 仅 2 个，简历表单体在登录后才渲染"
     },
-    "verified": "partial",
-    "verifiedScope": "组件库归属已用真实浏览器确认；分步表单、自定义下拉与日期控件的交互行为仍需在已登录会话中确认后才能置 verified:full"
+    "verified": "structure",
+    "verifiedScope": "已由用户在自己浏览器里导出的真实结构确认：控件全部是无 name/无 id 的文本框、下拉为 placeholder=Please select 的自定义组件、日期为 Year+Month 成对框、账号字段 disabled、存在语音验证码框。控件的真实交互（下拉展开与选项确认）仍未验证。",
+    "realStructure": {
+      "urlSelects": "页面上 0 个 <select>，全部下拉都是 input[placeholder='Please select']",
+      "naming": "输入框普遍没有 name / id，标签是前一个兄弟元素 → 匹配只能靠标签文本",
+      "dates": "日期是 Year + '-' + Month 两个框，无法用单值表达",
+      "accountFields": "Name / Mobile / Email 为 disabled，由账号带出",
+      "readonlyDerived": "Birth Date (Age) 只读，由身份证推导",
+      "audioCaptcha": "存在 type=tel、maxlength=10、aria-label='Enter the verification code you hear' 的语音验证码框",
+      "language": "KPMG 国际所租户的简历页是纯英文标签（sections 无标题元素，标题判定不可用）"
+    }
   },
   "controlHints": {
-    "select": "[class*='select']",
-    "selectOption": "[class*='option']",
-    "formItemError": "[class*='error']"
+    "select": "input[placeholder='Please select']",
+    "formItem": ".mk-form-item,[class*=\"form-item\"]",
+    "formItemError": "[class*=\"error\"]"
   },
   "aliases": [
-    { "path": "basics.name", "add": ["候选人姓名", "姓名名称"] },
-    { "path": "contact.email", "add": ["常用邮箱", "个人邮箱"] },
-    { "path": "education.0.school", "add": ["最高学历学校", "毕业学校"] }
+    { "path": "basics.name", "add": ["候选人姓名", "姓名名称", "name"] },
+    { "path": "contact.email", "add": ["常用邮箱", "个人邮箱", "email"] },
+    { "path": "contact.phone", "add": ["手机号", "mobile", "联系电话"] },
+    { "path": "basics.gender", "add": ["性别", "gender"] },
+    { "path": "education.*.school", "add": ["毕业院校", "学校", "school"] },
+    { "path": "education.*.major", "add": ["专业", "major"] },
+    { "path": "education.*.degree", "add": ["最高学历", "学历", "highest degree", "degree"] },
+    { "path": "work.*.company", "add": ["公司", "company", "current company"] },
+    { "path": "work.*.title", "add": ["职位", "职务", "job title"] },
+    { "path": "work.*.summary", "add": ["职责", "工作内容", "responsibilities"] },
+    { "path": "projects.*.name", "add": ["项目名称", "project name"] },
+    { "path": "projects.*.role", "add": ["担任角色", "organizational role"] },
+    { "path": "projects.*.description", "add": ["项目描述", "project description"] },
+    { "path": "languages.*.language", "add": ["语言", "language"] },
+    { "path": "languages.*.level", "add": ["熟练程度", "proficiency"] },
+    { "path": "languages.*.listening", "add": ["听说", "listening and speaking"] },
+    { "path": "languages.*.writing", "add": ["读写", "reading and writing"] },
+    { "path": "awards.*.title", "add": ["奖项名称", "award name"] },
+    { "path": "intent.cities", "add": ["期望城市", "expected city"] },
+    { "path": "intent.salary", "add": ["期望薪资", "expected salary"] },
+    { "path": "work.0.salary", "add": ["当前薪资", "current salary"] },
+    { "path": "basics.idNumber", "add": ["证件号码", "id number"] }
   ],
   "skip": [
     { "match": "re:(测评|测试链接|性格测试)", "reason": "assessment" }

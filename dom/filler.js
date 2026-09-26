@@ -138,6 +138,20 @@ export function applyPlan(fields, assignments, opts = {}) {
     const original = field.el ? readBack(field.el, field.kind) : '';
     if (field.kind === 'radio' || field.kind === 'checkbox') field.__group = collectGroup(field);
     const outcome = fillField(field, entry);
+    // 没写进去就把原值还原：只读框、受控组件可能接受了赋值又被框架改回去，
+    // 留半截错误内容比留空更糟（站点校验会把它当已填）。单选/多选保守不动。
+    if (!outcome.ok && original) {
+      try {
+        if (field.kind !== 'radio' && field.kind !== 'checkbox') {
+          if (field.kind === 'contenteditable') field.el.textContent = original;
+          else if (field.el.value !== original) {
+            field.el.value = original;
+            dispatch(field.el, 'input');
+            dispatch(field.el, 'change');
+          }
+        }
+      } catch { /* 还原失败不影响其余字段 */ }
+    }
     rollback.push({ id: entry.index, el: field.el, kind: field.kind, original, group: field.__group });
 
     results.push({

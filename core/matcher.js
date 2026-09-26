@@ -11,10 +11,10 @@ const TOP_K = 6;
 
 // 绝对不碰的东西。type=file 按你的要求（附件你自己上传）只定位不操作。
 const BLOCK_PATTERNS = [
-  { re: /(captcha|recaptcha|滑块|验证码|图形验证|人机验证|行为验证)/i, reason: 'captcha' },
+  { re: /(captcha|recaptcha|滑块|验证码|校验码|语音验证码|短信验证码|人机验证|行为验证|图形验证|verif(?:ication)?\s*code|otp\b|security\s*code)/i, reason: 'captcha' },
   { re: /(password|密码|口令|api\s*key|secret)/i, reason: 'credential' },
   { re: /(上传|附件|简历文件|upload|attachment|portfolio\s*file)/i, reason: 'file', whenFile: true },
-  { re: /(自我评价|自我介绍|个人总结|为什么|动机|why\s*(us|you)|cover\s*letter|career\s*plan|职业规划|describe\s*your|short\s*answer|essay)/i, reason: 'subjective' },
+  { re: /(自我评价|自我介绍|个人总结|个人优势|self[\s-]?introduction|about\s*me|为什么|动机|why\s*(us|you)|cover\s*letter|career\s*plan|职业规划|describe\s*your|short\s*answer|essay)/i, reason: 'subjective' },
   { re: /(测评|笔试|性格测试|认知能力|assessment|aptitude|psychometric)/i, reason: 'assessment' },
   { re: /(电子签名|签名|signature|同意并|授权)/i, reason: 'signature' },
 ];
@@ -22,6 +22,11 @@ const BLOCK_PATTERNS = [
 const SUBJECTIVE_OK = /(姓名|手机|电话|邮箱|身份证|证件|学历|学位|学校|专业|公司|职位|城市|日期|时间|薪资|到岗|编号|地址)/i;
 
 function blockReason(pageField) {
+  // Moka 这类站点的下拉框是"placeholder=Please select 的普通文本框"，没有 select 元素。
+  // 往里打字不会选中任何值，反而可能把站点自己的校验搞乱 → 一律标为待人工处理。
+  const ph = String(pageField.placeholder || '').trim();
+  if (pageField.compositeDate) return 'composite_date';
+  if (pageField.kind === 'text' && /^(please\s+select|请选择|选择|pick\s+an?|请选取)/i.test(ph)) return 'custom_control';
   const hay = [pageField.label, pageField.name, pageField.id, pageField.placeholder, pageField.ownerText, pageField.className]
     .filter(Boolean).join(' ');
   for (const rule of BLOCK_PATTERNS) {
@@ -32,6 +37,11 @@ function blockReason(pageField) {
       return rule.reason;
     }
   }
+  // 兜底：标签没写"验证码"但形态是短码框（tel + 极短 maxLength，或 name/id 含 code）
+  const meta = [pageField.name, pageField.id, pageField.testId, pageField.className].filter(Boolean).join(' ');
+  const shortCode = (pageField.maxLength && pageField.maxLength <= 8) || /^(tel|number)$/i.test(pageField.type || pageField.inputType || '');
+  if (shortCode && /(code|verif|otp|captcha|check\s*code)/i.test(meta)) return 'captcha';
+  if (pageField.maxLength && pageField.maxLength <= 6 && /^(tel|number)$/i.test(pageField.type || pageField.inputType || '')) return 'captcha';
   return null;
 }
 

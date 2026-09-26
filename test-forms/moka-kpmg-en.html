@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Simulated Moka campus resume (KPMG 结构仿真)</title>
+<style>
+  body { font: 14px/1.7 Arial, sans-serif; margin: 20px; }
+  .mk-form-item { margin-bottom: 14px; }
+  .mk-label { font-size: 13px; color: #333; margin-bottom: 4px; }
+  .mk-label .req { color: #d00; }
+  .mk-control { display: flex; gap: 6px; align-items: center; }
+  .mk-input { border: 1px solid #ccc; border-radius: 4px; padding: 6px 8px; width: 260px; }
+  .mk-sep { color: #999; }
+  .mk-card { border: 1px solid #e5e5e5; padding: 12px 14px; margin: 18px 0; }
+  .mk-card-title { font-weight: bold; }
+</style>
+</head>
+<body>
+<!--
+  按 2026-09-26 从 app.mokahr.com/campus-recruitment/kpmg/74217 真实导出的结构复刻：
+  · 无 <select>：所有下拉都是 placeholder="Please select" 的文本框
+  · 输入框没有 name / id，标签是前一个兄弟元素
+  · 日期是 Year + "-" + Month 两个框
+  · Name/Mobile/Email 由账号带出，disabled
+  · 出生年月只读、由身份证推导
+  · 有一个语音验证码框（type=tel, maxlength=10）
+  仅复刻结构与命名方式，用于回归；不代表真实站点的交互行为已验证。
+-->
+<form id="mkForm">
+  <div class="mk-card">
+    <div class="mk-form-item"><div class="mk-label"><span class="req">*</span> Name</div>
+      <div class="mk-control"><input class="mk-input" type="text" placeholder="Name" disabled data-nw-test="name"></div></div>
+    <div class="mk-form-item"><div class="mk-label"><span class="req">*</span> Mobile</div>
+      <div class="mk-control"><input class="mk-input" type="text" placeholder="Mobile" disabled data-nw-test="mobile"></div></div>
+    <div class="mk-form-item"><div class="mk-label">Gender</div>
+      <div class="mk-control"><input class="mk-input" type="text" placeholder="Please select" data-nw-test="gender"></div></div>
+    <div class="mk-form-item"><div class="mk-label">Work experience</div>
+      <div class="mk-control"><input class="mk-input" type="text" placeholder="Please select" data-nw-test="work_exp"></div></div>
+    <div class="mk-form-item"><div class="mk-label">Highest degree</div>
+      <div class="mk-control"><input class="mk-input" type="text" placeholder="Please select" data-nw-test="highest_degree"></div></div>
+    <div class="mk-form-item"><div class="mk-label">Birth Date (Age)</div>
+      <div class="mk-control"><input class="mk-input" type="text" placeholder="Birth Date (Age)" readonly data-nw-test="birth_ro"></div></div>
+    <div class="mk-form-item"><div class="mk-label">ID number</div>
+      <div class="mk-control"><input class="mk-input" type="text" placeholder="ID number" maxlength="255" data-nw-test="id_number"></div></div>
+    <div class="mk-form-item"><div class="mk-label">Expected city</div>
+      <div class="mk-control"><input class="mk-input" type="text" placeholder="Expected city" data-nw-test="expected_city"></div></div>
+    <div class="mk-form-item"><div class="mk-label">Expected salary</div>
+      <div class="mk-control"><input class="mk-input" type="text" placeholder="Expected salary" data-nw-test="expected_salary"></div></div>
+  </div>
+
+  <div class="mk-card"><div class="mk-card-title">Education</div>
+    <div class="mk-form-item"><div class="mk-label">School</div>
+      <div class="mk-control"><input class="mk-input" type="text" placeholder="Please enter your school" data-nw-test="school"></div></div>
+    <div class="mk-form-item"><div class="mk-label">Major</div>
+      <div class="mk-control"><input class="mk-input" type="text" placeholder="Enter major" data-nw-test="major"></div></div>
+    <div class="mk-form-item"><div class="mk-label">Degree</div>
+      <div class="mk-control"><input class="mk-input" type="text" placeholder="Please select" data-nw-test="edu_degree"></div></div>
+    <div class="mk-form-item"><div class="mk-label">Study period</div>
+      <div class="mk-control"><input class="mk-input" type="text" placeholder="Year" data-nw-test="edu_year_a"><span class="mk-sep">-</span>
+        <input class="mk-input" type="text" placeholder="Month" data-nw-test="edu_month_a"></div></div>
+  </div>
+
+  <div class="mk-card"><div class="mk-card-title">Experience</div>
+    <div class="mk-form-item"><div class="mk-label">Company</div>
+      <div class="mk-control"><input class="mk-input" type="text" placeholder="Company" data-nw-test="company"></div></div>
+    <div class="mk-form-item"><div class="mk-label">Job title</div>
+      <div class="mk-control"><input class="mk-input" type="text" placeholder="Job title" data-nw-test="job_title"></div></div>
+    <div class="mk-form-item"><div class="mk-label">Responsibilities</div>
+      <div class="mk-control"><textarea class="mk-input" placeholder="Content" data-nw-test="responsibilities"></textarea></div></div>
+  </div>
+
+  <div class="mk-card"><div class="mk-card-title">Projects</div>
+    <div class="mk-form-item"><div class="mk-label">Project name</div>
+      <div class="mk-control"><input class="mk-input" type="text" placeholder="Project name" data-nw-test="project_name"></div></div>
+    <div class="mk-form-item"><div class="mk-label">Organizational role</div>
+      <div class="mk-control"><input class="mk-input" type="text" placeholder="Organizational role" data-nw-test="project_role"></div></div>
+    <div class="mk-form-item"><div class="mk-label">Project description</div>
+      <div class="mk-control"><textarea class="mk-input" placeholder="Content" data-nw-test="project_desc"></textarea></div></div>
+  </div>
+
+  <div class="mk-card"><div class="mk-card-title">Languages</div>
+    <div class="mk-form-item"><div class="mk-label">Language</div>
+      <div class="mk-control"><input class="mk-input" type="text" placeholder="Language" data-nw-test="language"></div></div>
+    <div class="mk-form-item"><div class="mk-label">Proficiency</div>
+      <div class="mk-control"><input class="mk-input" type="text" placeholder="Please select" data-nw-test="proficiency"></div></div>
+    <div class="mk-form-item"><div class="mk-label">Listening and speaking</div>
+      <div class="mk-control"><input class="mk-input" type="text" placeholder="Please select" data-nw-test="listening"></div></div>
+  </div>
+
+  <div class="mk-card"><div class="mk-card-title">Awards</div>
+    <div class="mk-form-item"><div class="mk-label">Award name</div>
+      <div class="mk-control"><input class="mk-input" type="text" placeholder="Award name" data-nw-test="award_name"></div></div>
+  </div>
+
+  <div class="mk-card"><div class="mk-card-title">Others</div>
+    <div class="mk-form-item"><div class="mk-label">About me</div>
+      <div class="mk-control"><textarea class="mk-input" placeholder="Self-introduction" data-nw-test="about_me"></textarea></div></div>
+    <div class="mk-form-item"><div class="mk-label">Security check</div>
+      <div class="mk-control"><input class="mk-input" type="tel" maxlength="10" aria-label="Enter the verification code you hear" placeholder="Enter the verification code you hear" data-nw-test="audio_code"></div></div>
+  </div>
+
+  <p><button type="submit">Submit</button></p>
+</form>
+</body>
+</html>

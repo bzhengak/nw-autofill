@@ -67,7 +67,7 @@ for (const file of forms) {
   const byName = new Map();
   results.forEach((r) => {
     const f = fields[r.index];
-    const key = f?.el?.getAttribute?.('name') || f?.el?.getAttribute?.('id');
+    const key = f?.el?.getAttribute?.('data-nw-test') || f?.el?.getAttribute?.('name') || f?.el?.getAttribute?.('id');
     if (key) byName.set(key, { ...r, kind: f.kind });
   });
 
@@ -75,15 +75,19 @@ for (const file of forms) {
   let correct = 0;
   for (const [name, wantPath] of Object.entries(expect)) {
     const got = byName.get(name);
-    const truth = String(getValueByPath(profile, wantPath) || '');
-    const el = doc.querySelector(`[name="${name}"]`);
+    // 期望值可以是数组：页面没有小节标题时，"工作经历/实习经历"的 Responsibilities 无法区分，
+    // 只要落到任一合理路径且被标为待复核就算对（不许假装我们能分辨）
+    const wantPaths = Array.isArray(wantPath) ? wantPath : [wantPath];
+    const truthPath = got && wantPaths.includes(got.path) ? got.path : wantPaths[0];
+    const truth = String(getValueByPath(profile, truthPath) || '');
+    const el = doc.querySelector(`[data-nw-test="${name}"],[name="${name}"]`);
     const shownForSelect = got?.kind === 'select'
       ? (got.shown || Array.from(el?.selectedOptions || []).map(o => o.textContent).join(''))
       : '';
     const actualText = got?.kind === 'radio' || got?.kind === 'checkbox'
       ? Array.from(doc.querySelectorAll(`[name="${name}"]`)).filter(x => x.checked).map(x => x.value).join('|')
       : (shownForSelect || String(got?.actual ?? (el?.value ?? '')));
-    const rightPath = got?.path === wantPath;
+    const rightPath = !!got && wantPaths.includes(got.path);
     let rightValue;
     if (got?.kind === 'radio' || got?.kind === 'checkbox') {
       // 判分要看用户看得见的选项文本，不是 value 属性（M/1/0 之类）
@@ -101,7 +105,7 @@ for (const file of forms) {
 
   const violations = [];
   for (const name of mustNotTouch) {
-    const el = doc.querySelector(`[name="${name}"]`);
+    const el = doc.querySelector(`[data-nw-test="${name}"],[name="${name}"]`);
     if (!el) continue;
     const touched = (el.value && String(el.value).trim()) || (el.textContent && el.type === undefined && String(el.textContent).trim());
     if (touched) violations.push(`${name} 被写入（应当留给你手动处理）`);

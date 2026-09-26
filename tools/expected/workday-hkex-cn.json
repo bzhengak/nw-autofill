@@ -1,0 +1,25 @@
+{
+  "pageUrl": "https://hkex.wd3.myworkdayjobs.com/zh-CN/HKEXCareerPage/job/HK-TWO-ES-8%2FF/HKEX-2027-Graduate-Associate-Programme",
+  "expect": {
+    "last_zh": "basics.lastNameZh",
+    "first_zh": "basics.firstNameZh",
+    "last_py": "basics.lastName",
+    "first_py": "basics.firstName",
+    "addr1": "contact.address",
+    "country": "contact.country",
+    "dial": "contact.dialCode",
+    "phone": "contact.phone",
+    "job_title": "work.0.title",
+    "company": "work.0.company",
+    "place": "work.0.city",
+    "school": "education.0.school",
+    "major": "education.0.major",
+    "skill": "skills.domain",
+    "channel": "intent.channel"
+  },
+  "mustNotTouch": [
+    "district", "ext", "resume", "website",
+    "exp_from_y", "exp_from_m", "exp_to_y", "exp_to_m", "edu_to_y", "edu_to_m"
+  ],
+  "notes": "Workday 的判分重点是\"不越界\"：法定姓名四框不能串（中文姓≠拼音姓），Year/Month 成对框整组不碰，区/分机这种 profile 里没有对应栏的字段宁可留空也不能塞进近似栏位（把「区」填进现居城市就是错答）。简历/网站由用户自己处理。"
+}

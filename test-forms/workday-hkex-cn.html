@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>仿真 Workday 简历（HKEX 结构复刻）</title>
+<style>
+  body { font: 14px/1.7 Arial, "Microsoft YaHei", sans-serif; margin: 20px; }
+  section { border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px 14px; margin-bottom: 16px; }
+  h2 { font-size: 15px; margin: 0 0 10px; }
+  .wd-field { margin-bottom: 10px; }
+  .wd-label { display: block; color: #333; margin-bottom: 2px; }
+  .wd-input { border: 1px solid #bbb; border-radius: 4px; padding: 6px 8px; width: 260px; }
+  .wd-sep { color: #999; }
+</style>
+</head>
+<body>
+<!--
+  复刻 2026-09-26 用户导出的 hkex.wd3.myworkdayjobs.com 简历两步：
+  · 无组件库计数（Workday 自研 DOM），字段名是完整中文小题名
+  · 日期全是 Year + Month 成对框 → 必须整组不碰
+  · 下拉是自定义 widget（导出里 0 候选项）→ 落在"下拉先不做"范围
+  · 法定姓名拆成 姓/名 × 中文/拼音 四个框，串框就是把姓填进名
+  仅复刻结构与命名用于回归；控件交互与 EN locale 字段名未验证。
+-->
+<form id="wdForm">
+  <section><h2>我的信息</h2>
+    <div class="wd-field"><label class="wd-label">姓 - 中文</label><input class="wd-input" type="text" data-nw-test="last_zh"></div>
+    <div class="wd-field"><label class="wd-label">名 - 中文</label><input class="wd-input" type="text" data-nw-test="first_zh"></div>
+    <div class="wd-field"><label class="wd-label">名 - 拼音或西方文字 *</label><input class="wd-input" type="text" data-nw-test="first_py"></div>
+    <div class="wd-field"><label class="wd-label">姓 - 拼音或西方文字 *</label><input class="wd-input" type="text" data-nw-test="last_py"></div>
+  </section>
+
+  <section><h2>地址</h2>
+    <div class="wd-field"><label class="wd-label">地址行 1</label><input class="wd-input" type="text" data-nw-test="addr1"></div>
+    <div class="wd-field"><label class="wd-label">区</label><input class="wd-input" type="text" data-nw-test="district"></div>
+    <div class="wd-field"><label class="wd-label">国家</label><input class="wd-input" type="text" data-nw-test="country"></div>
+  </section>
+
+  <section><h2>电话</h2>
+    <div class="wd-field"><label class="wd-label">国家或地区电话区号 *</label><input class="wd-input" type="text" data-nw-test="dial"></div>
+    <div class="wd-field"><label class="wd-label">电话号码 *</label><input class="wd-input" type="text" data-nw-test="phone"></div>
+    <div class="wd-field"><label class="wd-label">电话分机</label><input class="wd-input" type="text" data-nw-test="ext"></div>
+  </section>
+
+  <section><h2>我的经验</h2>
+    <div class="wd-field"><label class="wd-label">职务名称 *</label><input class="wd-input" type="text" data-nw-test="job_title"></div>
+    <div class="wd-field"><label class="wd-label">公司 *</label><input class="wd-input" type="text" data-nw-test="company"></div>
+    <div class="wd-field"><label class="wd-label">地点</label><input class="wd-input" type="text" data-nw-test="place"></div>
+    <div class="wd-field"><label class="wd-label">自 *</label>
+      <input class="wd-input" type="text" placeholder="Year" data-nw-test="exp_from_y"><span class="wd-sep">/</span>
+      <input class="wd-input" type="text" placeholder="Month" data-nw-test="exp_from_m"></div>
+    <div class="wd-field"><label class="wd-label">至 *</label>
+      <input class="wd-input" type="text" placeholder="Year" data-nw-test="exp_to_y"><span class="wd-sep">/</span>
+      <input class="wd-input" type="text" placeholder="Month" data-nw-test="exp_to_m"></div>
+  </section>
+
+  <section><h2>教育背景</h2>
+    <div class="wd-field"><label class="wd-label">学校或大学 *</label><input class="wd-input" type="text" data-nw-test="school"></div>
+    <div class="wd-field"><label class="wd-label">主修专业 *</label><input class="wd-input" type="text" data-nw-test="major"></div>
+    <div class="wd-field"><label class="wd-label">至（实际或预期）*</label>
+      <input class="wd-input" type="text" placeholder="Year" data-nw-test="edu_to_y"><span class="wd-sep">/</span>
+      <input class="wd-input" type="text" placeholder="Month" data-nw-test="edu_to_m"></div>
+  </section>
+
+  <section><h2>技能</h2>
+    <div class="wd-field"><label class="wd-label">键入以添加技能 *</label><input class="wd-input" type="text" data-nw-test="skill"></div>
+  </section>
+
+  <section><h2>其他</h2>
+    <div class="wd-field"><label class="wd-label">您是通过什么方式知道我们的？ *</label><input class="wd-input" type="text" data-nw-test="channel"></div>
+    <div class="wd-field"><label class="wd-label">简历/履历</label><input type="file" data-nw-test="resume"></div>
+    <div class="wd-field"><label class="wd-label">网站</label><input class="wd-input" type="text" data-nw-test="website"></div>
+  </section>
+
+  <p><button type="submit">申请</button></p>
+</form>
+</body>
+</html>

@@ -4,6 +4,7 @@
   "files": [
     "adapters/hkjob-antd.json",
     "adapters/moka.json",
-    "adapters/successfactors.json"
+    "adapters/successfactors.json",
+    "adapters/workday.json"
   ]
 }

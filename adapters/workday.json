@@ -1,0 +1,30 @@
+{
+  "id": "workday",
+  "name": "Workday 投递简历（*.myworkdayjobs.com）",
+  "version": "0.1.0",
+  "family": "workday-custom",
+  "domains": ["*.myworkdayjobs.com"],
+  "evidence": {
+    "method": "用户在自己浏览器（Edge）里用侧边栏「导出结构」得到的零取值导出",
+    "checkedAt": "2026-09-26",
+    "verified": "structure",
+    "realStructure": {
+      "observed": "hkex.wd3.myworkdayjobs.com/zh-CN/HKEXCareerPage/job/… 两步：基本信息（我的信息/法定姓名/地址/电子邮件地址/电话）与我的经验（我的经验/教育背景/语言/技能/简历履历/网站）",
+      "library": "componentLibs 全部为 0，framework react/vue 均 false → Workday 自研 DOM，不能套 ant/el 选择器",
+      "labels": "字段名是完整中文小题名：姓 - 中文、名 - 中文、姓 - 拼音或西方文字、名 - 拼音或西方文字、学校或大学、主修专业、职务名称、公司、地点、地址行 1、区、国家或地区电话区号、电话分机、键入以添加技能、您是通过什么方式知道我们的？",
+      "dates": "日期一律是 Year + Month 两个框（标签字面就是 Year/Month）→ composite_date 整组交人工",
+      "options": "导出的 22 个字段里 0 个带候选项 → 下拉是自定义 widget，选项要点开才有，落在「下拉先不做」范围内",
+      "multiselect": "出现一个 tag=ul、label=「items selected」的自定义多选壳，generic 标签已被标签打分淘汰"
+    },
+    "blocked": "控件真实交互（下拉展开、国家/地区级联、技能标签输入）未在会话里验证",
+    "todo": "Workday 英文界面（EN locale）的字段名尚未导出；等真实导出再补英文别名，不凭想象写"
+  },
+  "controlHints": {
+    "formItem": "[class*='widget-label'],[class*='form-field']"
+  },
+  "skip": [
+    { "match": "re:(简历\\/履历|上传文件|附件)", "reason": "file" },
+    { "match": "re:(网站|领英|linkedin|个人主页)", "reason": "optional_link" }
+  ],
+  "notes": "Workday 的价值主要在拒绝清单（成对日期、自定义下拉、附件）而不是别名堆砌；字段名本身写得比多数站点清楚。"
+}

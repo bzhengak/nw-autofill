@@ -9,7 +9,7 @@ const CONTROL_SELECTOR = 'input, textarea, select, [contenteditable="true"], [ro
 const SECTION_HINTS = [
   { re: /(教育|学历|学校|院校|专业|graduate|education|academic|school)/i, key: 'education' },
   { re: /(实习|intern)/i, key: 'internship' },
-  { re: /(工作|任职|职业|experience|employment|work|career)/i, key: 'work' },
+  { re: /(工作|任职|职业|经验|experience|employment|work|career)/i, key: 'work' },
   { re: /(项目|project)/i, key: 'projects' },
   { re: /(校园|社团|学生|activity|campus|leadership)/i, key: 'campus' },
   { re: /(获奖|荣誉|奖项|award|honor|scholarship)/i, key: 'awards' },
@@ -19,7 +19,7 @@ const SECTION_HINTS = [
   { re: /(语言|language|cet|ielts|toefl)/i, key: 'languages' },
   { re: /(证书|资格|certificat|license)/i, key: 'certifications' },
   { re: /(家庭|父母|成员|family|guardian|emergency)/i, key: 'family' },
-  { re: /(联系方式|电话|手机|邮箱|contact|phone|email)/i, key: 'contact' },
+  { re: /(联系方式|电话|手机|邮箱|地址|contact|phone|email|address)/i, key: 'contact' },
   { re: /(求职意向|期望|意向|preference|objective|desired)/i, key: 'intent' },
   { re: /(档案|政审|背景调查|无犯罪|犯罪记录|record|background|declaration)/i, key: 'records' },
   { re: /(基本信息|个人|profile|personal|candidate)/i, key: 'basics' },

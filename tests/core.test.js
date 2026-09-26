@@ -1,5 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 import { createEmptyProfile, buildFields, getValueByPath, setValueByPath, SECTIONS } from '../core/profile-schema.js';
 import { normalize, simplify, core, signals, sniffType, assignMaxWeight, inferDateFormat, formatDate, boolLike, scorePair, typeCompatible } from '../core/matching.js';
@@ -193,4 +195,14 @@ test('安全闸门：提交类按钮与导航按钮都在拒绝名单', () => {
   assert.ok(SUBMIT_TEXT_RE.test('Apply Now'));
   assert.ok(SUBMIT_TEXT_RE.test('确认投递'));
   assert.equal(classifyClick(null).allowed, false);
+});
+
+test('别名补丁里没有重复键（对象字面量会静默覆盖，加一条就丢一片别名）', () => {
+  const src = fs.readFileSync(fileURLToPath(new URL('../core/profile-schema.js', import.meta.url)), 'utf8');
+  const start = src.indexOf('export const EXTRA_ALIASES');
+  const block = src.slice(start, src.indexOf('\n};', start));
+  const keys = [...block.matchAll(/^ {2}'([^']+)':/gm)].map(m => m[1]);
+  const dup = [...new Set(keys.filter((k, i) => keys.indexOf(k) !== i))];
+  assert.deepEqual(dup, [], `EXTRA_ALIASES 重复键：${dup.join(', ')}`);
+  assert.ok(keys.length > 30, `别名补丁块没抓到内容（keys=${keys.length}）`);
 });

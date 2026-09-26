@@ -60,6 +60,8 @@ export function core(text) {
   let s = normalize(text);
   s = s.replace(/\([^)]*\)/g, ' ');
   s = s.replace(/[?？!！:;,.\-_/\\|]+/g, ' ');
+  // 标点换成空格后，中文字之间的空格要再吃一遍：'姓 - 拼音' 与 '姓 拼音' 必须收敛成同一个主干
+  s = s.replace(/([\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff])(?:\s+)(?=[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff])/g, '$1');
   return s.replace(/\s+/g, ' ').trim();
 }
 

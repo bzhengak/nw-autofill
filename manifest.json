@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "在公司自建网申页面上按你的标准简历填写客观字段，填不出的明确标出，永不替你提交。",
   "minimum_chrome_version": "114",
-  "permissions": ["storage", "activeTab", "scripting", "sidePanel", "tabs"],
+  "permissions": ["storage", "activeTab", "scripting", "sidePanel", "tabs", "webNavigation"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "service_worker": "background/service-worker.js"

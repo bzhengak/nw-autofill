@@ -52,8 +52,21 @@ Shopee 同一页里同时出现：`硕士毕业学校（本科无需填写）`�
 - **仅单一租户（留租户级）**：KPMG 的 `Work experience`、`Organizational role`、`Current salary`；Shopee 的 `硕士/本科/高中` 平铺、`是否校园大使推荐`、`籍贯`、`国籍（例：中国）`；CATL 的 `是否有亲友受雇于本公司`、`是否接受岗位调剂`、`您是否同意本公司在入职前对您进行背景调查?`、`紧急人联系电话`、`健康状况`。
 - 规则：**只在一家出现过的措辞不得写进家族层**；每条 alias 记 `source` 与 `lastVerified`，下次有第二家同租户类型验证后才升级。
 
-## 待办：SuccessFactors 两页导出失败
+## SuccessFactors / 汇丰两页"导出失败"的真实原因（已确认并修复）
 
-假设原因（未确认）：SF 页面极重（HKJC 那份 201KB HTML / 44 个 CSS / 159 个 JS），我的探针会把**所有样式表规则拼成一个大字符串**来数组件库，可能超时或把 service worker 拖到被回收。
-已做：样式表数量与字符上限、部分结果标记（`partial`）。
-如果仍失败，请把侧边栏那行错误原文发我（"本页无响应：…"），我按报错定位而不是猜。
+用户第二次导出后拿到了两个 JSON，`controls: 0` 但结构合法：
+- 一个 `url` 是 `match.adsrvr.org/track/cei?...`（广告交换的 cookie-sync 框）
+- 一个 `url` 是 `apply.careers.hsbc.com/widgets/cookiemanageriframe/`（cookie 同意框）
+
+**根因不是页面太重**，而是消息选路：`chrome.tabs.sendMessage(tabId, msg)` 不带 `frameId` 时会广播给该标签页全部 frame，
+而 Promise 只取**第一个应答**。第三方框是几 KB 的空壳、`document_idle` 早就跑完，秒回；
+真表单框要动态 `import()` 探针模块 + 扫全量 DOM，慢半拍 → 于是"导出"导出了广告框。
+之前给它加的样式表上限是治错了方向（那个优化本身有价值，保留）。
+
+**修法（两条，方向不同）**：
+- 只读探针：遍历 `chrome.webNavigation.getAllFrames()` 的全部 frame，按 `控件数 + 是否第三方 junk URL + 是否顶层框`
+  打分挑一个"最像真表单"的框返回，并把 `frameReport`（选了哪个框、每个框多少控件）一起带出去显示在侧边栏。
+- 写入路径：反而**收紧成只发顶层框**（`{ frameId: 0 }`）。广播式写入意味着可能把资料打进第三方 iframe，
+  这是不可接受的行为；表单确实在首方 iframe 里的站点，宁可明确不支持也不能误写。
+
+教训沉淀：**任何"多框广播 + 取第一个应答"的实现都是竞态**，与页面轻重无关。

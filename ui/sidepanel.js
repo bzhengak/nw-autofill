@@ -118,17 +118,27 @@ $('btnProbe').onclick = async () => {
   const res = await chrome.runtime.sendMessage({ type: 'nw:probe', tabId });
   if (!res?.ok) { $('probeMeta').textContent = '本页无响应：' + (res?.error || '未知错误') + '（刚装扩展请刷新目标页面）'; return; }
   const d = res.data;
+  const fr = res.frameReport || null;
   probeJson = JSON.stringify({
     at: d.at, url: d.url, title: d.title, framework: d.framework,
     componentLibs: d.componentLibs, topLibrary: d.topLibrary, totals: d.totals,
-    sections: d.sections, fields: d.fields, note: d.note,
+    sections: d.sections, fields: d.fields, frames: fr?.tried || undefined,
+    note: d.note,
   }, null, 1);
   $('probeOut').value = probeJson;
   $('btnProbeCopy').disabled = false;
   $('btnProbeSave').disabled = false;
   $('probeMeta').innerHTML = '控件 <b>' + d.totals.controls + '</b> · 可见 <b>' + d.totals.visible + '</b> · 下拉 ' + d.totals.selects
     + ' · 单选 ' + d.totals.radios + ' · 文件 ' + d.totals.fileInputs + ' · iframe ' + d.totals.iframes
-    + ' · Shadow ' + d.totals.shadowHosts + ' · 组件库判定: <b>' + d.topLibrary + '</b>';
+    + ' · Shadow ' + d.totals.shadowHosts + ' · 组件库判定: <b>' + d.topLibrary + '</b>'
+    + (fr ? ' · 取自 frame#' + fr.chosen + '（共遍历 ' + fr.tried.length + ' 个框）' : '');
+  // 空结果一定要说清楚"取的是哪个框"，否则用户只知道失败，维护者只知道可能是广告/同意框抢占
+  if (!d.totals.controls && fr) {
+    const picked = fr.tried.find(x => x.frameId === fr.chosen);
+    $('probeMeta').innerHTML += '<br><span style="color:var(--warn-fg);background:var(--warn-bg);border:1px solid var(--warn-line);border-radius:4px;padding:2px 6px;display:inline-block">'
+      + '这个框里没有表单控件（URL: ' + escapeHtml(picked?.url || '未知') + '）。'
+      + '请先滚动到简历表单再点一次；若仍为空，把上面"共遍历 N 个框"的信息一起发我。</span>';
+  }
 };
 $('btnProbeCopy').onclick = async () => {
   try { await navigator.clipboard.writeText(probeJson); $('probeMeta').textContent = '已复制，直接粘贴给维护者即可。'; }

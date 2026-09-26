@@ -1,0 +1,15 @@
+{
+  "pageUrl": "https://app.mokahr.com/campus-recruitment/flat-degree-tenant/99001",
+  "expect": {
+    "name": "basics.name",
+    "master_school": "education.0.school",
+    "master_major": "education.0.major",
+    "master_end": "education.0.gradDate",
+    "bachelor_school": "education.1.school",
+    "bachelor_major": "education.1.major",
+    "bachelor_start": "education.1.enrollDate",
+    "bachelor_end": "education.1.gradDate"
+  },
+  "mustNotTouch": ["highest_degree", "master_year", "master_month", "high_school", "high_start"],
+  "notes": "摊平学历的判分点不是\"填对几个字\"，而是槽位号：硕士栏必须落在 education.0、本科栏落在 education.1（顺序反过来就是填错学历）。资料里没有高中学位，所以高中栏必须留在待人工里——它一旦被写入，说明系统在猜。master_year/master_month 是 Moka 的成对日期框，未支持，必须整组不碰。"
+}

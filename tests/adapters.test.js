@@ -89,3 +89,29 @@ test('适配器不会改动原始 profile 对象', () => {
   planFill([pf({ label: '姓名' })], base, { adapter: ADAPTERS[0] });
   assert.equal(JSON.stringify(base), before);
 });
+
+test('degreeSlotPins：摊平学历按资料里的学位定位槽位，定位不到交人工', () => {
+  const moka = ADAPTERS.find(a => a.id === 'moka');
+  const fields = [
+    pf({ label: '硕士毕业学校（本科无需填写）' }),
+    pf({ label: '本科毕业学校' }),
+    pf({ label: '高中毕业学校' }),
+  ];
+  const { slotPins } = planFromAdapter(fields, moka);
+  assert.deepEqual(slotPins.get(0), { degree: '硕士', subfield: 'school' });
+  assert.deepEqual(slotPins.get(1), { degree: '本科', subfield: 'school' });
+  const plan = planFill(fields, sampleProfile(), { adapter: moka });
+  assert.deepEqual(plan.assignments.map(a => a.path), ['education.0.school', 'education.1.school']);
+  assert.deepEqual(plan.gaps.map(g => g.reason), ['degree_slot_unresolved'], '资料里没有高中学位，高中栏必须留在待人工');
+});
+
+test('degreeSlotPins 不看 placeholder：「请输入本科学校」不能把硕士栏串到本科槽', () => {
+  const moka = ADAPTERS.find(a => a.id === 'moka');
+  const fields = [pf({ label: '硕士专业（本科无需填写）', placeholder: '请输入本科专业' })];
+  assert.deepEqual(planFromAdapter(fields, moka).slotPins.get(0), { degree: '硕士', subfield: 'major' });
+});
+
+test('适配器校验拒绝不存在的教育子字段', () => {
+  const errs = validateAdapter({ id: 'x', domains: ['a.com'], degreeSlotPins: [{ match: 're:硕士.*学校', degree: '硕士', subfield: 'employer' }] });
+  assert.ok(errs.some(e => e.includes('degreeSlotPins')), JSON.stringify(errs));
+});

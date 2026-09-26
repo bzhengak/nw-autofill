@@ -24,7 +24,9 @@
 ### 1. Moka 把每段学历**平铺成具名字段**，而不是重复区块
 Shopee 同一页里同时出现：`硕士毕业学校（本科无需填写）`、`本科毕业学校`、`高中毕业学校`、`本科GPA（实绩/总分）`、`本科专业排名`。
 我的 profile 是 `education.N.*` 列表 → 必须有"标签里的学历层次 → 列表槽位"的映射规则，否则三段会互相抢同一个 `education.0.school`，而且抢错了**不会报错**。
-→ 方案：adapter 增加 `degreeSlotPins`（`{match, degree, subfield}`），按 profile 里 `education.N.degree` 的实际学历值定位槽位；定位不到就标橙交人工，绝不猜。
+→ 已落地（2026-09-26）：adapter 新增 `degreeSlotPins`（`{match, degree, subfield}`），按 profile 里 `education.N.degree` 的实际学历值定位槽位；资料里没有那一级学历 → 缺口 `degree_slot_unresolved`（橙色交人工），绝不拿"最像的那段"顶替。判定只用标签/name/id，不用 placeholder（"请输入本科学校"这类示例会把硕士栏串到本科槽）。同一标签同时提到两个学位时（`硕士毕业学校（本科无需填写）`），取学位名出现更早的那个。回归见 `test-forms/moka-flat-degree.html`。
+>
+> 顺带挖出一个更普遍的 bug：`itemIndex` 原来按"全页面第几个重复区块"编号，老式 `<fieldset>` 布局里 Personal/Education/Work 结构相似会被归成一组，教育经历于是带着 `itemIndex=1` 去对齐 profile，把硕士槽漂到本科槽（`sf-plain-en` 命中率当场从 100% 掉到 72%）。现在改为按"同一章节内第几块"编号。
 
 ### 2. AntD 系的"下拉"是一个 `div[role=combobox]` 配一个**匿名 input**
 五矿 27 个、招行/拼多多 8 个 `div/combobox`，同时导出里出现大量 `(无)` 标签的 input 与"请选择×"标签成对出现。

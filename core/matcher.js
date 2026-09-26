@@ -24,6 +24,35 @@ const BLOCK_PATTERNS = [
 
 const SUBJECTIVE_OK = /(姓名|手机|电话|邮箱|身份证|证件|学历|学位|学校|专业|公司|职位|城市|日期|时间|薪资|到岗|编号|地址)/i;
 
+/** 学位名等价：站点的「硕士」与资料里的「硕士研究生 / Master」要能对上 */
+function degreeEquivalent(a, b) {
+  const x = normalize(a), y = normalize(b);
+  if (!x || !y) return false;
+  if (x === y || core(x) === core(y)) return true;
+  return equivalentsOf(b).some(t => {
+    const n = normalize(t);
+    return !!n && (x === n || core(x) === core(n));
+  });
+}
+
+/**
+ * 摊平式学历字段（Moka：「硕士毕业学校（本科无需填写）」「本科毕业学校」）→ profile 里真正读那个学位的槽位。
+ * 定位不到返回 null，交人工；绝不用"最像的那个学历"猜，猜错就是把硕士学校填进本科栏。
+ */
+function resolveDegreeSlot(profile, schemaFields, slot) {
+  const hits = [];
+  for (let i = 0; i < 12; i++) {
+    const degreeValue = String(getValueByPath(profile, `education.${i}.degree`) ?? '').trim();
+    if (degreeValue && degreeEquivalent(degreeValue, slot.degree)) hits.push(i);
+  }
+  if (!hits.length) return null;
+  const path = `education.${hits[0]}.${slot.subfield}`;
+  const field = schemaFields.find(f => f.path === path);
+  const value = String(getValueByPath(profile, path) ?? '').trim();
+  if (!field || !value) return null;
+  return { path, field, value, ambiguous: hits.length > 1, slots: hits };
+}
+
 function blockReason(pageField) {
   // Moka 这类站点的下拉框是"placeholder=Please select 的普通文本框"，没有 select 元素。
   // 往里打字不会选中任何值，反而可能把站点自己的校验搞乱 → 一律标为待人工处理。
@@ -93,7 +122,7 @@ function os_tokens(text) {
 export function planFill(pageFields, profile, opts = {}) {
   const mode = opts.mode || 'full';
   const schemaFields = buildFields();
-  const { pins, skip } = planFromAdapter(pageFields, opts.adapter);
+  const { pins, skip, slotPins } = planFromAdapter(pageFields, opts.adapter);
   const pinned = [];
   const assignments = [];
   const gaps = [];
@@ -107,6 +136,21 @@ export function planFill(pageFields, profile, opts = {}) {
     }
     if (skip.has(index)) {
       gaps.push({ index, label: pf.label || '(无标签)', reason: skip.get(index), kind: pf.kind });
+      return;
+    }
+    const slot = (slotPins || new Map()).get(index);
+    if (slot) {
+      const hit = resolveDegreeSlot(profile, schemaFields, slot);
+      if (hit) {
+        pinned.push({
+          index, path: hit.path, label: pf.label || '', score: 1, value: hit.value,
+          profileType: hit.field.type, sensitive: hit.field.sensitive,
+          tier: hit.ambiguous || hit.field.sensitive ? 'review' : 'auto', pinned: true,
+          note: hit.ambiguous ? `资料里有 ${hit.slots.length} 段「${slot.degree}」，取第一段，请复核` : `按学位「${slot.degree}」定位学历槽位`,
+        });
+      } else {
+        gaps.push({ index, label: pf.label || '(无标签)', reason: 'degree_slot_unresolved', kind: pf.kind, note: `资料里没有「${slot.degree}」这一段学历或该栏为空，需人工填写` });
+      }
       return;
     }
     const pinPath = pins.get(index);

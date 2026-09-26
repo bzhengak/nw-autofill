@@ -99,6 +99,22 @@ test('AntD 下拉：role=combobox 外壳与内层匿名 input 只算一个控件
   assert.equal(wrapped[0].el.tagName.toLowerCase(), 'div');
 });
 
+test('itemIndex 按"同一章节内第几块"编号，不被其他 fieldset 顶偏', () => {
+  const html = `
+    <form>
+      <fieldset><legend>Personal</legend>
+        <p><label>姓名</label><input name="a"></p><p><label>手机号码</label><input name="b"></p></fieldset>
+      <fieldset><legend>Education</legend>
+        <p><label>学校</label><input name="c"></p><p><label>专业</label><input name="d"></p></fieldset>
+      <fieldset><legend>Work Experience</legend>
+        <p><label>公司</label><input name="e"></p><p><label>职位</label><input name="f"></p></fieldset>
+    </form>`;
+  const fields = scan(html);
+  const edu = fields.filter(f => f.sectionHint === 'education');
+  assert.ok(edu.length >= 2, '教育章节没被识别出来');
+  for (const f of edu) assert.equal(f.itemIndex, 0, `教育经历被编成第 ${f.itemIndex} 块，会把硕士槽漂到本科槽`);
+});
+
 test('打分函数：显式来源加分、标题减分、噪声直接淘汰', () => {
   assert.ok(scoreLabelCandidate('Highest Qualification', 0, false, 'label-for')
     > scoreLabelCandidate('Education', 1, true, 'prev-sibling'));

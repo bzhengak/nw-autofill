@@ -4,16 +4,24 @@
 //  2. adapter 只允许声明选择器、别名、日期格式与钉位；出现任何远程 URL/脚本字段直接拒绝加载。
 //  3. 钉位（pins）优先于匈牙利分配，但必须回读校验，钉错了照样报红。
 
+import { SECTIONS } from './profile-schema.js';
+
 const FORBIDDEN_KEYS = /^(fetch|url|endpoint|remote|script|src|inject|eval|postMessage|request|ajax|href)$/i;
-const ALLOWED_KEYS = new Set(['id', 'name', 'domains', 'paths', 'family', 'notes', 'evidence', 'pins', 'aliases', 'dateFormats', 'skip', 'controlHints', 'version']);
+const ALLOWED_KEYS = new Set(['id', 'name', 'domains', 'paths', 'family', 'notes', 'evidence', 'pins', 'degreeSlotPins', 'aliases', 'dateFormats', 'skip', 'controlHints', 'version']);
 // 嵌套结构白名单：任何多出来的键（尤其是能发请求的键）都在校验期拒掉
 const NESTED_ALLOWED = {
   pins: new Set(['match', 'path', 'note']),
+  degreeSlotPins: new Set(['match', 'degree', 'subfield', 'note']),
   skip: new Set(['match', 'reason', 'note']),
   dateFormats: new Set(['match', 'format', 'note']),
   aliases: new Set(['path', 'add']),
   evidence: new Set(['method', 'checkedAt', 'observed', 'publicApis', 'blocked', 'verified', 'verifiedScope', 'todo', 'browserCheck', 'realStructure']),
 };
+
+/** Moka 把每段学历摊平成带学位名的字段（「硕士毕业学校（本科无需填写）」「本科毕业学校」），
+ *  这类字段不能靠标签相似度猜槽位：必须由 degreeSlotPins 声明"这条规则属于哪个学位、哪个子字段"，
+ *  再到 profile 的 education.N.degree 里找实际读的那个学位。 */
+const EDUCATION_SUBFIELDS = new Set((((SECTIONS.find(s => s.k === 'education') || {}).fields) || []).map(t => t[0]));
 
 function scanKeys(node, trail, errors) {
   if (!node || typeof node !== 'object') return;
@@ -67,6 +75,11 @@ export function validateAdapter(raw) {
   checkRules(raw.pins, 'pins');
   checkRules(raw.skip, 'skip');
   checkRules(raw.dateFormats, 'dateFormats');
+  for (const r of raw.degreeSlotPins || []) {
+    if (!r.match) errors.push(`degreeSlotPins 规则缺少 match`);
+    if (!r.degree) errors.push(`degreeSlotPins 规则缺少 degree（硕士/本科/高中…）：${r.match}`);
+    if (!EDUCATION_SUBFIELDS.has(String(r.subfield || ''))) errors.push(`degreeSlotPins.subfield 不是教育经历的字段：${r.subfield}`);
+  }
   for (const a of raw.aliases || []) if (!a.path || !Array.isArray(a.add)) errors.push(`aliases 条目需要 path 与 add 数组`);
   return errors;
 }
@@ -118,23 +131,37 @@ function labelHits(pageLabel, matcher) {
 
 /**
  * 把 adapter 应用到扫描结果上。
- * @returns {{pins: Map<number,string>, skip: Map<number,string>, aliases: Array, dateFormats: Array}}
+ * @returns {{pins: Map<number,string>, skip: Map<number,string>, slotPins: Map<number,{degree:string,subfield:string}>, aliases: Array, dateFormats: Array}}
  */
 export function planFromAdapter(pageFields, adapter) {
-  if (!adapter) return { pins: new Map(), skip: new Map(), aliases: [], dateFormats: [] };
+  if (!adapter) return { pins: new Map(), skip: new Map(), slotPins: new Map(), aliases: [], dateFormats: [] };
   const pins = new Map();
   const skip = new Map();
+  const slotPins = new Map();
   pageFields.forEach((f, i) => {
     const hay = [f.label, f.name, f.id, f.placeholder].filter(Boolean).join(' ');
+    const slotHay = [f.label, f.name, f.id].filter(Boolean).join(' ');
     for (const s of adapter.skip || []) {
       if (labelHits(hay, s.match)) { skip.set(i, s.reason || 'adapter_skip'); return; }
     }
+    // 学历槽位优先于普通钉位：Moka 把每段学历摊平成"硕士毕业学校/本科毕业学校"，
+    // 槽位号取决于用户资料里那条学历是哪一级，不能像 pins 那样写死。
+    // 只在标签/name/id 上判定（placeholder 常写"请输入本科学校"这种示例，拿它定槽位会串档）；
+    // 一条标签同时提到两个学位时（"硕士毕业学校（本科无需填写）"），取学位名出现最早的那个。
+    let bestSlot = null;
+    for (const sp of adapter.degreeSlotPins || []) {
+      if (!labelHits(slotHay, sp.match)) continue;
+      const at = slotHay.toLowerCase().indexOf(String(sp.degree || '').toLowerCase());
+      const rank = at < 0 ? 999 : at;
+      if (!bestSlot || rank < bestSlot.rank) bestSlot = { rank, slot: { degree: sp.degree, subfield: sp.subfield } };
+    }
+    if (bestSlot) { slotPins.set(i, bestSlot.slot); return; }
     for (const p of adapter.pins || []) {
       if (pins.has(i)) continue;
       if (labelHits(hay, p.match)) pins.set(i, p.path);
     }
   });
-  return { pins, skip, aliases: adapter.aliases || [], dateFormats: adapter.dateFormats || [] };
+  return { pins, skip, slotPins, aliases: adapter.aliases || [], dateFormats: adapter.dateFormats || [] };
 }
 
 /** 命中 adapter 的日期格式覆盖 */

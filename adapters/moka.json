@@ -23,7 +23,8 @@
       "accountFields": "Name / Mobile / Email 为 disabled，由账号带出",
       "readonlyDerived": "Birth Date (Age) 只读，由身份证推导",
       "audioCaptcha": "存在 type=tel、maxlength=10、aria-label='Enter the verification code you hear' 的语音验证码框",
-      "language": "KPMG 国际所租户的简历页是纯英文标签（sections 无标题元素，标题判定不可用）"
+      "language": "KPMG 国际所租户的简历页是纯英文标签（sections 无标题元素，标题判定不可用）",
+      "flatDegreeFields": "另一租户把教育经历摊平成带学位名的字段：「硕士毕业学校（本科无需填写）」「本科毕业学校」「高中毕业学校」。槽位号无法从标签相似度推出 → 用 degreeSlotPins 按资料里各槽位的实际学位定位，定位不到就标橙交人工，绝不用最像的学历顶替"
     }
   },
   "controlHints": {
@@ -54,6 +55,19 @@
     { "path": "intent.salary", "add": ["期望薪资", "expected salary"] },
     { "path": "work.0.salary", "add": ["当前薪资", "current salary"] },
     { "path": "basics.idNumber", "add": ["证件号码", "id number"] }
+  ],
+  "degreeSlotPins": [
+    { "match": "re:(硕士|研究生).*(学校|院校)", "degree": "硕士", "subfield": "school", "note": "Moka 把每段学历摊平成带学位名的字段" },
+    { "match": "re:(硕士|研究生).*专业", "degree": "硕士", "subfield": "major" },
+    { "match": "re:(硕士|研究生).*(入学|开始)", "degree": "硕士", "subfield": "enrollDate" },
+    { "match": "re:(硕士|研究生).*(毕业|结束)", "degree": "硕士", "subfield": "gradDate" },
+    { "match": "re:(本科|学士).*(学校|院校)", "degree": "本科", "subfield": "school" },
+    { "match": "re:(本科|学士).*专业", "degree": "本科", "subfield": "major" },
+    { "match": "re:(本科|学士).*(入学|开始)", "degree": "本科", "subfield": "enrollDate" },
+    { "match": "re:(本科|学士).*(毕业|结束)", "degree": "本科", "subfield": "gradDate" },
+    { "match": "re:(高中|初中).*(学校|院校)", "degree": "高中", "subfield": "school" },
+    { "match": "re:(高中|初中).*(入学|开始)", "degree": "高中", "subfield": "enrollDate" },
+    { "match": "re:(高中|初中).*(毕业|结束)", "degree": "高中", "subfield": "gradDate" }
   ],
   "skip": [
     { "match": "re:(测评|测试链接|性格测试)", "reason": "assessment" }

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>仿真 Moka 摊平学历租户（degreeSlotPins 回归）</title>
+<style>
+  body { font: 14px/1.7 "Microsoft YaHei", Arial, sans-serif; margin: 20px; }
+  .mk-form-item { margin-bottom: 12px; }
+  .mk-label { color: #333; }
+  .mk-label .req { color: #d00; }
+  .mk-input { border: 1px solid #ccc; border-radius: 4px; padding: 6px 8px; width: 240px; }
+  .mk-sep { color: #999; }
+</style>
+</head>
+<body>
+<!--
+  复刻 2026-09-26 用户导出的 Moka 租户结构：教育经历不是"可增删的列表"，而是每级学位摊平成独立字段
+  （「硕士毕业学校（本科无需填写）」「本科毕业学校」「高中毕业学校」）。
+  · 摊平的学位名 → 槽位号由 degreeSlotPins + 资料里 education.N.degree 实际读的是哪一级决定
+  · 资料里没有的那一级（高中）必须交人工，绝不允许填成"最像的那段学历"
+  · 输入框无 name / 无 id，标签是前一个兄弟元素；下拉仍是 placeholder=请选择 的自定义组件
+  控件类型（哪些是 Year+Month 成对框）部分为合理假设，未在真实站点交互验证，见 docs/SITE-FINDINGS.md。
+-->
+<form id="flatDegreeForm">
+  <div class="mk-form-item"><div class="mk-label"><span class="req">*</span> 姓名</div>
+    <div><input class="mk-input" type="text" placeholder="请输入姓名" data-nw-test="name"></div></div>
+
+  <div class="mk-form-item"><div class="mk-label">最高学历</div>
+    <div><input class="mk-input" type="text" placeholder="请选择" data-nw-test="highest_degree"></div></div>
+
+  <div class="mk-form-item"><div class="mk-label"><span class="req">*</span> 硕士毕业学校（本科无需填写）</div>
+    <div><input class="mk-input" type="text" placeholder="请输入学校" data-nw-test="master_school"></div></div>
+  <div class="mk-form-item"><div class="mk-label">硕士专业（本科无需填写）</div>
+    <div><input class="mk-input" type="text" placeholder="请输入专业" data-nw-test="master_major"></div></div>
+  <div class="mk-form-item"><div class="mk-label">硕士开始时间</div>
+    <div><input class="mk-input" type="text" placeholder="Year" data-nw-test="master_year">
+      <span class="mk-sep">-</span>
+      <input class="mk-input" type="text" placeholder="Month" data-nw-test="master_month"></div></div>
+  <div class="mk-form-item"><div class="mk-label">硕士结束时间</div>
+    <div><input class="mk-input" type="text" placeholder="YYYY-MM" data-nw-test="master_end"></div></div>
+
+  <div class="mk-form-item"><div class="mk-label"><span class="req">*</span> 本科毕业学校</div>
+    <div><input class="mk-input" type="text" placeholder="请输入学校" data-nw-test="bachelor_school"></div></div>
+  <div class="mk-form-item"><div class="mk-label">本科专业</div>
+    <div><input class="mk-input" type="text" placeholder="请输入专业" data-nw-test="bachelor_major"></div></div>
+  <div class="mk-form-item"><div class="mk-label">本科开始时间</div>
+    <div><input class="mk-input" type="text" placeholder="YYYY-MM" data-nw-test="bachelor_start"></div></div>
+  <div class="mk-form-item"><div class="mk-label">本科结束时间</div>
+    <div><input class="mk-input" type="text" placeholder="YYYY-MM" data-nw-test="bachelor_end"></div></div>
+
+  <div class="mk-form-item"><div class="mk-label">高中毕业学校</div>
+    <div><input class="mk-input" type="text" placeholder="请输入学校" data-nw-test="high_school"></div></div>
+  <div class="mk-form-item"><div class="mk-label">高中开始时间</div>
+    <div><input class="mk-input" type="text" placeholder="YYYY-MM" data-nw-test="high_start"></div></div>
+
+  <p><button type="submit">提交</button></p>
+</form>
+</body>
+</html>

@@ -384,8 +384,38 @@ export function scanForm(root = document) {
     });
   }
   const out = fields.filter(f => f.label || f.name || f.id || f.placeholder || f.testId || f.autocomplete);
+  renumberItemIndexBySection(out, blockIndex);
   markCompositeDatePairs(out);
   return out;
+}
+
+/**
+ * itemIndex 必须是"同一章节里的第几块"，不能是"全页面第几个区块"。
+ * 老式 <fieldset> 布局的 Basics/Education/Work 结构相似，会被 detectRepeatedBlocks 归成一组重复区块，
+ * 于是教育经历带着 itemIndex=1 去对齐 profile，把硕士槽位漂移成本科槽位（SF 仿真表单实测踩过）。
+ */
+function renumberItemIndexBySection(fields, blockIndex) {
+  const containerOf = el => {
+    for (const [c] of blockIndex) if (c.contains?.(el)) return c;
+    return null;
+  };
+  const bySection = new Map();
+  for (const f of fields) {
+    const c = containerOf(f.el);
+    if (!c) continue;
+    f.__block = c;
+    const sec = f.sectionHint || '(无章节)';
+    if (!bySection.has(sec)) bySection.set(sec, []);
+    const list = bySection.get(sec);
+    if (!list.includes(c)) list.push(c);
+  }
+  for (const f of fields) {
+    if (!f.__block) continue;
+    const list = bySection.get(f.sectionHint || '(无章节)') || [];
+    const local = list.indexOf(f.__block);
+    if (local >= 0) f.itemIndex = local;
+    delete f.__block;
+  }
 }
 
 function blockOf(el, blockIndex) {

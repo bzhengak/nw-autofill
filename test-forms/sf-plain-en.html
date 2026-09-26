@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Simulated SuccessFactors-style application (HK employer)</title>
+<style>
+  body { font: 14px/1.7 Arial, "Helvetica Neue", sans-serif; margin: 24px; }
+  fieldset { border: 1px solid #ccc; margin-bottom: 18px; padding: 12px 16px; }
+  legend { font-weight: bold; }
+  label { display: inline-block; width: 260px; }
+  .req { color: #c00; }
+  select, input[type=text] { width: 260px; padding: 4px; }
+</style></head>
+<body>
+<form id="applicationForm" method="post" action="/apply">
+
+  <fieldset><legend>Personal Information</legend>
+    <p><label for="first_name"><span class="req">*</span> First Name</label><input type="text" id="first_name" name="first_name"></p>
+    <p><label for="last_name"><span class="req">*</span> Last Name / Surname</label><input type="text" id="last_name" name="last_name"></p>
+    <p><label for="email">Email Address</label><input type="text" id="email" name="email"></p>
+    <p><label for="phone">Contact Number</label><input type="text" id="phone" name="phone" placeholder="e.g. 1234 5678"></p>
+    <p><label for="dob">Date of Birth</label><input type="text" id="dob" name="dob" placeholder="MM/DD/YYYY"></p>
+    <p><label for="nationality">Nationality</label><input type="text" id="nationality" name="nationality"></p>
+    <p><label for="ethnic">Ethnicity / Race</label><select id="ethnic" name="ethnic"><option value="">Please Select</option><option>Chinese</option><option>Other</option><option>Prefer not to say</option></select></p>
+  </fieldset>
+
+  <fieldset><legend>Work Authorization</legend>
+    <p><span class="req">*</span> Do you require sponsorship to work in Hong Kong?<br>
+      <label><input type="radio" name="sponsorship" value="Y"> Yes</label>
+      <label><input type="radio" name="sponsorship" value="N"> No</label>
+    </p>
+    <p><label for="work_auth">Current Work Authorization</label>
+      <select id="work_auth" name="work_auth"><option value="">Please Select</option>
+        <option>Hong Kong Permanent Resident</option><option>Hong Kong Citizen</option>
+        <option>Holder of Employment Visa</option><option>Would require sponsorship</option>
+      </select></p>
+    <p><label for="earliest">Earliest Available Date</label><input type="text" id="earliest" name="earliest" placeholder="YYYY-MM-DD"></p>
+    <p><label for="notice">Notice Period</label><input type="text" id="notice" name="notice"></p>
+  </fieldset>
+
+  <fieldset><legend>Education</legend>
+    <p><label for="highest_edu">Highest Qualification</label>
+      <select id="highest_edu" name="highest_edu"><option value="">Please Select</option>
+        <option>Bachelor</option><option>Master</option><option>PhD</option><option>Other</option></select></p>
+    <p><label for="institution">Institution</label><input type="text" id="institution" name="institution"></p>
+    <p><label for="study_major">Major / Field of Study</label><input type="text" id="study_major" name="study_major"></p>
+    <p><label for="study_start">Study Start Date</label><input type="text" id="study_start" name="study_start" placeholder="MM/YYYY"></p>
+    <p><label for="study_end">Study End Date</label><input type="text" id="study_end" name="study_end" placeholder="MM/YYYY"></p>
+  </fieldset>
+
+  <fieldset><legend>Employment</legend>
+    <p><label for="curr_company">Current / Most Recent Company</label><input type="text" id="curr_company" name="curr_company"></p>
+    <p><label for="curr_title">Current / Most Recent Job Title</label><input type="text" id="curr_title" name="curr_title"></p>
+    <p><label for="exp_salary">Expected Salary (HKD)</label><input type="text" id="exp_salary" name="exp_salary"></p>
+    <p><label for="ref_src">How did you hear about this position?</label>
+      <select id="ref_src" name="ref_src"><option value="">Please Select</option>
+        <option>Company Website</option><option>Careers Fair</option><option>Referral</option><option>Others</option></select></p>
+  </fieldset>
+
+  <fieldset><legend>Additional Information</legend>
+    <p><label for="self_intro">Self Introduction — why you are a good fit</label><br>
+      <textarea id="self_intro" name="self_intro" rows="5" cols="60"></textarea></p>
+    <p><label for="cv">Upload Resume</label><input type="file" id="cv" name="cv" accept=".pdf,.doc,.docx"></p>
+    <p><label for="security">Security Check (CAPTCHA)</label><input type="text" id="security" name="security" maxlength="6"></p>
+  </fieldset>
+
+  <p><button type="submit" name="submit">Submit Application</button>
+     <button type="button" name="save">Save for Later</button></p>
+</form>
+</body>
+</html>

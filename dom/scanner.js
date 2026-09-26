@@ -1,7 +1,7 @@
 // 表单扫描：把页面上"可填写的东西"抽成 core/matcher.js 能消费的描述对象。
 // 覆盖 open Shadow DOM、同源 iframe 内的控件、radio/checkbox 分组、重复经历区块。
 
-import { normalize, core } from '../core/matching.js';
+import { normalize, core, simplify, toHalfWidth } from '../core/matching.js';
 
 const IGNORE_INPUT_TYPES = new Set(['hidden', 'submit', 'button', 'image', 'reset']);
 const CONTROL_SELECTOR = 'input, textarea, select, [contenteditable="true"], [role="combobox"], [role="listbox"]';
@@ -172,10 +172,13 @@ function groupLabelOf(el, groupEls, doc) {
   for (let i = 0; i < 7 && node; i++) {
     const rawText = String(node.textContent || '');
     if (rawText.trim()) {
-      let residual = rawText;
-      for (const t of optionTexts) if (t) residual = residual.split(t).join(' ');
+      // 先按词元剔除选项，再归一化：normalize 会吃掉中文字间空格，'男 女' 会粘成 '男女' 删不掉，
+      // 性别组标签就会退化成"性别 男女"而失配。
+      const loose = s => simplify(toHalfWidth(String(s || ''))).toLowerCase();
+      const drop = new Set(optionTexts.map(t => loose(t).trim()).filter(Boolean));
+      const residual = loose(rawText).split(/[\s|｜·]+/).filter(w => w && !drop.has(w)).join(' ');
       const v = core(residual);
-      if (v && v.length >= 2 && v.length <= 24 && !/^(男|女|是|否|有|无|请选择|必填|限\d+字)$/.test(v)) {
+      if (v && v.length >= 2 && v.length <= 90 && !/^(男|女|是|否|有|无|请选择|必填|限\d+字)$/.test(v)) {
         return { text: v, source: 'group-container' };
       }
     }

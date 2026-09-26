@@ -10,18 +10,36 @@ import { scanForm } from '../dom/scanner.js';
 import { planFill } from '../core/matcher.js';
 import { applyPlan } from '../dom/filler.js';
 import { sampleProfile } from '../tests/fixtures/sample-profile.js';
-import { getValueByPath } from '../core/profile-schema.js';
+import { getValueByPath, equivalentsOf } from '../core/profile-schema.js';
 import { normalize, core, boolLike } from '../core/matching.js';
+import { matchAdapter } from '../core/adapters.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+function loadAdapters() {
+  const regPath = path.join(root, 'adapters', 'registry.json');
+  if (!fs.existsSync(regPath)) return [];
+  const reg = JSON.parse(fs.readFileSync(regPath, 'utf8'));
+  return (reg.files || []).map(f => JSON.parse(fs.readFileSync(path.join(root, f), 'utf8')));
+}
+const ADAPTERS = loadAdapters();
 
 function valueEquivalent(a, b) {
   const x = normalize(a), y = normalize(b);
   if (!x || !y) return false;
   if (x === y) return true;
-  const dx = x.replace(/[^\d]/g, ''), dy = y.replace(/[^\d]/g, '');
-  if (dx && dy && /^\d+$/.test(dx) && /^\d+$/.test(dy) && (dx.startsWith(dy) || dy.startsWith(dx))) return true;
-  return core(x).includes(core(y)) || core(y).includes(core(x));
+  const eqs = equivalentsOf(b).map(t => normalize(t)).filter(Boolean);
+  if (eqs.includes(x) || eqs.includes(core(x)) || core(x) === core(y)) return true;
+  // 日期只比数字集合：2001-03-15 与 03/15/2001 是同一个值
+  const ga = x.match(/\d+/g), gb = y.match(/\d+/g);
+  if (ga && gb && ga.slice().sort().join('') === gb.slice().sort().join('')) return true;
+  // 站点只要年月时，'06/2026' 对上 '2026-06-30' 属于正确的精度降级，不算填错
+  const ymd = s => { const m = String(s).match(/(20\d{2})\D*(\d{1,2})?(?:\D*(\d{1,2}))?/); return m ? { y: m[1], mo: m[2] ? m[2].padStart(2, '0') : '', d: m[3] ? m[3].padStart(2, '0') : '' } : null; };
+  const ya = ymd(x), yb = ymd(y);
+  if (ya && yb && ya.y === yb.y && (!ya.mo || !yb.mo || ya.mo === yb.mo) && (!ya.d || !yb.d || ya.d === yb.d)) return true;
+  const da = x.replace(/[^\d]/g, ''), db = y.replace(/[^\d]/g, '');
+  if (da && db && /^\d+$/.test(da) && /^\d+$/.test(db) && (da.startsWith(db) || db.startsWith(da))) return true;
+  return eqs.some(e => e.length > 2 && (x.includes(e) || e.includes(x)));
 }
 
 const forms = process.argv.slice(2).length
@@ -34,7 +52,8 @@ for (const file of forms) {
   const html = fs.readFileSync(path.join(root, 'test-forms', file), 'utf8');
   const expectedPath = path.join(root, 'tools', 'expected', file.replace(/\.html$/, '.json'));
   if (!fs.existsSync(expectedPath)) { console.log(`跳过 ${file}（无判分标准）`); continue; }
-  const { expect, mustNotTouch = [] } = JSON.parse(fs.readFileSync(expectedPath, 'utf8'));
+  const { expect, mustNotTouch = [], pageUrl = '' } = JSON.parse(fs.readFileSync(expectedPath, 'utf8'));
+  const adapter = pageUrl ? matchAdapter(pageUrl, ADAPTERS) : null;
 
   const dom = new JSDOM(html, { url: 'https://example.test/apply', pretendToBeVisual: true });
   const { window } = dom;
@@ -42,7 +61,7 @@ for (const file of forms) {
 
   const fields = scanForm(doc);
   const profile = sampleProfile();
-  const plan = planFill(fields, profile, { mode: 'full' });
+  const plan = planFill(fields, profile, { mode: 'full', adapter });
   const { results } = applyPlan(fields, plan.assignments, {});
 
   const byName = new Map();

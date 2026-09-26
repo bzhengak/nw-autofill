@@ -1,0 +1,36 @@
+{
+  "id": "successfactors",
+  "name": "SAP SuccessFactors Career Site",
+  "version": "0.1.0",
+  "family": "server-rendered-plain",
+  "domains": ["career10.successfactors.com", "*.successfactors.com", "*.sapsf.org", "*.sapsf.cn"],
+  "evidence": {
+    "method": "离线抓取公开职位页，无登录",
+    "checkedAt": "2026-09-26",
+    "observed": "career10.successfactors.com?company=hkjc（香港赛马会）返回 201KB 服务端渲染 HTML，含原生 <input>，CSS 中 .ant-*/.el-*/.van-* 均为 0，JS 标记为 jQuery/JSF 风格 → 属于传统表单，现有引擎可直接处理",
+    "verified": true,
+    "verifiedScope": "仅验证到『服务端渲染 + 原生控件』这一层；具体字段标签与日期格式仍需登录后确认"
+  },
+  "pins": [
+    { "match": "re:(require sponsorship|需要签证担保|需要担保)", "path": "hkGlobal.needSponsorship", "note": "SF/港企必问合规项，标签措辞稳定，钉位比让匈牙利去抢更可靠" },
+    { "match": "re:(current work authorization|right to work|工作许可状况)", "path": "hkGlobal.workAuth" },
+    { "match": "re:(earliest available date|available from|earliest start date)", "path": "intent.availableDate" },
+    { "match": "re:(notice period|离职通知期)", "path": "hkGlobal.noticePeriod" }
+  ],
+  "dateFormats": [
+    { "match": "re:(date of birth|dob|出生)", "format": "MM/dd/yyyy" },
+    { "match": "re:(earliest available|available from|earliest start date)", "format": "yyyy-MM-dd" }
+  ],
+  "aliases": [
+    { "path": "basics.lastName", "add": ["last name", "surname", "family name"] },
+    { "path": "basics.firstName", "add": ["first name", "given name", "forename"] },
+    { "path": "hkGlobal.needSponsorship", "add": ["do you require sponsorship", "visa sponsorship", "工作签证担保"] },
+    { "path": "hkGlobal.workAuth", "add": ["right to work", "work authorization", "legally entitled to work"] },
+    { "path": "intent.availableDate", "add": ["earliest available date", "available from", "notice period"] },
+    { "path": "hkGlobal.expectedCtc", "add": ["expected remuneration", "salary expectation", "desired package", "期望薪酬"] }
+  ],
+  "skip": [
+    { "match": "re:(ethnicity|race|disability|veteran|婚姻狀況)", "reason": "declaration_optional", "note": "这类合规自报项由你决定，不自动代填" }
+  ],
+  "notes": "港企与外企大量使用 SF；它的价值在于表单朴素、可预测，是英文侧最省力的一类。"
+}

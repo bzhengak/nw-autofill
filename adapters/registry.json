@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "note": "适配器清单。运行时由 content.js 按当前页面域名匹配；导入第三方 adapter 前必须过 validateAdapter。",
+  "files": [
+    "adapters/hkjob-antd.json",
+    "adapters/moka.json",
+    "adapters/successfactors.json"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "id": "moka",
+  "name": "Moka 招聘（app.mokahr.com）",
+  "version": "0.1.0",
+  "family": "moka-custom",
+  "domains": ["app.mokahr.com", "*.mokahr.com"],
+  "evidence": {
+    "method": "离线：从公司官网 careers 页提取真实投递入口 + 尝试抓取 mokahr 外壳",
+    "checkedAt": "2026-09-26",
+    "observed": "普华永道官网链到 app.mokahr.com/campus_apply/pwc/148260；安永链到 /social-recruitment/ey/102474；毕马威链到 /campus-recruitment/kpmg/74217；三者均带 locale=zh-CN 参数（同一租户双语）",
+    "blocked": "对 app.mokahr.com 的 direct HTTP 抓取在部分路径返回 fetch failed；仅拿到 404 外壳，其 CSS 中 .ant-* 与 .el-* 均为 0 → 判定 Moka 使用自研组件而非 AntD/Element",
+    "verified": false,
+    "todo": "四大的表单交互（Moka 的分步长表单、自定义下拉与日期）必须在已登录会话中确认"
+  },
+  "controlHints": {
+    "select": "[class*='select']",
+    "selectOption": "[class*='option']",
+    "formItemError": "[class*='error']"
+  },
+  "aliases": [
+    { "path": "basics.name", "add": ["候选人姓名", "姓名名称"] },
+    { "path": "contact.email", "add": ["常用邮箱", "个人邮箱"] },
+    { "path": "education.0.school", "add": ["最高学历学校", "毕业学校"] }
+  ],
+  "skip": [
+    { "match": "re:(测评|测试链接|性格测试)", "reason": "assessment" }
+  ],
+  "notes": "四大里三家（PwC/EY/KPMG）都是 Moka，这一个适配器的收益最高，也最需要真实会话验证。"
+}

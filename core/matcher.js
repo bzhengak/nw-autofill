@@ -1,7 +1,8 @@
 // 匹配流水线：页面字段描述 × profile → 分配方案（含置信分层与缺口归因）。
 // 纯函数，输入是 dom/scanner.js 产出的字段描述对象，不接触 DOM。
 
-import { buildFields, getValueByPath } from './profile-schema.js';
+import { buildFields, getValueByPath, equivalentsOf } from './profile-schema.js';
+import { planFromAdapter, dateFormatOverride } from './adapters.js';
 import { assignMaxWeight, scorePair, normalize, core, inferDateFormat, boolLike, signals } from './matching.js';
 
 const AUTO_THRESHOLD = 0.75;   // 绿：直接填
@@ -34,22 +35,24 @@ function blockReason(pageField) {
   return null;
 }
 
-/** 枚举/单选/多选：把 profile 的值映射到页面 option 的原始文本 */
+/** 枚举/单选/多选：把 profile 的值映射到页面 option 的原始文本（跨中英等价） */
 export function resolveOption(pageField, value) {
   const opts = pageField.options || [];
   if (!opts.length) return null;
   const target = normalize(value);
   if (!target) return null;
-  const exact = opts.find(o => normalize(o.text) === target || core(o.text) === core(value));
+  const eqs = equivalentsOf(value).map(x => normalize(x)).filter(Boolean);
+  const exact = opts.find(o => eqs.includes(normalize(o.text)) || eqs.includes(core(o.text)));
   if (exact) return exact;
   const targetSig = signals(target);
   let best = null, bestScore = 0;
   for (const o of opts) {
     const ot = normalize(o.text);
     if (!ot) continue;
-    if (ot.includes(target) || target.includes(ot)) {
-      // 包含即视为强匹配：'硕士' → '硕士研究生'。短的一方越接近长的一方，权重越高。
-      const ratio = Math.min(ot.length, target.length) / Math.max(ot.length, target.length);
+    if (eqs.some(eq => ot.includes(eq) || eq.includes(ot))) {
+      // 包含即视为强匹配：'硕士' → '硕士研究生' / 'Master of Science'
+      const eq = eqs.find(e => ot.includes(e) || e.includes(ot)) || target;
+      const ratio = Math.min(ot.length, eq.length) / Math.max(ot.length, eq.length);
       const s = 0.62 + 0.38 * ratio;
       if (s > bestScore) { bestScore = s; best = o; }
       continue;
@@ -75,6 +78,8 @@ function os_tokens(text) {
 export function planFill(pageFields, profile, opts = {}) {
   const mode = opts.mode || 'full';
   const schemaFields = buildFields();
+  const { pins, skip } = planFromAdapter(pageFields, opts.adapter);
+  const pinned = [];
   const assignments = [];
   const gaps = [];
   const considered = [];
@@ -83,6 +88,25 @@ export function planFill(pageFields, profile, opts = {}) {
     const blocked = blockReason(pf);
     if (blocked) {
       gaps.push({ index, label: pf.label || pf.name || pf.id || '(未命名字段)', reason: blocked, kind: pf.kind });
+      return;
+    }
+    if (skip.has(index)) {
+      gaps.push({ index, label: pf.label || '(无标签)', reason: skip.get(index), kind: pf.kind });
+      return;
+    }
+    const pinPath = pins.get(index);
+    if (pinPath) {
+      const pinField = schemaFields.find(f => f.path === pinPath);
+      const pinValue = String(getValueByPath(profile, pinPath) ?? '').trim();
+      if (pinField && pinValue) {
+        pinned.push({
+          index, path: pinPath, label: pf.label || '', score: 1, value: pinValue,
+          profileType: pinField.type, sensitive: pinField.sensitive,
+          tier: pinField.sensitive ? 'review' : 'auto', pinned: true,
+        });
+      } else {
+        gaps.push({ index, label: pf.label || '(无标签)', reason: 'pinned_field_empty', kind: pf.kind });
+      }
       return;
     }
     const hasValue = String(pf.currentValue ?? '').trim() !== '';
@@ -174,14 +198,32 @@ export function planFill(pageFields, profile, opts = {}) {
       else if (pageOptions.length) { entry.tier = 'review'; entry.note = '页面选项与你的资料无对应，需人工选择'; delete entry.value; }
     }
 
-    if (sf.type === 'date' || sf.type === 'month' || sf.type === 'year' || pf.type === 'date') {
-      entry.dateFormat = sf.type === 'year' ? 'yyyy'
-        : sf.type === 'month' ? inferDateFormat({ label: pf.label, placeholder: pf.placeholder, sample: pf.sampleValue, inputType: pf.inputType === 'month' ? 'month' : '' })
-        : inferDateFormat({ label: pf.label, placeholder: pf.placeholder, sample: pf.sampleValue, inputType: pf.inputType });
+    const adapterDate = dateFormatOverride(opts.adapter, pf);
+    if (adapterDate || sf.type === 'date' || sf.type === 'month' || sf.type === 'year' || pf.type === 'date') {
+      entry.dateFormat = adapterDate
+        || (sf.type === 'year' ? 'yyyy'
+          : sf.type === 'month' ? inferDateFormat({ label: pf.label, placeholder: pf.placeholder, sample: pf.sampleValue, inputType: pf.inputType === 'month' ? 'month' : '' })
+            : inferDateFormat({ label: pf.label, placeholder: pf.placeholder, sample: pf.sampleValue, inputType: pf.inputType }));
       if (entry.dateFormat === 'yyyy-MM-dd' && sf.type === 'month') entry.dateFormat = 'yyyy-MM';
     }
     assignments.push(entry);
   });
+
+  // 钉位字段：跳过打分竞争，直接指定路径，但同样要解析 option 与日期格式
+  for (const entry of pinned) {
+    const pf = pageFields[entry.index];
+    if (pf.kind === 'select' || pf.kind === 'radio' || pf.kind === 'checkbox') {
+      const opt = resolveOption(pf, entry.value);
+      if (opt) entry.optionValue = opt.value ?? opt.text;
+      else { entry.tier = 'review'; entry.note = '页面选项与你的资料无对应，需人工选择'; }
+    }
+    const df = dateFormatOverride(opts.adapter, pf);
+    if (df) entry.dateFormat = df;
+    else if (entry.profileType === 'date' || entry.profileType === 'month') {
+      entry.dateFormat = inferDateFormat({ label: pf.label, placeholder: pf.placeholder, sample: pf.sampleValue, inputType: pf.inputType });
+    }
+    assignments.push(entry);
+  }
 
   const total = pageFields.length;
   const stats = {

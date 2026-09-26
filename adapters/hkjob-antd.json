@@ -1,0 +1,35 @@
+{
+  "id": "hkjob-antd",
+  "name": "北森 hotjob 招聘云（wecruit）校招壳",
+  "version": "0.1.0",
+  "family": "react-antd",
+  "domains": ["wecruit.hotjob.cn", "*.hotjob.cn"],
+  "evidence": {
+    "method": "离线抓取公开 bundle 指纹，无登录",
+    "checkedAt": "2026-09-26",
+    "observed": "德勤租户 /pb/css/vendor.css 内 .ant-* 类 5822 个、.el-* 0 个；另一租户 SU6a8fb99e 同样 6401 个 .ant-*、0 个 .el-*；JS 内含 React/antd 标记",
+    "publicApis": "/mc/position/campus、/resume/info/get/、/delivery/resume/、/delivery/templateResume/get/（从公开 bundle 提取，未调用）",
+    "verified": false,
+    "todo": "表单控件的真实交互（Select 虚拟列表、级联、日期面板）必须在已登录会话里确认后才能置 verified:true"
+  },
+  "controlHints": {
+    "select": ".ant-select",
+    "selectOption": ".ant-select-item-option",
+    "cascader": ".ant-cascader-picker",
+    "datePicker": ".ant-picker",
+    "dateCell": ".ant-picker-cell",
+    "formItemError": ".ant-form-item-explain-error"
+  },
+  "aliases": [
+    { "path": "education.*.degree", "add": ["最高学历", "最高学历（含在读）", "现学历"] },
+    { "path": "education.*.school", "add": ["最高学历毕业院校", "毕业院校", "学校名称"] },
+    { "path": "intent.cities", "add": ["意向工作城市", "期望工作地", "工作地点"] },
+    { "path": "intent.position", "add": ["应聘职位", "志愿职位"] }
+  ],
+  "skip": [
+    { "match": "身份证正面", "reason": "photo_upload" },
+    { "match": "人脸识别", "reason": "biometric" },
+    { "match": "re:(验证码|captcha)", "reason": "captcha" }
+  ],
+  "notes": "同租户下 /mc/detail 与 /pb/ 是两套皮肤，.ant-* 计数差两个数量级，说明部分页面并非 AntD；按租户逐条确认，不要假设整个域名统一。"
+}

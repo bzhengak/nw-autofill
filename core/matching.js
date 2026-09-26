@@ -146,8 +146,18 @@ export function scorePair(pageField, profileField) {
     const ac = core(a);
     if (ac && normLabel && core(normLabel) === ac) best = Math.max(best, 0.95);
     if (ac && ac.length >= 2) {
-      if (normLabel.includes(ac)) best = Math.max(best, 0.86 + Math.min(0.06, ac.length / 60));
-      else if (ac.includes(normLabel) && normLabel.length >= 2) best = Math.max(best, 0.7);
+      const labelCore = core(normLabel);
+      if (labelCore.includes(ac)) {
+        // 按"别名覆盖了标签多少内容"给分：'last name' 命中 'Last Name / Surname' 要比 'name' 更可信
+        const cover = Math.min(1, ac.length / Math.max(labelCore.length, 1));
+        best = Math.max(best, 0.55 + 0.4 * cover);
+      } else if (ac.includes(labelCore) && labelCore.length >= 2) {
+        best = Math.max(best, 0.68);
+      } else if (/^[a-z ]+$/.test(ac) && ac.length >= 8) {
+        // 英文词形变化：institute/institution、qualify/qualification 应当算同一语义
+        const stem = ac.slice(0, Math.max(6, ac.length - 3));
+        if (labelCore.includes(stem)) best = Math.max(best, 0.55 + 0.4 * Math.min(1, stem.length / Math.max(labelCore.length, 1)));
+      }
     }
   }
 
@@ -197,9 +207,13 @@ export function scorePair(pageField, profileField) {
   }
 
   // 重复区块对齐：页面第 i 段经历优先映射到 profile 第 i 段
+  // 重复区块对齐：页面第 i 段经历优先映射到 profile 第 i 段。
+  // 但页面没识别出重复区块时（英文表单大多是单块布局），映射到第 0 槽是正常情况，不该罚。
   if (pageField.itemIndex != null && profileField.itemIndex != null) {
     best *= pageField.itemIndex === profileField.itemIndex ? 1.08 : 0.82;
-  } else if ((pageField.itemIndex == null) !== (profileField.itemIndex == null)) {
+  } else if (pageField.itemIndex == null && profileField.itemIndex != null) {
+    best *= profileField.itemIndex === 0 ? 1 : 0.9;
+  } else if (pageField.itemIndex != null && profileField.itemIndex == null) {
     best *= 0.8;
   }
   // 章节归属惩罚只用于"经历类"可重复分组（work / internship / education / projects…），

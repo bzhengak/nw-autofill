@@ -1,0 +1,25 @@
+{
+  "pageUrl": "https://career10.successfactors.com/careers?company=hkjc",
+  "expect": {
+    "first_name": "basics.firstName",
+    "last_name": "basics.lastName",
+    "email": "contact.email",
+    "phone": "contact.phone",
+    "dob": "basics.birthDate",
+    "nationality": "basics.nationality",
+    "sponsorship": "hkGlobal.needSponsorship",
+    "work_auth": "hkGlobal.workAuth",
+    "earliest": "intent.availableDate",
+    "notice": "hkGlobal.noticePeriod",
+    "highest_edu": "education.0.degree",
+    "institution": "education.0.school",
+    "study_major": "education.0.major",
+    "study_start": "education.0.enrollDate",
+    "study_end": "education.0.gradDate",
+    "curr_company": "work.0.company",
+    "curr_title": "work.0.title",
+    "exp_salary": "intent.salary"
+  },
+  "mustNotTouch": ["self_intro", "cv", "security", "ethnic"],
+  "notes": "ethnic 由 SuccessFactors 适配器的 skip 规则挡下（合规自报项不代填）；ref_src 故意不给期望值，因为资料里的「官网」与该站点选项集合是否有等价关系尚未确认，允许它落成缺口。"
+}

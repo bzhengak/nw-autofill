@@ -211,7 +211,7 @@ export const SECTIONS = [
       ['position2', '备选岗位', 'secondary preference|alternative position|第二志愿|备选岗位', 'text', ''],
       ['cities', '意向城市', 'preferred city|desired location|work location|意向城市|期望工作地|工作地点', 'text', 'L'],
       ['acceptRelocation', '是否接受调剂/异地', 'relocation|accept transfer|是否接受调剂|服从分配', 'bool', ''],
-      ['availableDate', '最早到岗时间', 'available date|earliest start|start date|notice period|到岗时间|最早入职|可入职时间', 'date', ''],
+      ['availableDate', '最早到岗时间', 'available date|available from|earliest available date|earliest start date|到岗时间|最早入职|可入职时间', 'date', ''],
       ['durationMonths', '可实习时长（月）', 'internship duration|available months|duration|实习时长|可实习几个月', 'num', ''],
       ['weeklyDays', '每周可出勤天数', 'days per week|weekly availability|每周天数|实习天数', 'num', ''],
       ['salary', '期望薪资', 'expected salary|salary expectation|desired compensation|ctc|expected ctc|薪资要求|期望薪水', 'text', 'S'],
@@ -315,6 +315,49 @@ export const OPTION_SETS = {
   channel: ['官网', '牛客', '应届生求职网', '学校就业网', '学长学姐内推', 'LinkedIn', 'Company Website', 'Careers Fair', 'Referral', '其他'],
   workAuth: ['本地居民', '公民', '持工作签证', '学生签证（可兼职/OPT/CPT）', '需申请工作签证', 'Citizen', 'Permanent Resident', 'Holder of Employment Visa', 'Require Sponsorship'],
 };
+
+/**
+ * 中英值等价表：profile 里存中文，站点下拉却是英文（反之亦然）。
+ * 没有这一层，"硕士"永远匹配不上 option "Master"，英文表单的枚举字段会整片失败。
+ */
+export const VALUE_EQUIVALENTS = [
+  ['硕士', '硕士研究生', 'Master', 'MPhil', 'MSc', 'M.S.', 'MBA'],
+  ['本科', '学士', 'Bachelor', 'BSc', 'BEng', 'B.A.', 'Undergraduate'],
+  ['博士', 'PhD', 'Doctorate', 'Doctor of Philosophy'],
+  ['大专', '专科', 'Diploma', 'Associate Degree'],
+  ['全日制', '统招全日制', 'Full-time', 'Full Time'],
+  ['非全日制', '在职', 'Part-time', 'Part Time'],
+  ['男', 'Male', 'M'],
+  ['女', 'Female', 'F'],
+  ['是', '有', '同意', '接受', 'Yes', 'Y', 'True'],
+  ['否', '无', '不同意', '不接受', 'No', 'N', 'False'],
+  ['中共党员', 'CPC Member', 'Party Member'],
+  ['共青团员', 'CYL Member'],
+  ['群众', 'Non-party Member', 'Ordinary Citizen'],
+  ['应届毕业生', 'Fresh Graduate', 'Recent Graduate', 'Graduating Student'],
+  ['精通', 'Expert', 'Proficient', 'Advanced'],
+  ['熟练', 'Good', 'Well', 'Working Knowledge'],
+  ['母语', 'Native', 'Native Speaker', '母语水平'],
+  ['流利', 'Fluent', 'Professional', '工作语言'],
+  ['本地居民', 'Permanent Resident', 'PR', 'HK Permanent Resident'],
+  ['公民', 'Citizen', 'Hong Kong Citizen'],
+  ['需申请工作签证', 'Require Sponsorship', 'Need Visa', 'Would require sponsorship'],
+  ['现场办公', 'Onsite', 'On-site'],
+  ['混合办公', 'Hybrid'],
+  ['远程', 'Remote', 'Work from home'],
+  ['中国居民身份证', 'PRC Identity Card', 'Chinese ID Card'],
+  ['护照', 'Passport'],
+];
+
+export function equivalentsOf(value) {
+  const v = String(value || '').trim().toLowerCase();
+  if (!v) return [];
+  const out = new Set([v]);
+  for (const group of VALUE_EQUIVALENTS) {
+    if (group.some(x => x.toLowerCase() === v)) group.forEach(x => out.add(x.toLowerCase()));
+  }
+  return [...out];
+}
 
 const SENSITIVE = 'S';
 const MULTI = 'L';

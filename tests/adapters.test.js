@@ -1,0 +1,91 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { validateAdapter, matchAdapter, planFromAdapter, dateFormatOverride } from '../core/adapters.js';
+import { planFill } from '../core/matcher.js';
+import { sampleProfile } from './fixtures/sample-profile.js';
+import { createEmptyProfile, getValueByPath } from '../core/profile-schema.js';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const registry = JSON.parse(fs.readFileSync(path.join(root, 'adapters/registry.json'), 'utf8'));
+const ADAPTERS = registry.files.map(f => JSON.parse(fs.readFileSync(path.join(root, f), 'utf8')));
+
+const pf = o => ({ kind: o.kind || 'text', label: o.label || '', name: o.name || '', id: o.id || '', placeholder: o.placeholder || '', currentValue: o.currentValue ?? '', options: o.options || [], required: !!o.required, sectionHint: '', itemIndex: null, nearbyLabels: [], autocomplete: '', type: o.type || '' });
+
+test('自带适配器全部通过校验', () => {
+  for (const a of ADAPTERS) assert.deepEqual(validateAdapter(a), [], `${a.id} 校验失败`);
+});
+
+test('校验层拒绝远程链接、未知键与危险正则', () => {
+  assert.ok(validateAdapter({ id: 'x', domains: ['a.com'], fetch: 'bad' }).length);
+  assert.ok(validateAdapter({ id: 'x', domains: ['a.com' ], unknownKey: 1 }).some(e => e.includes('未知键')));
+  assert.ok(validateAdapter({ id: 'x', domains: ['a.com'], skip: [{ match: 're:(a|)', reason: 'r' }] }).some(e => e.includes('危险正则')));
+  assert.ok(validateAdapter({ id: 'x', domains: ['a.com'], pins: [{ match: '姓名', path: 'basics.name', endpoint: 'x' }] }).length);
+  assert.ok(validateAdapter({ id: 'x', domains: ['a.com'], skip: [{ match: 'x', reason: 'r' }], note: '见 https://evil.test' }).some(e => e.includes('http')));
+  assert.ok(validateAdapter({ id: 'x', domains: ['-bad-'] }).length);
+});
+
+test('域名匹配：精确与子域', () => {
+  assert.equal(matchAdapter('https://wecruit.hotjob.cn/SU123/pb/x.html', ADAPTERS)?.id, 'hkjob-antd');
+  assert.equal(matchAdapter('https://app.mokahr.com/campus-recruitment/kpmg/74217', ADAPTERS)?.id, 'moka');
+  assert.equal(matchAdapter('https://career10.successfactors.com/careers', ADAPTERS)?.id, 'successfactors');
+  assert.equal(matchAdapter('https://example.com/x', ADAPTERS), null);
+});
+
+test('回归：re: 规则里的括号不得被当成"要删掉的括号注释"从而退化成匹配一切', () => {
+  const adapter = { id: 't', domains: ['a.com'], skip: [{ match: 're:(ethnicity|race|disability)', reason: 'declaration_optional' }] };
+  const fields = [pf({ label: 'Ethnicity / Race' }), pf({ label: 'First Name' }), pf({ label: 'Email Address' })];
+  const { skip } = planFromAdapter(fields, adapter);
+  assert.deepEqual([...skip.keys()], [0]);
+  assert.equal(skip.get(0), 'declaration_optional');
+});
+
+test('普通（非 re:）匹配仍按归一化文本判断', () => {
+  const adapter = { id: 't', domains: ['a.com'], pins: [{ match: '最高学历（含在读）', path: 'education.0.degree' }] };
+  const { pins } = planFromAdapter([pf({ label: '最高学历' })], adapter);
+  assert.equal(pins.get(0), 'education.0.degree');
+});
+
+test('钉位与日期覆盖会进入填写计划', () => {
+  const sf = ADAPTERS.find(a => a.id === 'successfactors');
+  const fields = [
+    pf({ label: 'Date of Birth', name: 'dob', placeholder: 'MM/DD/YYYY' }),
+    pf({ label: 'Ethnicity / Race', name: 'ethnic', kind: 'select', options: [{ text: 'Chinese', value: '1' }] }),
+    pf({ label: 'Current Work Authorization', name: 'work_auth', kind: 'select', options: [{ text: 'Hong Kong Permanent Resident', value: '2' }, { text: 'Would require sponsorship', value: '3' }] }),
+  ];
+  const plan = planFill(fields, sampleProfile(), { adapter: sf });
+  const byIndex = new Map(plan.assignments.map(a => [a.index, a]));
+  assert.equal(byIndex.get(0).dateFormat, 'MM/dd/yyyy', 'adapter 的日期覆盖优先');
+  assert.ok(!byIndex.has(1), 'Ethnicity 应被 skip 掉');
+  assert.ok(plan.gaps.some(g => g.index === 1 && g.reason === 'declaration_optional'));
+  assert.ok(byIndex.has(2), 'Work Authorization 应靠中英等价表命中');
+});
+
+test('中英值等价：硕士 ↔ Master，本地居民 ↔ Hong Kong Permanent Resident', () => {
+  const fields = [
+    pf({ label: 'Highest Qualification', kind: 'select', options: [{ text: 'Bachelor', value: 'b' }, { text: 'Master', value: 'm' }] }),
+    pf({ label: 'Do you require sponsorship to work in Hong Kong?', kind: 'radio', options: [{ text: 'Yes', value: 'Y' }, { text: 'No', value: 'N' }] }),
+  ];
+  const plan = planFill(fields, sampleProfile(), {});
+  const got = new Map(plan.assignments.map(a => [a.index, a]));
+  assert.equal(got.get(0).path, 'education.0.degree');
+  assert.equal(got.get(0).optionValue, 'm');
+  assert.equal(got.get(1).path, 'hkGlobal.needSponsorship');
+  assert.equal(got.get(1).optionValue, 'N', '资料里的「否」要选到英文 No');
+});
+
+test('空 profile 时钉位给出可诊断的缺口而不是静默', () => {
+  const adapter = { id: 't', domains: ['a.com'], pins: [{ match: '姓名', path: 'basics.name' }] };
+  const plan = planFill([pf({ label: '姓名' })], createEmptyProfile(), { adapter });
+  assert.ok(plan.gaps.some(g => g.reason === 'pinned_field_empty'));
+});
+
+test('适配器不会改动原始 profile 对象', () => {
+  const base = sampleProfile();
+  const before = JSON.stringify(base);
+  planFill([pf({ label: '姓名' })], base, { adapter: ADAPTERS[0] });
+  assert.equal(JSON.stringify(base), before);
+});

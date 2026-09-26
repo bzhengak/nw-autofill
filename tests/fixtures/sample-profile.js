@@ -6,6 +6,11 @@ export function sampleProfile() {
   const p = createEmptyProfile();
   const set = (path, value) => setValueByPath(p, path, String(value));
   const data = {
+    'basics.nationality': 'China',
+    'basics.ethnicity': '汉族',
+    'basics.heightCm': '175',
+    'hkGlobal.workAuth': '本地居民',
+    'hkGlobal.noticePeriod': '14 days',
     'basics.name': '张伟',
     'basics.lastName': '张',
     'basics.firstName': '伟',

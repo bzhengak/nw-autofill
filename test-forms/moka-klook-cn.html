@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>仿真 Moka 校招简历页（Klook 结构复刻）</title>
+<style>
+  body { font: 14px/1.7 "Microsoft YaHei", Arial, sans-serif; margin: 18px; }
+  .mk-item { margin-bottom: 12px; }
+  .mk-label { color: #333; }
+  .mk-control { display: flex; gap: 6px; align-items: center; }
+  .mk-input { border: 1px solid #ccc; border-radius: 4px; padding: 6px 8px; width: 240px; }
+  .mk-sep { color: #999; }
+</style>
+</head>
+<body>
+<!--
+  复刻 2026-09-27 用户实测导出的 app.mokahr.com/campus-recruitment/klook/128531#/candidateHome/resume：
+  · 55 控件 · 0 <select> · 下拉全是 placeholder=请选择 的文本框
+  · 姓名/手机号码/邮箱由账号带出，disabled
+  · 出生日期只读，由身份证推导
+  · 日期是 年 + "-" + 月 成对框，且"公司名称/职位名称/工作职责"这类块重复出现多次
+  结构来自零取值探针导出，控件交互（下拉展开）未验证，也不在本插件职责内。
+-->
+<form id="klookForm">
+  <div class="mk-item"><div class="mk-label">姓名</div>
+    <div><input class="mk-input" type="text" placeholder="姓名" disabled data-nw-test="name"></div></div>
+  <div class="mk-item"><div class="mk-label">手机号码</div>
+    <div><input class="mk-input" type="text" placeholder="手机号码" disabled data-nw-test="mobile"></div></div>
+  <div class="mk-item"><div class="mk-label">邮箱</div>
+    <div><input class="mk-input" type="text" placeholder="邮箱" disabled data-nw-test="email"></div></div>
+  <div class="mk-item"><div class="mk-label">性别</div>
+    <div><input class="mk-input" type="text" placeholder="请选择" data-nw-test="gender"></div></div>
+  <div class="mk-item"><div class="mk-label">工作经验</div>
+    <div><input class="mk-input" type="text" placeholder="请选择" data-nw-test="work_exp"></div></div>
+  <div class="mk-item"><div class="mk-label">最高学历</div>
+    <div><input class="mk-input" type="text" placeholder="请选择" data-nw-test="highest_degree"></div></div>
+  <div class="mk-item"><div class="mk-label">所在地</div>
+    <div><input class="mk-input" type="text" placeholder="所在地" data-nw-test="location"></div></div>
+  <div class="mk-item"><div class="mk-label">最近公司</div>
+    <div><input class="mk-input" type="text" placeholder="最近公司" data-nw-test="last_company"></div></div>
+  <div class="mk-item"><div class="mk-label">证件类型</div>
+    <div><label class="mk-label">身份证<input class="mk-input" type="text" data-nw-test="id_type"></label></div></div>
+  <div class="mk-item"><div class="mk-label">证件号码</div>
+    <div><input class="mk-input" type="text" placeholder="证件号码" data-nw-test="id_number"></div></div>
+  <div class="mk-item"><div class="mk-label">出生日期 (年龄)</div>
+    <div><input class="mk-input" type="text" placeholder="出生日期 (年龄)" readonly data-nw-test="birth_ro"></div></div>
+  <div class="mk-item"><div class="mk-label">当前薪资</div>
+    <div><input class="mk-input" type="text" placeholder="当前薪资" data-nw-test="current_salary"></div></div>
+  <div class="mk-item"><div class="mk-label">期望薪资</div>
+    <div><input class="mk-input" type="text" placeholder="期望薪资" data-nw-test="expected_salary"></div></div>
+  <div class="mk-item"><div class="mk-label">期望城市</div>
+    <div><input class="mk-input" type="text" placeholder="期望城市" data-nw-test="expected_city"></div></div>
+
+  <div class="mk-item"><div class="mk-label">公司名称</div>
+    <div><input class="mk-input" type="text" placeholder="公司名称" data-nw-test="company_1"></div></div>
+  <div class="mk-item"><div class="mk-label">职位名称</div>
+    <div><input class="mk-input" type="text" placeholder="职位名称" data-nw-test="title_1"></div></div>
+  <div class="mk-item"><div class="mk-label">工作职责</div>
+    <div><textarea class="mk-input" placeholder="内容" data-nw-test="duty_1"></textarea></div></div>
+  <div class="mk-item"><div class="mk-label">起止时间</div>
+    <div class="mk-control"><input class="mk-input" type="text" placeholder="年" data-nw-test="y1">
+      <span class="mk-sep">-</span><input class="mk-input" type="text" placeholder="月" data-nw-test="m1">
+      <span class="mk-sep">-</span><input class="mk-input" type="text" placeholder="年" data-nw-test="y2">
+      <span class="mk-sep">-</span><input class="mk-input" type="text" placeholder="月" data-nw-test="m2"></div></div>
+
+  <div class="mk-item"><div class="mk-label">学校名称</div>
+    <div><input class="mk-input" type="text" placeholder="请输入就读学校" data-nw-test="school"></div></div>
+  <div class="mk-item"><div class="mk-label">专业名称</div>
+    <div><input class="mk-input" type="text" placeholder="请输入专业名称" data-nw-test="major"></div></div>
+  <div class="mk-item"><div class="mk-label">学历</div>
+    <div><input class="mk-input" type="text" placeholder="请选择" data-nw-test="edu_degree"></div></div>
+
+  <div class="mk-item"><div class="mk-label">公司名称</div>
+    <div><input class="mk-input" type="text" placeholder="公司名称" data-nw-test="company_2"></div></div>
+  <div class="mk-item"><div class="mk-label">职位名称</div>
+    <div><input class="mk-input" type="text" placeholder="职位名称" data-nw-test="title_2"></div></div>
+  <div class="mk-item"><div class="mk-label">工作职责</div>
+    <div><textarea class="mk-input" placeholder="内容" data-nw-test="duty_2"></textarea></div></div>
+
+  <div class="mk-item"><div class="mk-label">项目名称</div>
+    <div><input class="mk-input" type="text" placeholder="项目名称" data-nw-test="project_name"></div></div>
+  <div class="mk-item"><div class="mk-label">职责</div>
+    <div><input class="mk-input" type="text" placeholder="职责" data-nw-test="project_duty"></div></div>
+  <div class="mk-item"><div class="mk-label">项目描述</div>
+    <div><textarea class="mk-input" placeholder="内容" data-nw-test="project_desc"></textarea></div></div>
+
+  <div class="mk-item"><div class="mk-label">语言类型</div>
+    <div><input class="mk-input" type="text" placeholder="语言类型" data-nw-test="language"></div></div>
+  <div class="mk-item"><div class="mk-label">掌握程度</div>
+    <div><input class="mk-input" type="text" placeholder="请选择" data-nw-test="proficiency"></div></div>
+  <div class="mk-item"><div class="mk-label">听说</div>
+    <div><input class="mk-input" type="text" placeholder="请选择" data-nw-test="listening"></div></div>
+  <div class="mk-item"><div class="mk-label">读写</div>
+    <div><input class="mk-input" type="text" placeholder="请选择" data-nw-test="writing"></div></div>
+
+  <div class="mk-item"><div class="mk-label">自我描述</div>
+    <div><textarea class="mk-input" placeholder="简介" data-nw-test="about_me"></textarea></div></div>
+  <div class="mk-item"><div class="mk-label">奖项名称</div>
+    <div><input class="mk-input" type="text" placeholder="奖项名称" data-nw-test="award_name"></div></div>
+
+  <p><button type="submit">提交</button></p>
+</form>
+</body>
+</html>

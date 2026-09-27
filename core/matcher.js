@@ -3,7 +3,7 @@
 
 import { buildFields, getValueByPath, equivalentsOf } from './profile-schema.js';
 import { planFromAdapter, dateFormatOverride } from './adapters.js';
-import { assignMaxWeight, scorePair, normalize, core, inferDateFormat, boolLike, signals, negationMismatch } from './matching.js';
+import { assignMaxWeight, scorePair, normalize, core, inferDateFormat, boolLike, signals, negationMismatch, AMBIGUOUS_SECTIONS } from './matching.js';
 
 const AUTO_THRESHOLD = 0.75;   // 绿：直接填
 const REVIEW_THRESHOLD = 0.52; // 黄：填了但要求你复核
@@ -14,7 +14,7 @@ const BLOCK_PATTERNS = [
   { re: /(captcha|recaptcha|滑块|验证码|校验码|语音验证码|短信验证码|人机验证|行为验证|图形验证|verif(?:ication)?\s*(?:code|check)|(?<![a-z])otp(?![a-z])|security\s*(?:code|check|question)|check\s*code)/i, reason: 'captcha' },
   { re: /(password|密码|口令|api\s*key|secret)/i, reason: 'credential' },
   { re: /(上传|附件|简历文件|upload|attachment|portfolio\s*file)/i, reason: 'file', whenFile: true },
-  { re: /(自我评价|自我介绍|个人总结|个人优势|self[\s-]?introduction|about\s*me|为什么|动机|why\s*(us|you)|cover\s*letter|career\s*plan|职业规划|describe\s*your|short\s*answer|essay)/i, reason: 'subjective' },
+  { re: /(自我评价|自我描述|自我介绍|个人简介|个人总结|个人优势|self[\s-]?introduction|about\s*me|why\s*you|profile\s*summary|为什么|动机|cover\s*letter|career\s*plan|职业规划|describe\s*your|short\s*answer|essay)/i, reason: 'subjective' },
   { re: /(测评|笔试|性格测试|认知能力|assessment|aptitude|psychometric)/i, reason: 'assessment' },
   { re: /(电子签名|签名|signature)/i, reason: 'signature' },
   // 同意类声明必须由本人勾选：某同类开源项目自动勾选"已阅读并同意隐私政策"并自动应答合规声明，
@@ -160,6 +160,12 @@ export function planFill(pageFields, profile, opts = {}) {
       gaps.push({ index, label: pf.label || pf.name || pf.id || '(未命名字段)', reason: blocked, kind: pf.kind });
       return;
     }
+    // 只读框是站点自己算出来的（Moka 的"出生日期 (年龄)"由身份证推导、账号带出的姓名手机等）：
+    // 计划里出现它就注定一条红，还会让人以为是我们填不动
+    if (pf.readOnly && pf.kind !== 'contenteditable') {
+      gaps.push({ index, label: pf.label || pf.name || pf.id || '(未命名字段)', reason: 'readonly_control', kind: pf.kind, note: '站点只读/自动推导，无需填写' });
+      return;
+    }
     if (skip.has(index)) {
       gaps.push({ index, label: pf.label || '(无标签)', reason: skip.get(index), kind: pf.kind });
       return;
@@ -222,6 +228,21 @@ export function planFill(pageFields, profile, opts = {}) {
       if (s >= REVIEW_THRESHOLD) candidates.push({ c, sf, value, s });
     }
     candidates.sort((a, b) => b.s - a.s);
+    // 章节线索是启发式证据，不该变成一票否决：Moka/Klook 把"工作职责"放在 工作经历 区块里，
+    // 而这份简历只有实习经历（work.* 全空）→ 实习的 summary 被 0.55 罚下后一个候选都不剩，
+    // 页面就变成"我们没有词"。这里放宽一次章节惩罚重算，命中就降级为待复核，绝不自动写。
+    if (!candidates.length && pf.sectionHint) {
+      const relaxed = { ...pf, sectionHint: '' };
+      for (let c = 0; c < schemaFields.length; c++) {
+        const sf = schemaFields[c];
+        if (sf.section !== pf.sectionHint && !AMBIGUOUS_SECTIONS.has(sf.section)) continue;
+        const value = String(getValueByPath(profile, sf.path) ?? '').trim();
+        if (!value) continue;
+        const s = scorePair(relaxed, sf);
+        if (s >= REVIEW_THRESHOLD) candidates.push({ c, sf, value, s: s * 0.95, relaxedHint: true });
+      }
+      candidates.sort((a, b) => b.s - a.s);
+    }
     considered.push({ index, top: candidates.slice(0, TOP_K) });
   });
 
@@ -279,6 +300,7 @@ export function planFill(pageFields, profile, opts = {}) {
       tier: chosen.score >= AUTO_THRESHOLD && !sf.sensitive ? 'auto' : 'review',
     };
     if (sf.sensitive && chosen.score >= AUTO_THRESHOLD) entry.reason = 'sensitive_requires_review';
+    if (chosen.cand.relaxedHint) { entry.tier = 'review'; entry.note = '章节线索与资料分组不一致，请确认这一栏到底算哪段经历'; }
 
     if (entry.tier === 'review' && chosen.score < AUTO_THRESHOLD) entry.note = '置信度不足，请复核';
 

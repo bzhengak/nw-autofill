@@ -10,6 +10,18 @@ import { scanForm } from '../dom/scanner.js';
 import { planFill } from '../core/matcher.js';
 import { applyPlan } from '../dom/filler.js';
 import { sampleProfile } from '../tests/fixtures/sample-profile.js';
+import { importMarkdown } from '../core/importers/markdown.js';
+
+/**
+ * NW_RESUME_MD=path 时用真实（或脱敏）简历跑一遍。
+ * 量的是"我这份资料到底能填多少"，而不是虚构样本能拿到的理想值 —— 两者差距很大，
+ * 而且只有前者会决定你敢不敢在真实网申上用它。
+ */
+function profileForJudging() {
+  const file = process.env.NW_RESUME_MD;
+  if (!file) return sampleProfile();
+  return importMarkdown(fs.readFileSync(file, 'utf8')).profile;
+}
 import { getValueByPath, equivalentsOf } from '../core/profile-schema.js';
 import { normalize, core, boolLike } from '../core/matching.js';
 import { matchAdapter } from '../core/adapters.js';
@@ -60,7 +72,7 @@ for (const file of forms) {
   const doc = window.document;
 
   const fields = scanForm(doc);
-  const profile = sampleProfile();
+  const profile = profileForJudging();
   const plan = planFill(fields, profile, { mode: 'full', adapter, fillSensitive: true });
   const { results } = await applyPlan(fields, plan.assignments, {});
 

@@ -95,3 +95,17 @@ Shopee 同一页里同时出现：`硕士毕业学校（本科无需填写）`�
 `mustNotTouch` 原来用 `el.value` 判"有没有被写过"，而 **checkbox 的 `value` 天生是 `"on"`** →
 所有 cookie 开关都被误判成越界。假警报比漏报更危险：它会让整套门槛失去意义。
 现在按控件类型分开判（checkbox/radio 看 `checked`，select 看 `selectedIndex`，button/submit 永不判）。
+
+## Klook（Moka）实测跑通后暴露的未解问题（2026-09-27）
+
+用户第一次在真实页面扫描，结构层没问题（`本页适配器：moka`、只读/下拉/成对日期都正确拒填），
+但暴露一个我们**还没解决**的问题，写下来而不是掩盖：
+
+Moka 的重复经历区块里，每个字段各自一个 `.mk-form-item`，页面**没有小节标题、也没有可识别的卡片包裹**。
+于是 `公司名称 → internship.0.company` 与同块的 `职位名称 → work.0.title` 可能来自 profile 的不同条目：
+两个路径各自都合法，匈牙利也就不会拦，但落到页面上就是"把 A 公司的职位写成 B 公司的职位"。
+
+- 现在 `tools/expected/moka-kpmg-en.json` / `moka-klook-cn.json` 对这类字段只允许 `oneOf` 一组合理路径，
+  **判分不承认配对正确**，避免把没解决的问题写成"通过"。
+- 真正的修法要等 P4：一致性断言（同块内的字段必须来自同一个 profile 列表条目），
+  实现点是把 `detectRepeatedBlocks` 的卡片边界判定从"结构签名"扩到"重复标签序列 + 缩进/包裹猜测"。

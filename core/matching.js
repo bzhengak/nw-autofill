@@ -133,6 +133,12 @@ export function typeCompatible(fieldType, profileField, value) {
  * 单个"页面字段 × profile 字段"打分，0..1。
  * 信号来源：标签别名精确命中 > 主干包含 > 词元重合 > id/name 属性语义 > placeholder。
  */
+/**
+ * "经历类"可重复分组：只有它们会在页面上互相抢位，章节错配时才需要重罚。
+ * 银行表格里"七、档案与证明"下混放英语等级等一次性字段，若一律重罚就会被误杀成 no_candidate。
+ */
+export const AMBIGUOUS_SECTIONS = new Set(['education', 'work', 'internship', 'projects', 'campus', 'awards', 'competitions', 'publications', 'languages', 'certifications', 'family', 'skills']);
+
 export function scorePair(pageField, profileField) {
   const labelSigs = signals(pageField.label || '');
   const aliasSigs = signals(profileField.zh + ' ' + profileField.labels.join(' '));
@@ -246,7 +252,6 @@ export function scorePair(pageField, profileField) {
   // 章节归属惩罚只用于"经历类"可重复分组（work / internship / education / projects…），
   // 因为只有它们会在页面上互相抢位。银行表格里"七、档案与证明"下混放英语等级等
   // 一次性字段，若一律重罚就会把它们误杀成 no_candidate。
-  const AMBIGUOUS_SECTIONS = new Set(['education', 'work', 'internship', 'projects', 'campus', 'awards', 'competitions', 'publications', 'languages', 'certifications', 'family', 'skills']);
   if (pageField.sectionHint && profileField.section
     && AMBIGUOUS_SECTIONS.has(pageField.sectionHint) && AMBIGUOUS_SECTIONS.has(profileField.section)) {
     best *= pageField.sectionHint === profileField.section ? 1.12 : 0.55;

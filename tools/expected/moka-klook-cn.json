@@ -1,0 +1,29 @@
+{
+  "pageUrl": "https://app.mokahr.com/campus-recruitment/klook/128531",
+  "expect": {
+    "location": "contact.city",
+    "last_company": ["work.0.company", "work.1.company", "internship.0.company"],
+    "id_type": "basics.idType",
+    "id_number": "basics.idNumber",
+    "current_salary": ["work.0.salary", "internship.0.salary"],
+    "expected_salary": "intent.salary",
+    "expected_city": "intent.cities",
+    "company_1": ["work.0.company", "work.1.company", "internship.0.company", "internship.1.company"],
+    "title_1": ["work.0.title", "work.1.title", "internship.0.title", "internship.1.title"],
+    "company_2": ["work.0.company", "work.1.company", "internship.0.company", "internship.1.company"],
+    "title_2": ["work.0.title", "work.1.title", "internship.0.title", "internship.1.title"],
+    "school": "education.0.school",
+    "major": "education.0.major",
+    "project_name": "projects.0.name",
+    "project_duty": "projects.0.role",
+    "project_desc": "projects.0.description",
+    "language": "languages.0.language",
+    "award_name": "awards.0.title"
+  },
+  "mustNotTouch": [
+    "name", "mobile", "email", "birth_ro",
+    "gender", "work_exp", "highest_degree", "edu_degree", "proficiency", "listening", "writing",
+    "y1", "m1", "y2", "m2", "duty_1", "duty_2", "about_me"
+  ],
+  "notes": "这张表用 oneOf 是因为它暴露了我们一个真实的未解问题：Moka 的重复经历块在这里没有可识别的卡片边界（每个字段各自一个 div，且没有小节标题），所以同块内的 公司名称 与 职位名称 可能来自 profile 的不同条目——路径各自合法但配对可能错。判分只承认落在 work/internship 之内，不假装我们能配对；配对的断言留给 P4 的一致性检查。另外 birth_ro 是站点从身份证推导的只读框，现在直接归 readonly_control 不再进入计划（以前会计划然后必然写失败报红）。"
+}

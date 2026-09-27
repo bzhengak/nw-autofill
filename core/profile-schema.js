@@ -58,7 +58,7 @@ export const SECTIONS = [
       ['address', '现居住地址', 'current address|address|residential address|住址|现居住地|通讯地址', 'text', 'S'],
       ['addressEn', '英文地址', 'address in english|english address', 'textarea', ''],
       ['postalCode', '邮编', 'postal code|zip code|postcode|邮政编码', 'text', ''],
-      ['city', '现居城市', 'current city|city|location|现居地|所在城市', 'text', ''],
+      ['city', '现居城市', 'current city|city|location|现居地|所在城市|所在地', 'text', ''],
       ['country', '国家/地区', 'country|region|country/region|国家', 'text', ''],
       ['emergencyName', '紧急联系人姓名', 'emergency contact name|紧急联系人', 'text', 'S'],
       ['emergencyRelation', '紧急联系人关系', 'emergency contact relation|与本人关系', 'text', ''],

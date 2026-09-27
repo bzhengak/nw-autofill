@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>仿真 Sea/GMAP 自研投递页（career.sea.com 结构复刻）</title>
+<style>
+  body { font: 14px/1.6 Arial, sans-serif; margin: 18px; }
+  .se-field { margin-bottom: 12px; }
+  .se-label { display: block; color: #333; font-size: 13px; }
+  .se-input { border: 1px solid #ccc; border-radius: 4px; padding: 6px 8px; width: 260px; }
+  .se-select { display: inline-block; border: 1px solid #ccc; border-radius: 4px; padding: 6px 8px; width: 260px; color: #999; }
+  .se-period { display: flex; gap: 6px; align-items: center; }
+  .se-group { border: 1px solid #e5e5e5; border-radius: 6px; padding: 10px 12px; margin: 14px 0; }
+</style>
+</head>
+<body>
+<!--
+  复刻 2026-09-27 用户从 career.sea.com/apply/J02171477 导出的真实结构（frame#0 · 50 控件 · 32 可见 ·
+  22 个自定义控件 · 4 个附件输入 · 1 个 shadow host）：Sea/GMAP 是自研投递页，不是 Moka。
+  这份表单存在的唯一目的，是钉住我们从没证明过的一件事：
+  **同一段结构重复两次（两段教育经历）时，第一个块必须落 education.0、第二个块落 education.1**。
+  标签全靠 aria-labelledby；下拉是 <div>（点了才出选项）；附件与主观题必须不碰。
+  shadow DOM 那部分无法用静态 fixture 复现（判分器不执行脚本），故未在此覆盖。
+-->
+<form id="seaForm">
+  <div class="se-field"><span class="se-label" id="l-resume">Resume *</span>
+    <input class="se-input" type="file" aria-labelledby="l-resume" data-nw-test="resume_file"></div>
+  <div class="se-field"><span class="se-label" id="l-fn">First Name *</span>
+    <input class="se-input" type="text" aria-labelledby="l-fn" data-nw-test="first_name"></div>
+  <div class="se-field"><span class="se-label" id="l-ln">Last Name *</span>
+    <input class="se-input" type="text" aria-labelledby="l-ln" data-nw-test="last_name"></div>
+  <div class="se-field"><span class="se-label" id="l-em">Email Address *</span>
+    <input class="se-input" type="text" aria-labelledby="l-em" data-nw-test="email"></div>
+  <div class="se-field"><span class="se-label" id="l-cn">Contact Number *</span>
+    <span class="se-select" id="l-cn-code" role="combobox" aria-haspopup="true" data-nw-test="code_combo">Select</span>
+    <input class="se-input" type="text" aria-labelledby="l-cn" data-nw-test="phone"></div>
+  <div class="se-field"><span class="se-label" id="l-cl">Current Location *</span>
+    <input class="se-input" type="text" aria-labelledby="l-cl" data-nw-test="location"></div>
+
+  <div class="se-group" data-block="edu">
+    <div class="se-field"><span class="se-label" id="l-e1-lv">Education Level *</span>
+      <span class="se-select" role="combobox" aria-labelledby="l-e1-lv" aria-haspopup="true" data-nw-test="edu_level_1">Education Level</span></div>
+    <div class="se-field"><span class="se-label" id="l-e1-sc">School *</span>
+      <input class="se-input" type="text" aria-labelledby="l-e1-sc" data-nw-test="school_1"></div>
+    <div class="se-field"><span class="se-label" id="l-e1-mj">Course of Study *</span>
+      <input class="se-input" type="text" aria-labelledby="l-e1-mj" data-nw-test="major_1"></div>
+    <div class="se-field"><span class="se-label" id="l-e1-pd">Course Period *</span>
+      <span class="se-period">
+        <input class="se-input" type="text" aria-labelledby="l-e1-pd" placeholder="Course Start Month" data-nw-test="start_1">
+        <input class="se-input" type="text" aria-labelledby="l-e1-pd" placeholder="Course End Month" data-nw-test="end_1">
+      </span></div>
+    <div class="se-field"><span class="se-label" id="l-e1-dc">Degree Classification *</span>
+      <span class="se-select" role="combobox" aria-labelledby="l-e1-dc" aria-haspopup="true" data-nw-test="degree_class_1">Degree Classification</span></div>
+    <div class="se-field"><span class="se-label" id="l-e1-cg">Cumulative Grade Point Average (CGPA) *</span>
+      <input class="se-input" type="text" aria-labelledby="l-e1-cg" data-nw-test="cgpa_1"></div>
+    <div class="se-field"><span class="se-label" id="l-e1-tr">Transcript *</span>
+      <input class="se-input" type="file" aria-labelledby="l-e1-tr" data-nw-test="transcript_1"></div>
+  </div>
+
+  <div class="se-group" data-block="edu">
+    <div class="se-field"><span class="se-label" id="l-e2-lv">Education Level *</span>
+      <span class="se-select" role="combobox" aria-labelledby="l-e2-lv" aria-haspopup="true" data-nw-test="edu_level_2">Education Level</span></div>
+    <div class="se-field"><span class="se-label" id="l-e2-sc">School *</span>
+      <input class="se-input" type="text" aria-labelledby="l-e2-sc" data-nw-test="school_2"></div>
+    <div class="se-field"><span class="se-label" id="l-e2-mj">Course of Study *</span>
+      <input class="se-input" type="text" aria-labelledby="l-e2-mj" data-nw-test="major_2"></div>
+    <div class="se-field"><span class="se-label" id="l-e2-pd">Course Period *</span>
+      <span class="se-period">
+        <input class="se-input" type="text" aria-labelledby="l-e2-pd" placeholder="Course Start Month" data-nw-test="start_2">
+        <input class="se-input" type="text" aria-labelledby="l-e2-pd" placeholder="Course End Month" data-nw-test="end_2">
+      </span></div>
+    <div class="se-field"><span class="se-label" id="l-e2-dc">Degree Classification *</span>
+      <span class="se-select" role="combobox" aria-labelledby="l-e2-dc" aria-haspopup="true" data-nw-test="degree_class_2">Degree Classification</span></div>
+    <div class="se-field"><span class="se-label" id="l-e2-cg">Cumulative Grade Point Average (CGPA) *</span>
+      <input class="se-input" type="text" aria-labelledby="l-e2-cg" data-nw-test="cgpa_2"></div>
+    <div class="se-field"><span class="se-label" id="l-e2-tr">Transcript *</span>
+      <input class="se-input" type="file" aria-labelledby="l-e2-tr" data-nw-test="transcript_2"></div>
+  </div>
+
+  <div class="se-field"><span class="se-label">Website URL</span>
+    <input class="se-input" type="text" data-nw-test="website"></div>
+  <div class="se-field"><span class="se-label" id="l-know">How did you know about this role? *</span>
+    <span class="se-select" role="combobox" aria-labelledby="l-know" aria-haspopup="true" data-nw-test="know_combo">Select</span>
+    <input class="se-input" type="text" aria-labelledby="l-know" placeholder="Channel" data-nw-test="channel"></div>
+  <div class="se-field"><span class="se-label" id="l-gmap">Beyond the GMAP program, which functions interest you? *</span>
+    <span class="se-select" role="combobox" aria-labelledby="l-gmap" aria-haspopup="true" data-nw-test="gmap_combo">Select</span>
+    <input class="se-input" type="text" aria-labelledby="l-gmap" placeholder="Other Information" data-nw-test="interests"></div>
+
+  <p><button type="submit">Submit application</button></p>
+</form>
+</body>
+</html>

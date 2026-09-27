@@ -1,0 +1,27 @@
+{
+  "pageUrl": "https://career.sea.com/apply/J02171477",
+  "expect": {
+    "first_name": "basics.firstName",
+    "last_name": "basics.lastName",
+    "email": "contact.email",
+    "phone": "contact.phone",
+    "location": "contact.city",
+    "school_1": "education.0.school",
+    "major_1": "education.0.major",
+    "start_1": "education.0.enrollDate",
+    "end_1": "education.0.gradDate",
+    "cgpa_1": "education.0.gpa",
+    "school_2": "education.1.school",
+    "major_2": "education.1.major",
+    "start_2": "education.1.enrollDate",
+    "end_2": "education.1.gradDate",
+    "cgpa_2": "education.1.gpa",
+    "website": ["others.personalSite", "others.portfolio"],
+    "channel": "intent.channel"
+  },
+  "mustNotTouch": [
+    "resume_file", "transcript_1", "transcript_2", "interests",
+    "code_combo", "edu_level_1", "edu_level_2", "degree_class_1", "degree_class_2", "know_combo", "gmap_combo"
+  ],
+  "notes": "这张表存在的理由是钉住重复区块的槽位对齐：两段结构完全相同的教育经历，第一块必须落 education.0、第二块必须落 education.1——串了就是把硕士学校填进本科栏，而且回读校验看不出来（值本身是合法的）。附件与自定义下拉（role=combobox 的 span）永不碰；interests 是主观择业兴趣题。"
+}

@@ -193,6 +193,7 @@ export function sampleProfile() {
     'family.1.birthYear': '1972',
     'family.1.political': '群众',
     'others.github': 'https://github.com/example',
+    'others.personalSite': 'https://zhangwei.dev',
     'others.portfolio': 'https://example.test/portfolio',
     'others.hobbies': '长跑、摄影',
   };

@@ -116,8 +116,11 @@ for (const file of forms) {
     else if (el.tagName === 'SELECT') touched = el.value !== '' && el.selectedIndex >= 0;
     else if (t === 'button' || t === 'submit' || t === 'image') touched = false;
     else if (t === 'password') touched = String(el.value || '') !== '';
+    // 只有真正"可编辑"的元素才用 textContent 判写入：静态 <span> 的占位文案（"Select"）
+    // 本来就带文字，按 textContent 判会让每个自定义下拉都变成假越界
     else touched = String(el.value ?? '').trim() !== ''
-      || (el.type === undefined && String(el.textContent || '').trim() !== '');
+      || ((el.isContentEditable || el.getAttribute('contenteditable') === 'true')
+        && String(el.textContent || '').trim() !== '');
     if (touched) violations.push(`${name} 被写入（应当留给你手动处理）`);
   }
   const submitBlocked = true; // applyPlan 不派发任何 submit/click 到提交按钮，P2 会加断言

@@ -236,6 +236,13 @@ function CSS_escape(v) {
   return (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(v) : String(v).replace(/([^\w-])/g, '\\$1');
 }
 
+/** 一条"经历"的内部指纹：控件的 name/placeholder/aria-label 序列。
+ *  两段真经历会重复同样的字段名（School / Course of Study…），布局壳子不会。 */
+function controlSignature(c) {
+  const ctl = Array.from(c.querySelectorAll?.(CONTROL_SELECTOR) || []).slice(0, 12);
+  return ctl.map(x => normRaw(x.getAttribute('name') || x.getAttribute('placeholder') || x.getAttribute('aria-label') || '')).filter(Boolean).join('|');
+}
+
 /** 重复经历区块：同一父级下结构相同、且含 ≥2 个控件的块才算"一条经历"。
  *  老式表格里一行只有一个输入框，那是"字段"而不是"区块"，误判会让 itemIndex 全体错位。 */
 function detectRepeatedBlocks(root) {
@@ -248,14 +255,29 @@ function detectRepeatedBlocks(root) {
     if (controls.length > 12) continue;
     const key = `${c.parentElement ? (c.parentElement.className || c.parentElement.tagName) : ''}::${c.className || c.tagName}::${controls.length}`;
     if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(c);
+    groups.get(key).push({ c, sig: controlSignature(c) });
   }
   const index = new Map();
-  for (const [, list] of groups) {
+  let gid = 0;
+  for (const [key, list] of groups) {
     if (list.length < 2 || list.length > 12) continue;
-    list.forEach((el, i) => index.set(el, i));
+    // 只有"确实像重复记录"才编号：字段指纹在各块之间重复出现，或每块控件足够多。
+    // Sea 自研页里三个 .se-field 壳子（各含一个下拉+一个输入）曾被当成"第 0/1/2 段经历"，
+    // 于是 Contact Number 这种一次性字段被 ×0.8 罚掉，让位给 family.0.phone。
+    const sigs = new Set(list.map(x => x.sig));
+    const repeatedEvidence = list.length - sigs.size >= 1 && !sigs.has('');
+    const wideBlocks = list.every(x => x.c.querySelectorAll?.(CONTROL_SELECTOR).length >= 3);
+    if (!repeatedEvidence && !wideBlocks) continue;
+    const group = `${key}#${gid++}`;
+    list.forEach((item, i) => index.set(item.c, { index: i, group }));
   }
   return index;
+}
+
+/** 找到控件所属的重复区块容器（最里层的那个） */
+function blockInfoOf(el, blockIndex) {
+  for (const [c, info] of blockIndex) if (c.contains?.(el)) return { container: c, ...info };
+  return null;
 }
 
 function kindOf(el) {
@@ -346,7 +368,7 @@ export function scanForm(root = document) {
         options: groupEls.map(x => ({ text: clean(x.nextElementSibling?.textContent || x.parentElement?.textContent || x.value), value: x.value })),
         required: el.required || el.getAttribute('aria-required') === 'true' || /\*/.test(String(el.closest?.('[class*="item"],label')?.textContent || '')),
         sectionHint: sectionHintFor(el),
-        itemIndex: blockIndex.has(el) ? blockIndex.get(el) : nullIndexFrom(blockIndex, el),
+        itemIndex: (blockInfoOf(el, blockIndex) || {}).index ?? null,
         nearbyLabels: nearbyLabels(el, doc),
         autocomplete: el.getAttribute('autocomplete') || '',
         testId: el.getAttribute('data-testid') || el.getAttribute('data-test') || '',
@@ -375,7 +397,7 @@ export function scanForm(root = document) {
       options: optionsOf(el, kind),
       required: el.required || el.getAttribute('aria-required') === 'true' || /\*/.test(String(el.closest?.('[class*="item"],label,td,th')?.textContent || '')),
       sectionHint: sectionHintFor(el),
-      itemIndex: blockIndex.has(el) ? blockIndex.get(el) : nullIndexFrom(blockIndex, el),
+      itemIndex: (blockInfoOf(el, blockIndex) || {}).index ?? null,
       nearbyLabels: nearbyLabels(el, doc),
       autocomplete: el.getAttribute('autocomplete') || '',
       testId: el.getAttribute('data-testid') || el.getAttribute('data-test') || '',
@@ -399,38 +421,30 @@ export function scanForm(root = document) {
  * 于是教育经历带着 itemIndex=1 去对齐 profile，把硕士槽位漂移成本科槽位（SF 仿真表单实测踩过）。
  */
 function renumberItemIndexBySection(fields, blockIndex) {
-  const containerOf = el => {
-    for (const [c] of blockIndex) if (c.contains?.(el)) return c;
-    return null;
-  };
-  const bySection = new Map();
+  const seen = new Map();            // `${组}||${章节}` -> 该组合内按文档顺序出现的容器
   for (const f of fields) {
-    const c = containerOf(f.el);
-    if (!c) continue;
-    f.__block = c;
-    const sec = f.sectionHint || '(无章节)';
-    if (!bySection.has(sec)) bySection.set(sec, []);
-    const list = bySection.get(sec);
-    if (!list.includes(c)) list.push(c);
+    const info = blockInfoOf(f.el, blockIndex);
+    if (!info) continue;
+    f.__block = info;
+    const key = `${info.group}||${f.sectionHint || ''}`;
+    if (!seen.has(key)) seen.set(key, []);
+    const list = seen.get(key);
+    if (!list.includes(info.container)) list.push(info.container);
   }
   for (const f of fields) {
     if (!f.__block) continue;
-    const list = bySection.get(f.sectionHint || '(无章节)') || [];
-    const local = list.indexOf(f.__block);
+    const key = `${f.__block.group}||${f.sectionHint || ''}`;
+    const local = (seen.get(key) || []).indexOf(f.__block.container);
     if (local >= 0) f.itemIndex = local;
     delete f.__block;
   }
 }
 
 function blockOf(el, blockIndex) {
-  for (const [container, i] of blockIndex) if (container.contains?.(el)) return i;
-  return -1;
+  const info = blockInfoOf(el, blockIndex);
+  return info ? info.index : -1;
 }
 
-function nullIndexFrom(blockIndex, el) {
-  for (const [container, i] of blockIndex) if (container.contains?.(el)) return i;
-  return null;
-}
 
 /**
  * 标记"年 + 月"成对输入框（Moka 等的日期实现）：同一容器里既有 year 框又有 month 框时，

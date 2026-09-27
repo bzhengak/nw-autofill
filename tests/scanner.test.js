@@ -99,7 +99,7 @@ test('AntD 下拉：role=combobox 外壳与内层匿名 input 只算一个控件
   assert.equal(wrapped[0].el.tagName.toLowerCase(), 'div');
 });
 
-test('itemIndex 按"同一章节内第几块"编号，不被其他 fieldset 顶偏', () => {
+test('不同章节的三个 fieldset 不是"重复记录"，不该被编号顶偏', () => {
   const html = `
     <form>
       <fieldset><legend>Personal</legend>
@@ -112,7 +112,23 @@ test('itemIndex 按"同一章节内第几块"编号，不被其他 fieldset 顶�
   const fields = scan(html);
   const edu = fields.filter(f => f.sectionHint === 'education');
   assert.ok(edu.length >= 2, '教育章节没被识别出来');
-  for (const f of edu) assert.equal(f.itemIndex, 0, `教育经历被编成第 ${f.itemIndex} 块，会把硕士槽漂到本科槽`);
+  // 三个 fieldset 字段名互不相同（姓名/学校/公司），是三个章节而不是三段同类记录：
+  // 编成"第 1 块"就会把硕士槽漂到本科槽，所以这里必须干脆不编号
+  for (const f of edu) assert.equal(f.itemIndex, null, `教育经历被当成重复区块第 ${f.itemIndex} 块`);
+});
+
+test('真重复记录（字段名逐段重复）才编号：Sea 自研页两段教育经历实测形态', () => {
+  const block = (n) => `
+    <div class="se-group">
+      <input placeholder="Course Start Month" data-nw-test="s${n}"><input placeholder="Course End Month" data-nw-test="e${n}">
+      <input placeholder="CGPA" data-nw-test="g${n}">
+    </div>`;
+  const fields = scan(`<form>${block(1)}${block(2)}</form>`);
+  const idx = new Map(fields.map(f => [f.el.getAttribute('data-nw-test'), f.itemIndex]));
+  assert.equal(idx.get('s1'), 0, '第一段教育经历必须是槽位 0');
+  assert.equal(idx.get('e1'), 0);
+  assert.equal(idx.get('s2'), 1, '第二段必须是槽位 1');
+  assert.equal(idx.get('g2'), 1);
 });
 
 test('SF 的 <input role=combobox> 判成自定义控件，不当成可以打字的文本框', () => {

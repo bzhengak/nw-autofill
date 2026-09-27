@@ -24,6 +24,20 @@ const BLOCK_PATTERNS = [
 
 const SUBJECTIVE_OK = /(姓名|手机|电话|邮箱|身份证|证件|学历|学位|学校|专业|公司|职位|城市|日期|时间|薪资|到岗|编号|地址)/i;
 
+/**
+ * 问句式标签：Sea 自研页的 "Beyond the GMAP program, which functions interest you?"
+ * 是问动机的开放题，靠词元重合能被"兴趣/爱好"之类蹭到。
+ * 这类标签只允许字面/主干命中的别名通过（0.95 以上），弱匹配一律不进候选——宁可标橙交人工。
+ */
+const QUESTION_WORD_RE = /\b(what|which|how|why|when|who|do you|are you|tell us|interest you|consider|describe)\b/i;
+export function isQuestionLabel(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return false;
+  const words = core(raw).split(' ').filter(Boolean);
+  if (words.length < 5) return false;
+  return /[?？]$/.test(raw) || QUESTION_WORD_RE.test(raw);
+}
+
 /** 摊平字段里的"归属"等价：站点的「硕士」要能对上资料里的「硕士研究生 / Master」，「父亲」对上 Father */
 function slotValueEquivalent(a, b) {
   const x = normalize(a), y = normalize(b);
@@ -183,11 +197,16 @@ export function planFill(pageFields, profile, opts = {}) {
     }
 
     const candidates = [];
+    const questionish = isQuestionLabel(pf.labelRaw || pf.label);
     for (let c = 0; c < schemaFields.length; c++) {
       const sf = schemaFields[c];
       const value = String(getValueByPath(profile, sf.path) ?? '').trim();
       if (!value) continue;
       const s = scorePair(pf, sf);
+      // 问句式标签：港企/SF 里"Do you require sponsorship?"这类是合规判断题（bool/enum），该填；
+      // 而"which functions interest you?"这类动机题靠词元重合能蹭到"兴趣爱好"，必须挡住。
+      // 折中：问句只允许 bool/enum 目标，或字面/主干命中（≥0.95）的文本目标。
+      if (questionish && s < 0.95 && sf.type !== 'bool' && sf.type !== 'enum') continue;
       if (s >= REVIEW_THRESHOLD) candidates.push({ c, sf, value, s });
     }
     candidates.sort((a, b) => b.s - a.s);

@@ -1,23 +1,34 @@
 // MV3 service worker：跨 frame 汇总、profile 存取、命令下发。
 // 本阶段不做任何网络请求（AI 在 P3 才接入，且届时 Key 也只经这里出网）。
 
+import { compileAdapters } from '../core/adapters.js';
+
 const CHANNEL = 'nw-autofill';
 
 /** 适配器加载：以前只有 tests/tools 用得到它们，真实页面上 pins/slotPins/skip/dateFormats 全部没生效。
- *  现在由 worker 读 registry → 逐个 validateAdapter → 按标签页 URL 选一个，随扫描消息下发。 */
+ *  踩过的坑：classic service worker 里 `import()` 不可用，所以第一版接线在浏览器里
+ *  每次都掉进 catch，页面看到的是"本页适配器：无"。manifest 里必须声明 type:"module"，
+ *  并且失败要把原因带回侧边栏，不能再静默。 */
 let adapterResolver = null;
+let adapterError = '';
+export function adapterDiagnostics() {
+  return { loaded: Boolean(adapterResolver), error: adapterError, count: adapterResolver?.adapters?.length || 0, rejected: (adapterResolver?.rejected || []).map(r => r.name) };
+}
 async function getAdapterResolver() {
   if (adapterResolver) return adapterResolver;
   try {
-    const mod = await import(chrome.runtime.getURL('core/adapters.js'));
     const reg = await (await fetch(chrome.runtime.getURL('adapters/registry.json'))).json();
     const files = {};
     for (const f of (reg && reg.files) || []) {
       try { files[f] = await (await fetch(chrome.runtime.getURL(f))).json(); }
       catch { files[f] = null; }
     }
-    adapterResolver = mod.compileAdapters(files, m => console.warn('[网申填写]', m));
+    const warns = [];
+    adapterResolver = compileAdapters(files, m => warns.push(m));
+    adapterError = warns.length ? warns.join('；') : '';
+    if (!adapterResolver.adapters.length) adapterError = adapterError || 'registry 里没有任何通过校验的适配器';
   } catch (err) {
+    adapterError = String(err && err.message ? err.message : err);
     console.warn('[网申填写] 适配器加载失败，本次按无适配器运行：', err);
     adapterResolver = { adapters: [], rejected: [], resolve: () => null };
   }
@@ -134,6 +145,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       const res = await sendToTab(tabId, payload);
       if (payload.adapter && res && typeof res === 'object') res.adapterId = payload.adapter.id;
+      // 适配器没生效时不能只安静地"按通用规则匹配"：把加载诊断带回去，侧边栏直接说原因
+      if (msg.type === 'nw:scan' && res && typeof res === 'object') res.adapterInfo = adapterDiagnostics();
       sendResponse(res);
     } else {
       sendResponse({ ok: false, error: 'unknown_message' });

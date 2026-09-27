@@ -153,14 +153,23 @@ function countFilled(profile) {
 function render(data, meta = {}) {
   const s = data?.stats || {};
   const withheld = (data?.gaps || []).filter(g => g.reason === 'sensitive_withheld');
-  const banner = withheld.length
-    ? `<div class="banner">${withheld.length} 个敏感字段（证件号/手机号等）按你的设置没有写入。要自动填就在下方勾选「允许填写敏感字段」。</div>`
-    : '';
-  const adapterLine = `<div class="note">本页适配器：${escapeHtml(meta.adapterId || '无（按通用规则匹配）')}</div>`;
+  const banners = [];
+  if (s.profileFilled === 0) {
+    banners.push('<div class="banner">简历资料是空的（0 项有值）：所以现在一个字段都填不了。先去「导入简历 Markdown」或「分类编辑」把资料灌进来，再来扫描。</div>');
+  } else if (withheld.length) {
+    banners.push(`<div class="banner">${withheld.length} 个敏感字段（证件号/手机号等）按你的设置没有写入。要自动填就在下方勾选「允许填写敏感字段」。</div>`);
+  }
+  const ai = meta.adapterInfo;
+  if (!meta.adapterId && ai && !ai.loaded) {
+    banners.push(`<div class="banner">适配器没加载成功：${escapeHtml(ai.error || '未知原因')}。这一页只能按通用规则匹配，钉位与槽位规则都不会生效。</div>`);
+  }
+  const adapterLine = `<div class="note">本页适配器：${escapeHtml(meta.adapterId || '无（按通用规则匹配）')}`
+    + (ai && ai.loaded ? `　已加载 ${ai.count} 份` + (ai.rejected.length ? `，被拒绝 ${ai.rejected.length} 份` : '') : '') + '</div>';
   $('stats').innerHTML = [
     ['扫描到', s.scanned || 0], ['计划填', s.planned || 0], ['绿·自动', s.green || s.auto || 0],
     ['黄·待复核', s.yellow || s.review || 0], ['红·失败', s.red || 0], ['待你处理', s.gaps || 0],
-  ].map(([k, v]) => `<span><b>${k}</b> ${v}</span>`).join('') + adapterLine + banner;
+    ['资料已填', s.profileFilled != null ? s.profileFilled : '-'],
+  ].map(([k, v]) => `<span><b>${k}</b> ${v}</span>`).join('') + adapterLine + banners.join('');
 
   $('results').innerHTML = (data?.results || [])
     .filter(r => !['skipped', 'planned'].includes(r.status) || r.status === 'planned')
@@ -186,7 +195,7 @@ async function run(mode) {
     $('stats').innerHTML = `<span class="banner">页面未响应：${escapeHtml(res?.error || '未知错误')}。若是刚装扩展，请刷新目标页面后重试。</span>`;
     return;
   }
-  render(res.data, { adapterId: res.adapterId });
+  render(res.data, { adapterId: res.adapterId, adapterInfo: res.adapterInfo });
 }
 
 $('btnScan').onclick = () => run('full');

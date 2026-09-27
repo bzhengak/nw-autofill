@@ -7,7 +7,8 @@
   "permissions": ["storage", "activeTab", "scripting", "sidePanel", "tabs", "webNavigation"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "background": {
-    "service_worker": "background/service-worker.js"
+    "service_worker": "background/service-worker.js",
+    "type": "module"
   },
   "action": {
     "default_title": "网申自动填写"

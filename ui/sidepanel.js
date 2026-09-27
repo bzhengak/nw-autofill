@@ -1,9 +1,19 @@
-import { createEmptyProfile, SECTIONS, buildFields } from '../core/profile-schema.js';
+import { createEmptyProfile, SECTIONS, buildFields, setValueByPath } from '../core/profile-schema.js';
 import { importMarkdown } from '../core/importers/markdown.js';
+import { auditProfile, editorModel, advice } from '../core/coverage.js';
 
 const $ = id => document.getElementById(id);
 let tabId = null;
 let lastState = null;
+let HIGH = null;
+
+async function highFreq() {
+  if (HIGH) return HIGH;
+  try {
+    HIGH = await (await fetch(chrome.runtime.getURL('core/high-frequency.json'))).json();
+  } catch { HIGH = { paths: {}, forms: [] }; }
+  return HIGH;
+}
 
 async function activeTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -21,7 +31,103 @@ async function refresh() {
     : '还没有简历数据，先点「下载空白模板」或「编辑 / 导入 JSON」';
   if (profile) $('profileText').value = JSON.stringify(profile, null, 2);
   else $('profileText').value = JSON.stringify(createEmptyProfile(), null, 2);
+  await renderAudit(profile || createEmptyProfile());
+  if ($('formEditor').style.display !== 'none') renderForm(profile || createEmptyProfile());
 }
+
+/** 体检：填写率 + 高频缺口（缺口行点一下就能跳到对应输入框） */
+async function renderAudit(profile) {
+  const audit = auditProfile(profile, await highFreq());
+  $('auditStats').innerHTML = [
+    ['已填', `${audit.filled}/${audit.total}`],
+    ['填写率', `${Math.round(audit.rate * 100)}%`],
+    ['高频缺口', audit.missingHigh.length],
+  ].map(([k, v]) => `<span><b>${k}</b> ${v}</span>`).join('');
+  $('auditAdvice').textContent = advice(audit);
+
+  const rows = audit.missingHigh.slice(0, 40);
+  $('auditMissing').innerHTML = rows.length
+    ? rows.map(m => `<tr><td><span class="dot ${m.askedBy >= 4 ? 'red' : 'yellow'}"></span></td>
+        <td>${escapeHtml(m.sectionZh)} · ${escapeHtml(m.label)}${m.sensitive ? ' <span class="note">（敏感：默认不自动写）</span>' : ''}</td>
+        <td class="note">被 ${m.askedBy} 份真实站点结构问到</td></tr>`).join('')
+    : '<tr><td class="note">高频槽位都已填写。</td></tr>';
+  $('auditMissing').querySelectorAll('tr').forEach((tr, i) => {
+    tr.style.cursor = 'pointer';
+    tr.title = '点击跳到该字段';
+    tr.onclick = () => focusSlot(rows[i]?.path);
+  });
+}
+
+function focusSlot(path) {
+  if (!path) return;
+  if (! $('onlyEmpty').checked) $('onlyEmpty').checked = false;
+  renderForm(lastState?.profile || createEmptyProfile());
+  $('formEditor').style.display = 'block';
+  const el = $('formBody').querySelector(`[data-path="${CSS.escape(path)}"]`);
+  if (el) { el.scrollIntoView?.({ block: 'center' }); el.focus(); }
+  else $('formMeta').textContent = `该字段在折叠的列表分组里，取消「只看没填的」或展开表单后再试：${path}`;
+}
+
+function renderForm(profile) {
+  const body = $('formBody');
+  body.textContent = '';
+  const model = editorModel(profile, { onlyEmpty: $('onlyEmpty').checked });
+  let inputs = 0;
+  for (const sec of model) {
+    const h = document.createElement('h3');
+    h.textContent = `${sec.zh}　<span class="note">${sec.en || ''}</span>`;
+    h.style.cssText = 'font-size:12px;margin:12px 0 4px;color:var(--muted)';
+    body.appendChild(h);
+    for (const row of sec.rows) {
+      const wrap = document.createElement('label');
+      wrap.className = 'frow';
+      const name = document.createElement('span');
+      name.textContent = row.label + (row.sensitive ? '（敏感）' : '');
+      let ctrl;
+      if (row.type === 'textarea') ctrl = document.createElement('textarea');
+      else if (row.type === 'enum' && row.options.length) {
+        ctrl = document.createElement('select');
+        // 用 createElement 而不是 new Option()：后者依赖全局构造函数，在测试环境里不可用
+        const blank = document.createElement('option');
+        blank.value = ''; blank.textContent = '';
+        ctrl.appendChild(blank);
+        for (const o of row.options) {
+          const opt = document.createElement('option');
+          opt.value = o; opt.textContent = o;
+          ctrl.appendChild(opt);
+        }
+        if (row.value && !row.options.includes(row.value)) {
+          const opt = document.createElement('option');
+          opt.value = row.value; opt.textContent = row.value + '（现值不在候选）';
+          ctrl.appendChild(opt);
+        }
+      } else ctrl = document.createElement('input');
+      if (ctrl.tagName === 'INPUT') ctrl.type = row.type === 'date' ? 'date' : 'text';
+      ctrl.value = row.value;
+      ctrl.dataset.path = row.path;
+      wrap.appendChild(name);
+      wrap.appendChild(ctrl);
+      body.appendChild(wrap);
+      inputs++;
+    }
+  }
+  $('formMeta').textContent = `${inputs} 个字段（列表分组只展开在用的段落 + 一个空段）`;
+}
+
+$('btnForm').onclick = () => {
+  const open = $('formEditor').style.display !== 'none';
+  $('formEditor').style.display = open ? 'none' : 'block';
+  if (!open) renderForm(lastState?.profile || createEmptyProfile());
+};
+$('btnFormCancel').onclick = () => { $('formEditor').style.display = 'none'; };
+$('onlyEmpty').onchange = () => renderForm(lastState?.profile || createEmptyProfile());
+$('btnFormSave').onclick = async () => {
+  const next = JSON.parse(JSON.stringify(lastState?.profile || createEmptyProfile()));
+  for (const el of $('formBody').querySelectorAll('[data-path]')) setValueByPath(next, el.dataset.path, el.value);
+  await chrome.runtime.sendMessage({ type: 'nw:saveProfile', profile: next });
+  $('formMeta').textContent = '已保存。';
+  await refresh();
+};
 
 function countFilled(profile) {
   let n = 0;

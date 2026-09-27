@@ -47,6 +47,11 @@
   pre { color: var(--muted); }
   #editor { display:none; }
   #editor.on { display:block; }
+  .frow { display:flex; gap:8px; align-items:flex-start; margin:4px 0; }
+  .frow > span { flex:0 0 38%; font-size:12px; color:var(--fg); }
+  .frow input, .frow select, .frow textarea { flex:1; min-height:0; padding:4px 6px; font:inherit; background:var(--field-bg); color:var(--field-fg); border:1px solid var(--line); border-radius:4px; }
+  .frow textarea { min-height:52px; }
+  #auditMissing tr:hover td { background: var(--btn-bg); }
 </style>
 </head>
 <body>
@@ -84,6 +89,25 @@
   </div>
   <div class="note" id="probeMeta">用于给新站点写适配器：导出后把 JSON 发给维护者即可。</div>
   <textarea id="probeOut" spellcheck="false" style="min-height:70px" readonly placeholder="尚未导出"></textarea>
+
+  <h2>资料体检</h2>
+  <div class="stats" id="auditStats">尚未体检</div>
+  <div class="note" id="auditAdvice"></div>
+  <table id="auditMissing"></table>
+
+  <h2>分类编辑</h2>
+  <div class="row">
+    <button id="btnForm">展开表单编辑</button>
+    <label class="chk"><input type="checkbox" id="onlyEmpty">只看没填的</label>
+    <span class="note" id="formMeta"></span>
+  </div>
+  <div id="formEditor" style="display:none">
+    <div id="formBody"></div>
+    <div class="row">
+      <button class="primary" id="btnFormSave">保存修改</button>
+      <button id="btnFormCancel">收起</button>
+    </div>
+  </div>
 
   <h2>简历数据（JSON，可手改）</h2>
   <div class="row">

@@ -57,16 +57,24 @@ function prevSiblingHeading(node) {
   return '';
 }
 
+/** 一段文本命中的章节关键词。命中 0 个或 ≥2 个都不作数：
+ *  步骤导航/页头常常一句里写全"基本信息 教育经历 工作经历"，
+ *  拿它当章节证据会让全站 hint 变成第一个匹配到的那种，把多段经历的 itemIndex 全体排错。 */
+function hintOfText(text) {
+  const t = String(text || '').trim();
+  if (!t || t.length > 24) return '';
+  const hits = SECTION_HINTS.filter(h => h.re.test(t));
+  return hits.length === 1 ? hits[0].key : '';
+}
+
 function sectionHintFor(el) {
   let node = el;
   for (let i = 0; i < 8 && node; i++) {
     const own = headingBefore(node, el) || prevSiblingHeading(node);
-    if (own) {
-      const hit = SECTION_HINTS.find(h => h.re.test(own));
-      if (hit) return hit.key;
-    }
-    const cls = String(node.className || '');
-    if (cls) for (const hint of SECTION_HINTS) if (hint.re.test(cls)) return hint.key;
+    const byHeading = hintOfText(own);
+    if (byHeading) return byHeading;
+    const byClass = hintOfText(String(node.className || '').replace(/[._-]+/g, ' '));
+    if (byClass) return byClass;
     node = node.parentElement;
   }
   return '';
@@ -133,7 +141,7 @@ function labelFor(el, doc) {
   if (id) { try { push(doc.querySelector(`label[for="${CSS_escape(id)}"]`), 'label-for', 0); } catch { /* 非法 id */ } }
   const labelledby = el.getAttribute('aria-labelledby');
   if (labelledby) {
-    const parts = labelledby.split(/s+/).map(x => doc.getElementById(x)).filter(Boolean);
+    const parts = labelledby.split(/\s+/).map(x => doc.getElementById(x)).filter(Boolean);
     if (parts.length === 1) push(parts[0], 'aria-labelledby', 0);
     else if (parts.length > 1) {
       const txt = parts.map(x => textOf(x)).filter(Boolean).join(' ');
@@ -216,15 +224,15 @@ function groupLabelOf(el, groupEls, doc) {
 }
 
 export function normRaw(s) {
-  return String(s || '').replace(/s+/g, ' ').trim();
+  // 注意是 \s+：写成 /s+/g 匹配的是字母 s，会把 "Security Check" 拆成 "Bu ine"（曾污染安全判定读的 labelRaw）
+  return String(s || '').replace(/\s+/g, ' ').trim();
 }
 
 function nearbyLabels(el, doc) {
   const out = [];
   const legend = el.closest?.('fieldset')?.querySelector?.('legend');
   if (legend) out.push(textOf(legend));
-  const group = el.getAttribute('name') ? doc.querySelector(`[data-nw-group="${CSS_escape(el.getAttribute('name'))}"]`) : null;
-  if (group) out.push(textOf(group));
+  // 不再按 data-nw-group 找组：那个属性我们从不写入，读它就等于让页面自己声明"这组字段属于谁"
   const head = el.closest?.('[class*="section"],[class*="block"],[class*="card"],[class*="group"],[class*="form"],table')
     ?.querySelector?.('h1,h2,h3,h4,[class*="title"],caption,th');
   if (head) out.push(textOf(head));

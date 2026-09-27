@@ -18,6 +18,13 @@
   "content_scripts": [
     {
       "matches": ["http://*/*", "https://*/*"],
+      "js": ["dom/submit-guard.js"],
+      "all_frames": true,
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["http://*/*", "https://*/*"],
       "js": ["dom/content.js"],
       "all_frames": true,
       "run_at": "document_idle"

@@ -47,8 +47,11 @@ function tolerant(actual, desired) {
   if (a === d) return true;
   // 站点把 2026-06 渲染成 2026/06 或补成 2026-06-01 都算写进去了
   const ka = a.replace(/[^\d]/g, ''), kd = d.replace(/[^\d]/g, '');
-  if (ka && kd && (ka === kd || ka.startsWith(kd) || kd.startsWith(ka))) return true;
-  return a.includes(d) || d.includes(a);
+  if (ka && kd && ka === kd) return true;
+  // 以前这里还有 "a.includes(d) || d.includes(a)" 和数字前缀相等：
+  // 于是往 薪资 框写 20000、页面显示 20000-30000 也算"绿"，或被 maxlength 截断成 20 也算"绿"。
+  // 回读校验只认"渲染出来的就是我要的那个值"，宁可报红也不假绿。
+  return false;
 }
 
 /**
@@ -115,18 +118,28 @@ export async function fillField(field, entry) {
   if (kind === 'radio' || kind === 'checkbox') {
     const group = field.__group || [el];
     const wanted = String(entry.optionValue ?? entry.value ?? '').split(/[,，、|]/).map(s => normalize(s)).filter(Boolean);
+    const wantTexts = new Set(wanted);
     let touched = 0;
     for (const box of group) {
-      const label = normalize(box.nextElementSibling?.textContent || box.parentElement?.textContent || box.value || '');
-      const should = kind === 'radio'
-        ? (wanted.includes(label) || wanted.includes(normalize(box.value)) || label === normalize(wanted[0]))
-        : wanted.some(w => label.includes(w) || w.includes(label) || normalize(box.value) === w);
-      if (should && !box.checked) { box.checked = true; dispatch(box, 'input'); dispatch(box, 'change'); dispatch(box, 'click'); touched++; }
+      const label = normalize(box.nextElementSibling?.textContent || box.parentElement?.textContent || '');
+      const boxValue = normalize(box.value || '');
+      // 空标签绝不能算命中：`wanted.some(w => w.includes(label))` 在 label='' 时恒真，
+      // 老式表格里"整组被勾满"就是这么来的
+      const textHit = !!label && (wantTexts.has(label) || wanted.some(w => w.length >= 2 && label.includes(w)));
+      const valueHit = !!boxValue && wantTexts.has(boxValue);
+      const should = textHit || valueHit;
+      if (should && !box.checked) { box.checked = true; dispatch(box, 'input'); dispatch(box, 'change'); touched++; }
       else if (!should && kind === 'checkbox' && box.checked && entry.mode === 'full') { box.checked = false; dispatch(box, 'change'); touched++; }
       else if (should && box.checked) touched++;
     }
+    const chosen = group.filter(x => x.checked).map(x => normalize(x.nextElementSibling?.textContent || x.parentElement?.textContent || x.value));
     const actual = group.filter(x => x.checked).map(x => x.value).join('|');
-    return { ok: touched > 0 && group.some(x => x.checked), actual, reason: touched ? '' : 'option_missing' };
+    // 回读要比对"选中的集合"和"想选的集合"，而不是"有任意一个被勾上"——
+    // 后者在错选别人选项时也返回 true，等于把错答案报成绿
+    const allWantedChosen = wanted.length > 0 && wanted.every(w => chosen.some(c => c === w || c.includes(w)));
+    const noExtra = kind === 'radio' ? chosen.length <= 1 : chosen.every(c => wanted.some(w => c === w || c.includes(w)));
+    const ok = touched > 0 && allWantedChosen && noExtra && chosen.length > 0;
+    return { ok, actual, reason: ok ? '' : (touched ? 'selection_mismatch' : 'option_missing'), error: ok ? '' : validationErrorNear(el) };
   }
 
   if (kind === 'contenteditable') {
@@ -142,9 +155,11 @@ export async function fillField(field, entry) {
 
   let value = entry.value ?? '';
   if (entry.dateFormat) value = formatDate(value, entry.dateFormat);
-  if (field.maxLength && value.length > field.maxLength) value = value.slice(0, field.maxLength);
+  let truncated = false;
+  if (field.maxLength && value.length > field.maxLength) { value = value.slice(0, field.maxLength); truncated = true; }
 
   const actual = await writeText(el, value);
+  if (truncated) return { ok: false, reason: 'truncated_by_maxlength', actual, error: '' };
   const error = validationErrorNear(el);
   if (error) return { ok: false, reason: 'validation_not_cleared', actual, error };
   if (tolerant(actual, value)) return { ok: true, actual };
@@ -209,10 +224,18 @@ export async function applyPlan(fields, assignments, opts = {}) {
   };
 }
 
+/** 选项集合只在同一个 form / fieldset 内取。
+ *  全文档按 name 取会把两个区块里的同名控件当成一组（招聘页常见 company_1 / company_2 复用 name），
+ *  结果是一次勾满别人的选项，而且回读还以为成功了。 */
 function collectGroup(field) {
-  const doc = field.el.ownerDocument;
+  const el = field.el;
   const name = field.name;
-  if (!name) return [field.el];
-  const sel = field.kind === 'radio' ? `input[type="radio"]` : `input[type="checkbox"]`;
-  return Array.from(doc.querySelectorAll(`${sel}[name="${(typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(name) : name}"]`));
+  if (!name) return [el];
+  const sel = field.kind === 'radio' ? 'input[type="radio"]' : 'input[type="checkbox"]';
+  const esc = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(name) : name;
+  const scope = el.form
+    || el.closest?.('fieldset, [class*="form-item"], [class*="radio"], tr, li')
+    || el.ownerDocument;
+  const inScope = scope.querySelectorAll ? Array.from(scope.querySelectorAll(`${sel}[name="${esc}"]`)) : [];
+  return inScope.length ? inScope : [el];
 }

@@ -21,6 +21,7 @@ async function loadModules() {
 
 const auditLog = [];
 const activeMarks = [];
+const markNotes = new Map();
 
 function mark(el, status, note = '') {
   const color = status === 'green' ? '#22a06b' : status === 'yellow' ? '#e8a33d' : status === 'red' ? '#d64545' : '#8a8f98';
@@ -28,7 +29,9 @@ function mark(el, status, note = '') {
   target.style.outline = `2px solid ${color}`;
   target.style.outlineOffset = '1px';
   target.dataset.nwStatus = status;
-  if (note) target.dataset.nwNote = note;
+  // 说明文字只留在扩展侧内存里（侧边栏会列出来）。写进 title/自定义属性等于
+  // 把"哪些字段被自动填了、为什么"交给页面脚本读，还能被预置成 green 骗用户。
+  if (note) markNotes.set(target, note);
   activeMarks.push(target);
 }
 
@@ -36,8 +39,18 @@ function clearMarks() {
   for (const el of activeMarks.splice(0)) {
     el.style.outline = '';
     delete el.dataset.nwStatus;
-    delete el.dataset.nwNote;
+    markNotes.delete(el);
   }
+}
+
+/** 主世界闸门拦下的一次程序化提交都要留痕：用户点"扫描并填写"后如果页面试图自己提交，
+ *  侧边栏要能看到"拦了几次"，否则"永不代提交"这句承诺又变成无人核对的口号。 */
+if (!window.__nwSubmitListener) {
+  window.__nwSubmitListener = true;
+  const read = () => Number(document.documentElement?.dataset?.nwBlockedSubmits || 0);
+  window.addEventListener('nw:submit-blocked', () => {
+    auditLog.push({ at: new Date().toISOString(), event: 'submit_blocked', count: read() });
+  });
 }
 
 async function handleScan({ profile, mode = 'full', dryRun = false, adapter = null, fillSensitive = false }) {

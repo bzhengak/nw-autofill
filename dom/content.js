@@ -40,11 +40,11 @@ function clearMarks() {
   }
 }
 
-async function handleScan({ profile, mode = 'full', dryRun = false }) {
+async function handleScan({ profile, mode = 'full', dryRun = false, adapter = null, fillSensitive = false }) {
   const { scanner, filler, matcher, safety } = await loadModules();
   safety.armSubmitGuard(window, auditLog);
   const fields = scanner.scanForm(document);
-  const plan = matcher.planFill(fields, profile, { mode });
+  const plan = matcher.planFill(fields, profile, { mode, adapter, fillSensitive });
   const applied = await filler.applyPlan(fields, plan.assignments, { dryRun });
 
   clearMarks();
@@ -73,8 +73,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
     try {
       if (msg?.type === 'nw:scan') {
-        const { profile } = await chrome.storage.local.get('profile');
-        sendResponse({ ok: true, data: await handleScan({ profile: profile || {}, mode: msg.mode, dryRun: msg.dryRun }) });
+        const { profile, settings } = await chrome.storage.local.get(['profile', 'settings']);
+        sendResponse({ ok: true, data: await handleScan({
+          profile: profile || {}, mode: msg.mode, dryRun: msg.dryRun,
+          adapter: msg.adapter || null, fillSensitive: settings ? settings.fillSensitive === true : false,
+        }) });
       } else if (msg?.type === 'nw:undo') {
         const r = window.__nwLast?.applied?.undo?.();
         clearMarks();

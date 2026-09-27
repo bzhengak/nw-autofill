@@ -149,6 +149,10 @@ export function planFill(pageFields, profile, opts = {}) {
   const assignments = [];
   const gaps = [];
   const considered = [];
+  // 敏感字段（证件号/手机号等）默认不写入：设置项 fillSensitive 明确打开才写。
+  // 这条以前只是界面上一个复选框，没人读它——等于承诺了但没做。
+  const allowSensitive = opts.fillSensitive === true;
+  const withheld = field => Boolean(field && field.sensitive) && !allowSensitive;
 
   pageFields.forEach((pf, index) => {
     const blocked = blockReason(pf);
@@ -163,6 +167,10 @@ export function planFill(pageFields, profile, opts = {}) {
     const slot = (slotPins || new Map()).get(index);
     if (slot) {
       const hit = resolveListSlot(profile, schemaFields, slot);
+      if (hit && withheld(hit.field)) {
+        gaps.push({ index, label: pf.label || '(无标签)', reason: 'sensitive_withheld', kind: pf.kind, note: `敏感字段（${hit.path}）默认不自动写，勾选「允许填写敏感字段」后再来` });
+        return;
+      }
       if (hit) {
         pinned.push({
           index, path: hit.path, label: pf.label || '', score: 1, value: hit.value,
@@ -179,6 +187,10 @@ export function planFill(pageFields, profile, opts = {}) {
     if (pinPath) {
       const pinField = schemaFields.find(f => f.path === pinPath);
       const pinValue = String(getValueByPath(profile, pinPath) ?? '').trim();
+      if (pinField && pinValue && withheld(pinField)) {
+        gaps.push({ index, label: pf.label || '(无标签)', reason: 'sensitive_withheld', kind: pf.kind, note: '敏感字段默认不自动写，勾选后才填' });
+        return;
+      }
       if (pinField && pinValue) {
         pinned.push({
           index, path: pinPath, label: pf.label || '', score: 1, value: pinValue,
@@ -252,6 +264,10 @@ export function planFill(pageFields, profile, opts = {}) {
       return;
     }
     const { sf, value } = chosen.cand;
+    if (withheld(sf)) {
+      gaps.push({ index: row.index, label: pf.label || '(无标签)', reason: 'sensitive_withheld', kind: pf.kind, note: '敏感字段（' + sf.path + '）默认不自动写' });
+      return;
+    }
     const entry = {
       index: row.index,
       path: sf.path,

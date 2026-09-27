@@ -26,6 +26,7 @@ async function refresh() {
   const state = await chrome.runtime.sendMessage({ type: 'nw:getState', tabId });
   lastState = state;
   const profile = state?.profile;
+  $('fillSensitive').checked = Boolean(state?.settings?.fillSensitive);
   $('profileMeta').textContent = profile
     ? `已载入：${countFilled(profile)} 个字段有值 / 共 ${buildFields().length} 个可填项`
     : '还没有简历数据，先点「下载空白模板」或「编辑 / 导入 JSON」';
@@ -75,7 +76,12 @@ function renderForm(profile) {
   let inputs = 0;
   for (const sec of model) {
     const h = document.createElement('h3');
-    h.textContent = `${sec.zh}　<span class="note">${sec.en || ''}</span>`;
+    // 用 textContent + 子节点，不要把 <span> 当字符串塞进 textContent（那会原样显示标签）
+    h.append(sec.zh + ' ');
+    const en = document.createElement('span');
+    en.className = 'note';
+    en.textContent = sec.en || '';
+    h.appendChild(en);
     h.style.cssText = 'font-size:12px;margin:12px 0 4px;color:var(--muted)';
     body.appendChild(h);
     for (const row of sec.rows) {
@@ -114,8 +120,7 @@ function renderForm(profile) {
   $('formMeta').textContent = `${inputs} 个字段（列表分组只展开在用的段落 + 一个空段）`;
 }
 
-$('btnForm').onclick = () => {
-  const open = $('formEditor').style.display !== 'none';
+$('btnForm').onclick = () => {  const open = $('formEditor').style.display !== 'none';
   $('formEditor').style.display = open ? 'none' : 'block';
   if (!open) renderForm(lastState?.profile || createEmptyProfile());
 };
@@ -129,6 +134,12 @@ $('btnFormSave').onclick = async () => {
   await refresh();
 };
 
+// 「允许填写敏感字段」这个勾必须真的落到 settings 里，否则 matcher 读不到，等于界面上骗人
+$('fillSensitive').onchange = async e => {
+  await chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { fillSensitive: e.target.checked } });
+  lastState = { ...(lastState || {}), settings: { ...(lastState?.settings || {}), fillSensitive: e.target.checked } };
+};
+
 function countFilled(profile) {
   let n = 0;
   for (const f of buildFields()) {
@@ -139,12 +150,17 @@ function countFilled(profile) {
   return n;
 }
 
-function render(data) {
+function render(data, meta = {}) {
   const s = data?.stats || {};
+  const withheld = (data?.gaps || []).filter(g => g.reason === 'sensitive_withheld');
+  const banner = withheld.length
+    ? `<div class="banner">${withheld.length} 个敏感字段（证件号/手机号等）按你的设置没有写入。要自动填就在下方勾选「允许填写敏感字段」。</div>`
+    : '';
+  const adapterLine = `<div class="note">本页适配器：${escapeHtml(meta.adapterId || '无（按通用规则匹配）')}</div>`;
   $('stats').innerHTML = [
     ['扫描到', s.scanned || 0], ['计划填', s.planned || 0], ['绿·自动', s.green || s.auto || 0],
     ['黄·待复核', s.yellow || s.review || 0], ['红·失败', s.red || 0], ['待你处理', s.gaps || 0],
-  ].map(([k, v]) => `<span><b>${k}</b> ${v}</span>`).join('');
+  ].map(([k, v]) => `<span><b>${k}</b> ${v}</span>`).join('') + adapterLine + banner;
 
   $('results').innerHTML = (data?.results || [])
     .filter(r => !['skipped', 'planned'].includes(r.status) || r.status === 'planned')
@@ -170,7 +186,7 @@ async function run(mode) {
     $('stats').innerHTML = `<span class="banner">页面未响应：${escapeHtml(res?.error || '未知错误')}。若是刚装扩展，请刷新目标页面后重试。</span>`;
     return;
   }
-  render(res.data);
+  render(res.data, { adapterId: res.adapterId });
 }
 
 $('btnScan').onclick = () => run('full');

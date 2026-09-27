@@ -109,7 +109,7 @@ test('planFill：验证码 / 附件 / 主观题 / 提交按钮 一律不进入�
     pageField({ label: '自我评价', name: 'selfintro', kind: 'textarea' }),
     pageField({ label: '上传简历', name: 'resume_file', kind: 'file' }),
   ];
-  const plan = planFill(fields, p, {});
+  const plan = planFill(fields, p, { fillSensitive: true });
   const reasons = Object.fromEntries(plan.gaps.map(g => [g.index, g.reason]));
   assert.equal(reasons[1], 'captcha');
   assert.equal(reasons[2], 'subjective');
@@ -228,8 +228,7 @@ test('精确别名能扛住错的章节线索，但扛不住可重复列表槽�
     > scorePair(pol, fs2.find(f => f.path === 'family.0.political')));
 });
 
-test('SuccessFactors 实测形态：自定义下拉 / 无标签密码框 / cookie 开关都在计划阶段挡下', () => {
-  const p = createEmptyProfile();
+test('SuccessFactors 实测形态：自定义下拉 / 无标签密码框 / cookie 开关都在计划阶段挡下', () => {  const p = createEmptyProfile();
   setValueByPath(p, 'basics.name', '张伟');
   const fields = [
     pageField({ label: 'Title', kind: 'combobox', placeholder: 'No Selection' }),
@@ -244,4 +243,23 @@ test('SuccessFactors 实测形态：自定义下拉 / 无标签密码框 / cooki
   assert.deepEqual(plan.gaps.map(g => g.reason),
     ['custom_control', 'custom_control', 'custom_control', 'credential', 'credential', 'consent_declaration', 'consent_declaration']);
   assert.equal(plan.assignments.length, 0, '这些字段一个都不该进入填写计划');
+});
+
+test('敏感字段默认不写入，勾了 fillSensitive 才写（设置以前只是界面上骗人）', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'basics.idNumber', '320102200103150011');
+  setValueByPath(p, 'contact.phone', '13800138000');
+  setValueByPath(p, 'basics.birthDate', '2001-03-15');
+  const fields = [
+    pageField({ label: '证件号码', name: 'sfzh' }),
+    pageField({ label: '手机号码', name: 'sjh' }),
+    pageField({ label: '出生日期', name: 'csrq' }),
+  ];
+  const off = planFill(fields, p, { mode: 'full' });
+  assert.equal(off.assignments.length, 0, '证件号/手机号/出生日期都是敏感字段，默认一个都不写');
+  assert.deepEqual(off.gaps.map(g => g.reason).sort(), ['sensitive_withheld', 'sensitive_withheld', 'sensitive_withheld']);
+
+  const on = planFill(fields, p, { mode: 'full', fillSensitive: true });
+  assert.equal(on.assignments.length, 3);
+  assert.ok(on.gaps.every(g => g.reason !== 'sensitive_withheld'));
 });

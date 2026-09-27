@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { validateAdapter, matchAdapter, planFromAdapter, dateFormatOverride } from '../core/adapters.js';
+import { validateAdapter, matchAdapter, planFromAdapter, dateFormatOverride, compileAdapters } from '../core/adapters.js';
 import { planFill } from '../core/matcher.js';
 import { sampleProfile } from './fixtures/sample-profile.js';
 import { createEmptyProfile, getValueByPath } from '../core/profile-schema.js';
@@ -56,7 +56,7 @@ test('钉位与日期覆盖会进入填写计划', () => {
     pf({ label: 'Ethnicity / Race', name: 'ethnic', kind: 'select', options: [{ text: 'Chinese', value: '1' }] }),
     pf({ label: 'Current Work Authorization', name: 'work_auth', kind: 'select', options: [{ text: 'Hong Kong Permanent Resident', value: '2' }, { text: 'Would require sponsorship', value: '3' }] }),
   ];
-  const plan = planFill(fields, sampleProfile(), { adapter: sf });
+  const plan = planFill(fields, sampleProfile(), { adapter: sf, fillSensitive: true });
   const byIndex = new Map(plan.assignments.map(a => [a.index, a]));
   assert.equal(byIndex.get(0).dateFormat, 'MM/dd/yyyy', 'adapter 的日期覆盖优先');
   assert.ok(!byIndex.has(1), 'Ethnicity 应被 skip 掉');
@@ -124,7 +124,7 @@ test('relationSlotPins：「父亲工作单位」按资料里的称谓定位 fam
   const { slotPins } = planFromAdapter(fields, hj);
   assert.deepEqual([slotPins.get(0).section, slotPins.get(0).want, slotPins.get(0).subfield], ['family', '父亲', 'name']);
   assert.deepEqual([slotPins.get(1).want, slotPins.get(1).subfield], ['父亲', 'employer']);
-  const plan = planFill(fields, sampleProfile(), { adapter: hj });
+  const plan = planFill(fields, sampleProfile(), { adapter: hj, fillSensitive: true });
   assert.deepEqual(plan.assignments.map(a => a.path), ['family.0.name', 'family.0.employer', 'family.1.name']);
   assert.deepEqual(plan.gaps.map(g => g.reason), ['relation_slot_unresolved'], '资料里没有配偶这一行，配偶栏必须留在待人工');
 });
@@ -132,4 +132,50 @@ test('relationSlotPins：「父亲工作单位」按资料里的称谓定位 fam
 test('适配器校验拒绝不存在的教育子字段', () => {
   const errs = validateAdapter({ id: 'x', domains: ['a.com'], degreeSlotPins: [{ match: 're:硕士.*学校', degree: '硕士', subfield: 'employer' }] });
   assert.ok(errs.some(e => e.includes('degreeSlotPins')), JSON.stringify(errs));
+});
+
+test('槽位规则也要过同一套正则安全检查（它们优先于 pins 生效）', () => {
+  const bad = validateAdapter({ id: 'x', domains: ['a.com'], degreeSlotPins: [{ match: 're:(硕士|)', degree: '硕士', subfield: 'school' }] });
+  assert.ok(bad.some(e => e.includes('危险正则')), JSON.stringify(bad));
+  const redos = validateAdapter({ id: 'x', domains: ['a.com'], relationSlotPins: [{ match: 're:^(a+)+$', relation: '父亲', subfield: 'name' }] });
+  assert.ok(redos.some(e => e.includes('ReDoS')), JSON.stringify(redos));
+  const long = validateAdapter({ id: 'x', domains: ['a.com'], skip: [{ match: 're:' + 'x'.repeat(260), reason: 'r' }] });
+  assert.ok(long.some(e => e.includes('过长')), JSON.stringify(long));
+});
+
+test('键名与地址检查按子串拦：apiUrl / //host / data: 都进不来', () => {
+  const a = validateAdapter({ id: 'x', domains: ['a.com'], apiUrl: 'x' });
+  assert.ok(a.some(e => e.includes('禁止的键')), JSON.stringify(a));
+  const b = validateAdapter({ id: 'x', domains: ['a.com'], notes: '见 //evil.co/p' });
+  assert.ok(b.some(e => e.includes('协议相对')), JSON.stringify(b));
+  const c = validateAdapter({ id: 'x', domains: ['a.com'], notes: 'data:text/html;base64,AA' });
+  assert.ok(c.some(e => e.includes('data:')), JSON.stringify(c));
+});
+
+test('compileAdapters：校验不过的适配器被丢掉，集合仍能按 URL 选到合适的', () => {
+  const warnings = [];
+  const good = { id: 'ok-site', domains: ['ok.example.com'], pins: [{ match: '姓名', path: 'basics.name' }] };
+  const evil = { id: 'bad-site', domains: ['bad.example.com'], fetch: 'x' };
+  const { adapters, rejected, resolve } = compileAdapters({ 'a/ok-site.json': good, 'a/bad-site.json': evil }, m => warnings.push(m));
+  assert.equal(adapters.length, 1);
+  assert.deepEqual(rejected.map(r => r.name), ['a/bad-site.json']);
+  assert.ok(warnings.some(w => w.includes('bad-site')), '被拒绝的适配器必须说明原因，不能静默丢弃');
+  assert.equal(resolve('https://ok.example.com/resume')?.id, 'ok-site');
+  assert.equal(resolve('https://bad.example.com/resume'), null);
+});
+
+test('真实自带的每个适配器都能被 compileAdapters 接受（防止提交进仓库就失效）', () => {
+  const files = {};
+  for (const [i, raw] of ADAPTERS.entries()) files[registry.files[i]] = raw;
+  const { adapters, rejected } = compileAdapters(files, m => { throw new Error(m); });
+  assert.deepEqual(rejected, []);
+  assert.equal(adapters.length, ADAPTERS.length);
+  // 每个已知站点都要能选到适配器，否则线上等于没接
+  for (const url of [
+    'https://app.mokahr.com/campus-recruitment/kpmg/74217',
+    'https://wecruit.hotjob.cn/SU62f3/pb/resumeOperation.html',
+    'https://www.hotjob.cn/wt/zyhl/web/index/showNewResume',
+    'https://career10.successfactors.com/portalcareer?company=johnswireP2',
+    'https://hkex.wd3.myworkdayjobs.com/zh-CN/HKEXCareerPage/job/x',
+  ]) assert.ok(matchAdapter(url, adapters), `${url} 选不到适配器`);
 });

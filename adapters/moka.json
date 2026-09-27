@@ -17,7 +17,7 @@
     "verified": "structure",
     "verifiedScope": "已由用户在自己浏览器里导出的真实结构确认：控件全部是无 name/无 id 的文本框、下拉为 placeholder=Please select 的自定义组件、日期为 Year+Month 成对框、账号字段 disabled、存在语音验证码框。控件的真实交互（下拉展开与选项确认）仍未验证。",
     "realStructure": {
-      "urlSelects": "页面上 0 个 <select>，全部下拉都是 input[placeholder='Please select']",
+      "dropdownShape": "页面上 0 个 <select>，全部下拉都是 input[placeholder='Please select']",
       "naming": "输入框普遍没有 name / id，标签是前一个兄弟元素 → 匹配只能靠标签文本",
       "dates": "日期是 Year + '-' + Month 两个框，无法用单值表达",
       "accountFields": "Name / Mobile / Email 为 disabled，由账号带出",

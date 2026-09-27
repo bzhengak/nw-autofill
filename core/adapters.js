@@ -6,7 +6,7 @@
 
 import { SECTIONS } from './profile-schema.js';
 
-const FORBIDDEN_KEYS = /^(fetch|url|endpoint|remote|script|src|inject|eval|postMessage|request|ajax|href)$/i;
+const FORBIDDEN_KEYS = /(fetch|url|endpoint|remote|script|src|inject|eval|postmessage|request|ajax|href|webhook|payload)/i;
 const ALLOWED_KEYS = new Set(['id', 'name', 'domains', 'paths', 'family', 'notes', 'evidence', 'pins', 'degreeSlotPins', 'relationSlotPins', 'aliases', 'dateFormats', 'skip', 'controlHints', 'version']);
 // 嵌套结构白名单：任何多出来的键（尤其是能发请求的键）都在校验期拒掉
 const NESTED_ALLOWED = {
@@ -63,12 +63,17 @@ export function validateAdapter(raw) {
     if (typeof d !== 'string' || !HOST.test(d)) errors.push(`域名不合法（需形如 a.example.com 或 *.example.com）：${d}`);
   }
   const text = JSON.stringify(raw);
+  // 社区导入的适配器最会藏东西：scheme 形式、协议相对写法、data: 全都拒
   if (/https?:\/\//i.test(text)) errors.push('adapter 内不得包含 http(s) 链接（防止把资料发往远端）');
+  if (/(^|[^a-z])\/\/[a-z0-9-]+\.[a-z]{2,}/i.test(text)) errors.push('adapter 内不得包含协议相对地址（//host）');
+  if (/\bdata:/i.test(text)) errors.push('adapter 内不得包含 data: URI');
   if (/\beval\b|Function\(/.test(text)) errors.push('adapter 内不得包含可执行代码片段');
   const checkRules = (list, kind) => {
     for (const rule of list || []) {
       const m = String(rule.match || '');
       if (!m) { errors.push(`${kind} 规则缺少 match`); continue; }
+      if (m.length > 200) errors.push(`${kind} 的 match 过长（>200 字符）：${m.slice(0, 40)}…`);
+      if (/(?:\([^)]*[+*][^)]*\)\s*[+*])|(?:[+*]\s*[+*])/.test(m)) errors.push(`疑似嵌套量词（ReDoS 风险）：${m.slice(0, 60)}`);
       if (/^re:/i.test(m)) {
         const body = m.slice(3);
         if (unsafeRegex(body)) { errors.push(`危险正则（空分支会匹配所有字段）：${m}`); continue; }
@@ -82,6 +87,9 @@ export function validateAdapter(raw) {
   checkRules(raw.pins, 'pins');
   checkRules(raw.skip, 'skip');
   checkRules(raw.dateFormats, 'dateFormats');
+  // 槽位规则也要过同一套正则安全检查：它们优先于 pins 生效，空分支会把整页指向同一个槽位
+  checkRules(raw.degreeSlotPins, 'degreeSlotPins');
+  checkRules(raw.relationSlotPins, 'relationSlotPins');
   for (const [kind, spec] of Object.entries(SLOT_RULE_KINDS)) {
     for (const r of raw[kind] || []) {
       if (!r.match) errors.push(`${kind} 规则缺少 match`);
@@ -114,6 +122,26 @@ export function matchAdapter(url, adapters) {
   const usable = scored.filter(s => s.rank >= 0);
   if (!usable.length) return null;
   return usable.sort((x, y) => y.rank - x.rank)[0].a;
+}
+
+/**
+ * 把"文件名 → 解析后的 JSON"编译成可用的适配器集合。
+ * 校验不过的直接丢掉并说明原因：宁可这一页没有适配器，也不执行一份没审过的规则集。
+ * 纯函数（fetch 由调用方注入），所以能在 node --test 下覆盖。
+ */
+export function compileAdapters(files, warn = () => {}) {
+  const adapters = [];
+  const rejected = [];
+  for (const [name, raw] of Object.entries(files || {})) {
+    const errors = validateAdapter(raw);
+    if (errors.length) {
+      rejected.push({ name, errors });
+      warn(`适配器 ${name} 被拒绝：${errors.join('；')}`);
+      continue;
+    }
+    adapters.push(raw);
+  }
+  return { adapters, rejected, resolve: url => matchAdapter(url, adapters) };
 }
 
 /** 危险的 `re:` 写法：空分支（如 `a|`、`|b`、`a||b`）会匹配一切，曾经一整个表单被误判跳过 */

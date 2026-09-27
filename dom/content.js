@@ -54,7 +54,7 @@ if (!window.__nwSubmitListener) {
 }
 
 async function handleScan({ profile, mode = 'full', dryRun = false, adapter = null, fillSensitive = false }) {
-  const { scanner, filler, matcher, safety } = await loadModules();
+  const { scanner, filler, matcher, safety, schema } = await loadModules();
   safety.armSubmitGuard(window, auditLog);
   const fields = scanner.scanForm(document);
   const plan = matcher.planFill(fields, profile, { mode, adapter, fillSensitive });
@@ -76,10 +76,7 @@ async function handleScan({ profile, mode = 'full', dryRun = false, adapter = nu
   window.__nwLast = { fields, plan, applied, auditLog };
   // "计划填 0"有两种完全不同的原因：没资料 vs 页面确实填不了。
   // 不区分就会让人去调词典，而真正的问题是 profile 是空的（Klook 实测踩过）。
-  let profileFilled = 0;
-  for (const f of schema.buildFields()) {
-    if (String(schema.getValueByPath(profile, f.path) ?? '').trim()) profileFilled++;
-  }
+  const profileFilled = schema.countFilled(profile);
   return {
     stats: { ...applied.summary, ...plan.stats, profileFilled },
     results: applied.results.map(r => ({ path: r.path, label: r.label, score: r.score, status: r.status, reason: r.failReason || '', note: r.note || '', actual: r.actual, sensitive: r.sensitive })),

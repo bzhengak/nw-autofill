@@ -1,4 +1,4 @@
-import { createEmptyProfile, SECTIONS, buildFields, setValueByPath } from '../core/profile-schema.js';
+import { createEmptyProfile, SECTIONS, buildFields, setValueByPath, countFilled } from '../core/profile-schema.js';
 import { importMarkdown } from '../core/importers/markdown.js';
 import { auditProfile, editorModel, advice } from '../core/coverage.js';
 
@@ -139,16 +139,6 @@ $('fillSensitive').onchange = async e => {
   await chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { fillSensitive: e.target.checked } });
   lastState = { ...(lastState || {}), settings: { ...(lastState?.settings || {}), fillSensitive: e.target.checked } };
 };
-
-function countFilled(profile) {
-  let n = 0;
-  for (const f of buildFields()) {
-    let cur = profile;
-    for (const seg of f.path.split('.')) { cur = cur?.[seg]; if (cur == null) break; }
-    if (typeof cur === 'string' && cur.trim()) n++;
-  }
-  return n;
-}
 
 function render(data, meta = {}) {
   const s = data?.stats || {};

@@ -409,8 +409,15 @@ export function buildFields() {
   return out;
 }
 
-export function createEmptyProfile() {
-  const profile = {};
+/** 有值的槽位数：侧边栏、内容脚本、体检共用同一套算法，避免"计划填 0"被误读成词典不行 */
+export function countFilled(profile) {
+  let n = 0;
+  if (!profile) return 0;
+  for (const f of buildFields()) if (String(getValueByPath(profile, f.path) ?? '').trim()) n++;
+  return n;
+}
+
+export function createEmptyProfile() {  const profile = {};
   for (const section of SECTIONS) {
     profile[section.k] = section.maxItems
       ? Array.from({ length: section.maxItems }, () => {

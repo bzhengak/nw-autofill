@@ -137,11 +137,14 @@ function labelFor(el, doc) {
     if (txt) cands.push({ text: txt, raw: normRaw(node.textContent), source, depth: depth || 0, heading: isBlockTitle(node) });
   };
 
+  // for / aria-labelledby 是"同一棵 DOM 树内"的引用：open shadow 表单里用外层 document 查永远查不到，
+  // 结果整片字段被判成 no_candidate（SF 与多家自研页都有 shadow host）
+  const tree = el.getRootNode?.() || doc;
   const id = el.getAttribute('id');
-  if (id) { try { push(doc.querySelector(`label[for="${CSS_escape(id)}"]`), 'label-for', 0); } catch { /* 非法 id */ } }
+  if (id) { try { push(tree.querySelector(`label[for="${CSS_escape(id)}"]`), 'label-for', 0); } catch { /* 非法 id 或该树不支持 */ } }
   const labelledby = el.getAttribute('aria-labelledby');
   if (labelledby) {
-    const parts = labelledby.split(/\s+/).map(x => doc.getElementById(x)).filter(Boolean);
+    const parts = labelledby.split(/\s+/).map(x => tree.getElementById ? tree.getElementById(x) : null).filter(Boolean);
     if (parts.length === 1) push(parts[0], 'aria-labelledby', 0);
     else if (parts.length > 1) {
       const txt = parts.map(x => textOf(x)).filter(Boolean).join(' ');

@@ -92,9 +92,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           adapter: msg.adapter || null, fillSensitive: settings ? settings.fillSensitive === true : false,
         }) });
       } else if (msg?.type === 'nw:undo') {
-        const r = window.__nwLast?.applied?.undo?.();
+        const r = await window.__nwLast?.applied?.undo?.();
         clearMarks();
-        sendResponse({ ok: Boolean(r) });
+        sendResponse({ ok: Boolean(r?.ok), restored: r?.restored ?? 0 });
       } else if (msg?.type === 'nw:probe') {
         const { probe } = await loadModules();
         sendResponse({ ok: true, data: probe.probePageStructure(document, location.href, window) });

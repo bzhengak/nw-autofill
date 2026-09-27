@@ -307,6 +307,11 @@ export function planFill(pageFields, profile, opts = {}) {
           : sf.type === 'month' ? inferDateFormat({ label: pf.label, placeholder: pf.placeholder, sample: pf.sampleValue, inputType: pf.inputType === 'month' ? 'month' : '' })
             : inferDateFormat({ label: pf.label, placeholder: pf.placeholder, sample: pf.sampleValue, inputType: pf.inputType }));
       if (entry.dateFormat === 'yyyy-MM-dd' && sf.type === 'month') entry.dateFormat = 'yyyy-MM';
+      // 纯数字样例两段都 ≤12 时月/日顺序不可知：宁可黄字让你看一眼，也不要反着写进生日框
+      if (sf.type === 'date' && !entry.dateFormat) {
+        entry.tier = 'review';
+        entry.note = '日期顺序未确认（站点没给可判读的格式线索），请核对';
+      }
     }
     assignments.push(entry);
   });

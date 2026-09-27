@@ -365,9 +365,33 @@ const DATE_TEMPLATES = [
   { re: /^y{4}$/, id: () => 'yyyy' },
 ];
 
+/**
+ * 纯数字样例（"05/06/2024"）在英文站点上两种顺序都可能：05-06 是 5 月 6 日（MM/DD，美式），
+ * 也可能是 6 月 5 日（DD/MM，港英/欧陆）。猜错的后果是把生日、毕业月写反，
+ * 而且回读还是"绿"的。所以：两段都 ≤12 时判为不可知，返回 ''（由上层降级成待人工确认）。
+ * 只要文本里有字面 d/m/y（占位符 "DD/MM/YYYY"）或首段 >12，就仍然可以确定。
+ */
+function numericDateOrder(text) {
+  const s = normalize(text);
+  const m = s.match(/^(\d{1,2})([-/.])(\d{1,2})\2(\d{4})$/);
+  if (!m) return 'unknown';
+  const a = Number(m[1]), b = Number(m[3]);
+  if (a > 12) return 'dd/MM/yyyy';
+  if (b > 12) return 'MM/dd/yyyy';
+  return 'ambiguous';
+}
+
 function templateOf(text) {
   const s = normalize(text);
   if (!s) return '';
+  if (/[dmy]/i.test(s) && !/^\d/.test(s)) {
+    // 占位符形态（dd/mm/yyyy）：按字母顺序判定
+    for (const t of DATE_TEMPLATES) if (t.re.test(s)) return t.id(s);
+    return '';
+  }
+  const order = numericDateOrder(s);
+  if (order === 'ambiguous') return '';
+  if (order !== 'unknown') return order;
   for (const t of DATE_TEMPLATES) {
     if (t.re.test(s)) return t.id(s);
   }

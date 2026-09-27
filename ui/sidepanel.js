@@ -242,7 +242,7 @@ $('btnProbe').onclick = async () => {
   const d = res.data;
   const fr = res.frameReport || null;
   probeJson = JSON.stringify({
-    at: d.at, url: d.url, title: d.title, framework: d.framework,
+    at: d.at, url: d.url, titleChars: d.titleChars, framework: d.framework,
     componentLibs: d.componentLibs, topLibrary: d.topLibrary, totals: d.totals,
     sections: d.sections, fields: d.fields,
     probeBuild: d.probeBuild, isTopFrame: d.isTopFrame, iframeMap: d.iframeMap,

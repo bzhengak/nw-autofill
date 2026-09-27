@@ -79,3 +79,23 @@ test('单选组正常形态：命中正确选项并回读到可见文本', async
   assert.equal(m.checked, true);
   assert.equal(doc.querySelector('input[value="F"]').checked, false);
 });
+
+test('回滚只撤销扩展改过的部分：站点/用户原有的勾选必须还在', async () => {
+  const { doc } = dom(`
+    <form>
+      <label><input type="checkbox" name="h" value="read" checked>阅读</label>
+      <label><input type="checkbox" name="h" value="run">跑步</label>
+      <label><input type="checkbox" name="h" value="code">编程</label>
+    </form>`);
+  const fields = fieldsOf(doc);
+  const code = doc.querySelector('input[value="code"]');
+  const f = fieldFor(fields, code) || fields.find(x => x.kind === 'checkbox');
+  const idx = fields.indexOf(f);
+  const applied = await applyPlan(fields, [entry(idx, { optionValue: '编程' })], {});
+  assert.equal(code.checked, true, '先确认写入了');
+  const res = await applied.undo();
+  assert.equal(res.ok, true);
+  assert.equal(doc.querySelector('input[value="read"]').checked, true, '原来就勾着的不能被抹掉');
+  assert.equal(code.checked, false, '扩展勾上的那个必须撤掉');
+  assert.equal(doc.querySelector('input[value="run"]').checked, false);
+});

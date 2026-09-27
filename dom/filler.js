@@ -180,7 +180,13 @@ export async function applyPlan(fields, assignments, opts = {}) {
     if (opts.dryRun) { results.push({ ...entry, status: 'planned' }); continue; }
 
     const original = field.el ? readBack(field.el, field.kind) : '';
-    if (field.kind === 'radio' || field.kind === 'checkbox') field.__group = collectGroup(field);
+    let preChecks = null;
+    if (field.kind === 'radio' || field.kind === 'checkbox') {
+      field.__group = collectGroup(field);
+      // 必须在写入*之前*抄下每个控件的勾选状态：写完再抄就会把"我勾的"记成"原本就勾的"，
+      // 于是回滚只恢复了别人的选项、我加的那个永远撤不掉
+      preChecks = field.__group.map(b => ({ el: b, was: b.checked }));
+    }
     const outcome = await fillField(field, entry);
     // 没写进去就把原值还原：只读框、受控组件可能接受了赋值又被框架改回去，
     // 留半截错误内容比留空更糟（站点校验会把它当已填）。单选/多选保守不动。
@@ -196,7 +202,12 @@ export async function applyPlan(fields, assignments, opts = {}) {
         }
       } catch { /* 还原失败不影响其余字段 */ }
     }
-    rollback.push({ id: entry.index, el: field.el, kind: field.kind, original, group: field.__group });
+    // 记录"写之前每个控件的状态"，回滚才可能真实：以前 radio/checkbox 的 undo 是整组清零，
+    // 会把用户/站点本来就有的勾选一起抹掉——那不是"撤销我的填写"，是"改了页面别的状态"
+    rollback.push({
+      id: entry.index, el: field.el, kind: field.kind, original,
+      group: preChecks || (field.__group || [field.el]).map(b => ({ el: b, was: b.checked })),
+    });
 
     results.push({
       ...entry,
@@ -208,18 +219,26 @@ export async function applyPlan(fields, assignments, opts = {}) {
   return {
     results,
     summary: results.reduce((acc, r) => (acc[r.status] = (acc[r.status] || 0) + 1, acc), {}),
-    undo: () => {
+    undo: async () => {
+      let restored = 0;
       for (const item of rollback) {
         if (!item.el?.ownerDocument) continue;
         if (item.kind === 'radio' || item.kind === 'checkbox') {
-          for (const box of item.group || [item.el]) { box.checked = false; dispatch(box, 'change'); }
+          for (const box of item.group || []) {
+            if (!box.el || box.el.checked === box.was) continue;
+            box.el.checked = box.was;
+            dispatch(box.el, 'change');
+            restored++;
+          }
         } else if (item.kind === 'contenteditable') {
-          item.el.textContent = item.original; dispatch(item.el, 'input');
+          item.el.textContent = item.original; dispatch(item.el, 'input'); restored++;
         } else {
-          writeText(item.el, item.original || '');
+          await writeText(item.el, item.original || '');
+          restored++;
         }
       }
-      return true;
+      rollback.length = 0;
+      return { ok: true, restored };
     },
   };
 }

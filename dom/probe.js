@@ -155,7 +155,9 @@ export function probePageStructure(doc, locationHref = '', win = doc.defaultView
   // 真浏览器会抛，两者行为不一致会让这里的诊断失真）。
   const here = (() => { try { return new URL(String(locationHref)).origin; } catch { return ''; } })();
   const iframeMap = Array.from(doc.querySelectorAll('iframe')).slice(0, 24).map(f => {
-    const src = String(f.src || f.getAttribute('data-src') || '').slice(0, 110);
+    const rawSrc = String(f.src || f.getAttribute('data-src') || '');
+    let src = '';
+    try { const u = new URL(rawSrc, locationHref); src = (u.origin + u.pathname).slice(0, 110); } catch { src = rawSrc.split('?')[0].slice(0, 110); }
     let sameOrigin = false, controls = null;
     try {
       const iwin = f.contentWindow;
@@ -172,12 +174,26 @@ export function probePageStructure(doc, locationHref = '', win = doc.defaultView
     return { src, frameName: f.getAttribute('name') || undefined, sameOrigin, controls };
   });
 
+  // 导出物会被用户复制/下载并发给维护者，所以它本身也是外发面：
+  // 网申链接的 query 里常带 memberId / token / 内推码，title 里可能带候选人姓名 → 一律不带出去。
+  const safe = (() => {
+    try {
+      const u = new URL(String(locationHref));
+      const hash = String(u.hash || '').split(/[?&]/)[0].slice(0, 40);
+      return { origin: u.origin, path: u.pathname, hash };
+    } catch { return { origin: '', path: '', hash: '' }; }
+  })();
+
   return {
     probeBuild: PROBE_BUILD,
     isTopFrame: (() => { try { return win ? win.top === win : true; } catch { return false; } })(),
     at: new Date().toISOString(),
-    url: String(locationHref).slice(0, 110),
-    title: norm(doc.title).slice(0, 40),
+    url: `${safe.origin}${safe.path}${safe.hash}`.slice(0, 120),
+    origin: safe.origin,
+    path: safe.path,
+    hash: safe.hash,
+    // 站点标题在候选人门户里常直接含姓名（'张伟 的简历'），不外发；只留长度做页面识别用
+    titleChars: norm(doc.title).length,
     framework: {
       react: !!(win && (win.React || win.__REACT_DEVTOOLS_GLOBAL_HOOK__)),
       vue: !!(win && (win.Vue || win.__VUE__ || doc.querySelector('[data-v-]'))),

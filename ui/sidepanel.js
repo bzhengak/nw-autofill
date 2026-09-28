@@ -213,7 +213,7 @@ $('btnTemplate').onclick = () => {  const blank = createEmptyProfile();
 
 refresh();
 
-$('btnImportMd').onclick = () => {
+$('btnImportMd').onclick = async () => {
   const md = $('mdText').value;
   if (!md.trim()) { $('mdReport').textContent = '先粘贴简历 Markdown 全文'; return; }
   let base;
@@ -221,8 +221,13 @@ $('btnImportMd').onclick = () => {
   const { profile, report } = importMarkdown(md, { base, overwrite: $('mdOverwrite').checked });
   $('profileText').value = JSON.stringify(profile, null, 2);
   $('editor').classList.add('on');
-  $('mdReport').innerHTML = '<b>写入 ' + report.mapped.length + ' 项</b> · 跳过已有 '
-    + report.skippedExisting.length + ' 项 · 未识别标题 ' + report.unmappedHeadings.length + ' 个';
+  // 以前这里只填文本框、不保存：点完「解析并填入」再扫描，读到的是 storage 里的旧资料，
+  // 表现就是"简历导入识别不到字段"。导入即保存，并回报保存后的真实条数。
+  await chrome.runtime.sendMessage({ type: 'nw:saveProfile', profile });
+  lastState = { ...(lastState || {}), profile };
+  $('mdReport').innerHTML = '<b>写入并保存 ' + countFilled(profile) + ' 项</b> · 本次新填 '
+    + report.mapped.length + ' 项 · 跳过已有 ' + report.skippedExisting.length + ' 项 · 未识别标题 '
+    + report.unmappedHeadings.length + ' 个';
   const detail = [];
   if (report.unmappedHeadings.length) detail.push('⚠ 这些标题没被识别，内容可能丢失，请手动补：\n  ' + report.unmappedHeadings.join('\n  '));
   if (report.warnings.length) detail.push('提示：\n  ' + report.warnings.join('\n  '));

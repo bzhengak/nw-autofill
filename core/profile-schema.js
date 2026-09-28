@@ -294,7 +294,11 @@ export const SECTIONS = [
       ['strength', '个人优势', 'strengths|key strengths|core competencies|个人优势|特长', 'textarea', ''],
       ['weakness', '待改进项', 'weakness|areas of improvement|缺点|不足', 'textarea', ''],
       ['hobbies', '兴趣爱好', 'hobbies|interests|个人爱好|兴趣', 'text', ''],
-      ['portfolio', '作品集链接', 'portfolio|website|personal site|homepage|作品集|个人主页', 'url', ''],
+      ['portfolio', '作品集链接', 'portfolio|personal site|作品集', 'url', ''],
+      // personalSite / socialPlatform 以前只存在于 EXTRA_ALIASES 与示例资料里，
+      // SECTIONS 里没这两个字段 —— 别名补丁对不存在的路径是静默失效的，导入时"个人网站"就无处可落
+      ['personalSite', '个人网站', 'personal website|website url|website|webpage|个人主页|网站|博客', 'url', ''],
+      ['socialPlatform', '社交平台账号', 'social media|social platform|weibo|xiaohongshu|社交平台|社交媒体', 'text', ''],
       ['github', 'GitHub', 'github|git hub|code profile|开源主页', 'url', ''],
       ['linkedin', 'LinkedIn', 'linkedin|领英', 'url', ''],
       ['otherInfo', '其他需要说明', 'additional information|anything else|notes|补充说明|备注', 'textarea', ''],
@@ -512,8 +516,7 @@ export const EXTRA_ALIASES = {
   'intent.hasRelative': ['是否有亲友受雇于本公司', '是否有亲属在本系统', '是否有亲戚在公司', '是否内推', '亲友是否在职'],
   'intent.referralCode': ['内推码', '推荐码', '校园大使推荐'],
   'intent.referralName': ['推荐人姓名', '是否有推荐人', '内推人'],
-  'others.socialPlatform': ['社交平台', '社交媒体', 'social platform'],
-  'others.personalSite': ['用户id/url', '社交平台账号', '个人网站', '网站', 'website url', 'website'],
+  'others.personalSite': ['用户id/url', '个人网站', '网站'],
   'others.hobbies': ['兴趣爱好', '特长', '兴趣爱好、特长', '个人爱好', '特长与爱好'],
   'basics.health': ['健康状况', '身体健康状况'],
   'basics.lastName': ['姓 - 拼音或西方文字', '姓（拼音）', 'surname'],

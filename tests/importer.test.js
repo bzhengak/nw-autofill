@@ -1,8 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fsp from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { importMarkdown, parseDateRange, parseLanguages, normalizePhone, stripInline } from '../core/importers/markdown.js';
-import { getValueByPath, createEmptyProfile } from '../core/profile-schema.js';
+import { getValueByPath, createEmptyProfile, countFilled } from '../core/profile-schema.js';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const fs = fsp;
 
 const MD = `# 测试用户
 
@@ -142,4 +148,54 @@ test('导入产物能直接喂给匹配层（profile 形状一致）', () => {
   const blank = createEmptyProfile();
   assert.deepEqual(Object.keys(profile).sort(), Object.keys(blank).sort());
   assert.ok(Array.isArray(profile.education) && profile.education.length === blank.education.length);
+});
+
+// ―― 虚构简历（tests/fixtures/dev-resume.md）：开发期所有链路的统一取值表 ――
+// 这份文件刻意写成"真实中文校招生会写的样子"：基本信息一行塞多个「标签：值」、
+// 「语言与证书」合并标题、家庭情况按称谓摊平。它红了就说明导入器跟不上真实格式。
+const DEV_MD = fs.readFileSync(path.join(root, 'tests/fixtures/dev-resume.md'), 'utf8');
+
+test('虚构简历：一行多个「标签：值」全部落位，单位被剥掉', () => {
+  const { profile, report } = importMarkdown(DEV_MD);
+  const g = p => String(getValueByPath(profile, p) ?? '');
+  assert.equal(report.unmappedHeadings.length, 0, `有标题没认出来：${report.unmappedHeadings}`);
+  assert.equal(g('basics.gender'), '女');
+  assert.equal(g('basics.birthDate'), '2001-07-12');
+  assert.equal(g('basics.politicalStatus'), '中共党员');
+  assert.equal(g('basics.maritalStatus'), '未婚');
+  assert.equal(g('basics.ethnicity'), '汉族');
+  assert.equal(g('basics.heightCm'), '164', 'cm 单位要剥掉，否则站点数字校验直接红');
+  assert.equal(g('basics.weightKg'), '50');
+  assert.equal(g('basics.hometown'), '浙江宁波');
+  assert.equal(g('contact.phone'), '13800001111');
+  assert.equal(g('contact.email'), 'lws.dev@example.com');
+  assert.equal(g('intent.salary'), '25000');
+  assert.equal(g('intent.availableDate'), '2027-07-01');
+  assert.equal(g('records.dossierLocation'), '上海市学生事务中心');
+  assert.equal(g('others.personalSite'), 'https://lws.example.com');
+  assert.ok(countFilled(profile) >= 70, `导入后只填了 ${countFilled(profile)} 项`);
+});
+
+test('虚构简历：基本信息段里的教育问法落到第一条教育经历', () => {
+  const g = p => String(getValueByPath(importMarkdown(DEV_MD).profile, p) ?? '');
+  assert.equal(g('education.0.degree'), '硕士');
+  assert.equal(g('education.0.school'), '复旦大学');
+  assert.equal(g('education.0.major'), '数据科学');
+});
+
+test('虚构简历：家庭情况按称谓摊平，工作单位跟着对应的人', () => {
+  const g = p => String(getValueByPath(importMarkdown(DEV_MD).profile, p) ?? '');
+  assert.deepEqual([g('family.0.relation'), g('family.0.name'), g('family.0.employer'), g('family.0.position')],
+    ['父亲', '李国栋', '宁波供电局', '工程师']);
+  assert.equal(g('family.0.phone'), '13900002222');
+  assert.deepEqual([g('family.1.relation'), g('family.1.name'), g('family.1.employer')],
+    ['母亲', '王慧敏', '宁波市第七中学']);
+});
+
+test('虚构简历：「语言与证书」合并标题两类信息都不丢', () => {
+  const g = p => String(getValueByPath(importMarkdown(DEV_MD).profile, p) ?? '');
+  assert.deepEqual([g('languages.0.language'), g('languages.0.level')], ['普通话', '母语'], '语言标签本身不该混进语种名');
+  assert.equal(g('languages.1.language'), '英语');
+  assert.ok(g('certifications.0.name').includes('软件专业技术资格'), '证书行被语言段吞掉就是丢数据');
+  assert.equal(g('certifications.1.name'), 'CET-6');
 });

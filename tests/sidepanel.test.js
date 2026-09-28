@@ -80,6 +80,20 @@ test('改值后保存：写回的 profile 带上新值，且没渲染出来的�
   assert.ok(saved.profile.education && saved.profile.education.length === 4, '保存不得把没渲染出来的分组裁掉');
 });
 
+test('「解析并填入」必须连 storage 一起写：只填文本框等于没导入', async () => {
+  const { doc, sent } = boot(createEmptyProfile());
+  await loadSidePanel();
+  await new Promise(r => setTimeout(r, 30));
+  doc.getElementById('mdText').value = fs.readFileSync(root('../tests/fixtures/dev-resume.md'), 'utf8');
+  doc.getElementById('btnImportMd').dispatchEvent(new doc.defaultView.MouseEvent('click', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 60));
+  const saved = sent.filter(m => m.type === 'nw:saveProfile').pop();
+  assert.ok(saved, '点导入却没发出保存消息 —— 用户看到的"识别不到字段"就是这么来的');
+  assert.equal(getValueByPath(saved.profile, 'basics.name'), '李望舒');
+  assert.equal(getValueByPath(saved.profile, 'family.0.relation'), '父亲');
+  assert.match(doc.getElementById('mdReport').textContent, /保存/);
+});
+
 test('「只看没填的」切换不会炸，且全是空值行', async () => {
   const { doc } = boot(null);
   await loadSidePanel();

@@ -14,7 +14,16 @@ const HIGH = JSON.parse(fs.readFileSync(fileURLToPath(new URL('../core/high-freq
 test('高频清单本身是生成物，不是手写的空壳', () => {
   assert.ok(Array.isArray(HIGH.forms) && HIGH.forms.length >= 5, '应记录来源判分标准');
   assert.ok(Object.keys(HIGH.paths).length > 40);
-  assert.equal(HIGH.paths['education.0.major'], 7, '七张仿真表单都问专业');
+  // 频次从判分标准现算，避免加一张仿真表就要回来改常量
+  const dir = fileURLToPath(new URL('../tools/expected', import.meta.url));
+  const recount = new Map();
+  for (const file of fs.readdirSync(dir).filter(f => f.endsWith('.json'))) {
+    const j = JSON.parse(fs.readFileSync(`${dir}/${file}`, 'utf8'));
+    for (const v of Object.values(j.expect || {})) for (const p of Array.isArray(v) ? v : [v]) recount.set(p, (recount.get(p) || 0) + 1);
+  }
+  assert.equal(HIGH.forms.length, fs.readdirSync(dir).filter(f => f.endsWith('.json')).length, 'HIGH.forms 与判分标准不同步，跑 node tools/gen-high-frequency.mjs');
+  for (const [p, n] of recount) assert.equal(HIGH.paths[p], n, `${p} 频次过期了`);
+  assert.ok(HIGH.paths['education.0.major'] >= 7, '每张表几乎都问专业');
   for (const [p, n] of Object.entries(HIGH.paths)) {
     assert.ok(Number.isInteger(n) && n > 0, `${p} 的次数非法`);
     assert.match(p, /^[a-zA-Z]+\.\d*\d?\.?[a-zA-Z]+$/, `${p} 形状不像槽位路径`);

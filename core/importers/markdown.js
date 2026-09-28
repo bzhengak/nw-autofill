@@ -5,13 +5,17 @@
 //  3. 每个写入都记进 report.mapped，导入后必须能看见"哪句话进了哪个字段"。
 //  4. 认不出的标题进 report.unmappedHeadings，不要静默丢弃内容。
 
-import { createEmptyProfile, getValueByPath, setValueByPath } from '../profile-schema.js';
+import { createEmptyProfile, getValueByPath, setValueByPath, buildFields } from '../profile-schema.js';
+import { normalize, scorePair } from '../matching.js';
 
 const HEADING_RE = /^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/;
 const BULLET_RE = /^\s*([*+-])\s+(.*)$/;
 
 const SECTION_KEYWORDS = [
   { key: 'others.selfIntro', re: /(个人简介|自我评价|自我介绍|_summary|professional summary|^summary$|profile|关于我|求职优势)/i },
+  { key: 'family', re: /(家庭|成员|父母|家属|family|guardian|紧急联系)/i },
+  // languages 必须在 certifications 之前：中文简历常写「语言与证书」，先命中"证书"会把语言整行塞进证书名
+  { key: 'languages', re: /(语言|language)/i },
   { key: 'skills', re: /(专业技能|技能|skills|technical skills|技术栈|能力)/i },
   { key: 'education', re: /(教育|学历|education|academic)/i },
   { key: 'internship', re: /(实习|internship|intern)/i },
@@ -22,7 +26,6 @@ const SECTION_KEYWORDS = [
   { key: 'competitions', re: /(竞赛|比赛|competition|contest|hackathon)/i },
   { key: 'publications', re: /(论文|发表|出版|专利|publication|paper|patent)/i },
   { key: 'certifications', re: /(证书|资格|certificat|license|qualification)/i },
-  { key: 'languages', re: /(语言|language)/i },
   { key: 'intent', re: /(求职意向|意向|expected|objective|job preference|其他信息|additional|补充|interests)/i },
   { key: 'contact', re: /(联系方式|联系|contact)/i },
   { key: 'basics', re: /(基本信息|基本资料|personal information|个人信息)/i },
@@ -44,6 +47,125 @@ export function stripInline(value) {
 }
 
 const MONTH_FIX = m => String(m).padStart(2, '0');
+
+/**
+ * 一行里可能有多个「标签：值」（中文简历常写成 性别：男　出生日期：2001-03-15　籍贯：江苏南京）。
+ * 先按"标签:"出现的位置切段，值就是到下一个标签之前的内容。
+ */
+export function splitKeyValuePairs(line) {
+  const s = String(line || '').trim();
+  if (!s) return [];
+  const LABEL = /(?:^|[\s|｜、·])((?:[\u4e00-\u9fffA-Za-z()（）/·+.#-]{2,12}?))\s*[:：]\s*/g;
+  const marks = [];
+  let m;
+  while ((m = LABEL.exec(s))) marks.push({ label: m[1].trim(), from: m.index + m[0].length, labelStart: m.index + (m[0].indexOf(m[1]) ) });
+  if (!marks.length) return [];
+  const out = [];
+  for (let i = 0; i < marks.length; i++) {
+    const end = i + 1 < marks.length ? marks[i + 1].labelStart : s.length;
+    const value = s.slice(marks[i].from, end).replace(/[|｜、·\s]+$/, '').trim();
+    if (marks[i].label && value) out.push({ label: marks[i].label, value });
+  }
+  return out;
+}
+
+/**
+ * 「标签：值」里的标签，交给和填页面同一份别名词典去认（core/matching.js 的 scorePair）。
+ * 词典只有一份这一条是刻意的：以前导入器自己写死几个关键词，页面匹配那边认识
+ * 「政治面貌」而导入这边不认识，同一个字段两处知识、必然漂移。
+ * 只认一次性字段（itemIndex == null）：kv 行是"一个事实"，不该去抢多段经历的槽位。
+ */
+let flatFields = null;
+function fieldForLabel(label) {
+  if (!flatFields) flatFields = buildFields().filter(f => f.itemIndex == null);
+  const synthetic = {
+    label: normalize(label), labelRaw: label, kind: 'text', type: 'text', options: [],
+    sectionHint: '', itemIndex: null, nearbyLabels: [], autocomplete: '', currentValue: '', name: '', id: '', placeholder: '',
+  };
+  let best = null, bestScore = 0;
+  for (const f of flatFields) {
+    const s = scorePair(synthetic, f);
+    if (s > bestScore) { bestScore = s; best = f; }
+  }
+  // 0.66 = "标签是某个别名的子串"（手机 ⊂ 手机号）也能落位；再低就开始把杂项标签塞进正经字段了
+  return bestScore >= 0.66 ? best : null;
+}
+
+/**
+ * 「标签：值」落位前的小修正：中文简历爱写 "164cm"、"50kg"，
+ * 而网申该栏只要数字，带着单位会直接把站点校验弄红。
+ */
+function tidyValue(path, value) {
+  const v = String(value || '').trim();
+  if (/^(basics\.(heightCm|weightKg)|skills?\.)/.test(path)) return v.replace(/\s*(cm|kg|厘米|公斤|米)\s*$/i, '').trim();
+  return v;
+}
+
+/**
+ * 基本信息段里常有教育类一次性问法（最高学历/毕业院校/专业）。
+ * 它们在 profile 里属于可重复列表（education.N），kv 行不该抢列表槽位，
+ * 但"最高学历"这种就是第一条教育经历的事实，不接住就白丢。
+ */
+const EDU_KV_FALLBACK = [
+  { re: /^(最高学历|现有学历|现学历|学历)$/i, path: 'education.0.degree' },
+  { re: /^(最高学位|学位)$/i, path: 'education.0.degreeTitle' },
+  { re: /^(毕业院校|毕业学校|学校|院校)$/i, path: 'education.0.school' },
+  { re: /^(所学专业|专业|专业名称)$/i, path: 'education.0.major' },
+  { re: /^(专业方向|研究方向)$/i, path: 'education.0.researchField' },
+  { re: /^(绩点|gpa)$/i, path: 'education.0.gpa' },
+];
+
+/** 单个「标签：值」落位；命中词典返回 true，交给调用方走原有兜底分支 */
+function putKeyValue(labelRaw, value, put, where) {
+  const label = String(labelRaw || '').replace(/[（(].*?[）)]/g, '').trim();
+  if (!label || !value) return false;
+  const hit = fieldForLabel(label);
+  if (hit) { put(hit.path, tidyValue(hit.path, value), `${where}「${label}」`); return true; }
+  const edu = EDU_KV_FALLBACK.find(r => r.re.test(label));
+  if (edu) { put(edu.path, tidyValue(edu.path, value), `${where}「${label}」`); return true; }
+  return false;
+}
+
+const FAMILY_RELATIONS = [
+  { re: /(父亲|爸爸|父)/, value: '父亲' },
+  { re: /(母亲|妈妈|母)/, value: '母亲' },
+  { re: /(配偶|爱人|妻子|丈夫)/, value: '配偶' },
+  { re: /(哥哥|兄弟|兄)/, value: '兄弟' },
+  { re: /(姐姐|姐妹|姊)/, value: '姐妹' },
+];
+
+/**
+ * 家庭情况段：中文简历写成 "父亲：李国栋　工作单位：…　职务：…　联系电话：…"，
+ * 一行之内称谓在最前，后面几个属性属于同一个人 —— 按称谓开新槽位，属性沿用。
+ */
+function parseIntoFamily(lines, put) {
+  let slot = -1;
+  for (const line of lines) {
+    const pairs = splitKeyValuePairs(line.replace(/^[-*+]\s+/, '').trim()) || [];
+    if (!pairs.length) continue;
+    for (const { label, value } of pairs) {
+      const rel = FAMILY_RELATIONS.find(r => r.re.test(label));
+      if (rel) {
+        // 「父亲：李国栋」= 称谓即标签，值就是姓名 → 新开一个人；
+        // 「父亲工作单位：…」= 称谓+属性，沿用当前人（不因为标签里带"父亲"就串到下一行）
+        const isBareRelation = /^[s]*(父亲|爸爸|母亲|妈妈|配偶|爱人|妻子|丈夫|哥哥|姐姐|兄|弟|姊|妹)[s]*(姓名|名字|名|称呼)?[s]*$/.test(label);
+        if (isBareRelation) {
+          slot = Math.min(3, slot + 1);
+          put(`family.${slot}.relation`, rel.value, `家庭条目「${label}」`);
+          put(`family.${slot}.name`, value, `家庭条目「${label}」`);
+          continue;
+        }
+        if (slot < 0) slot = 0;
+      }
+      if (slot < 0) continue;
+      if (/(工作单位|单位|职业|employer)/i.test(label)) put(`family.${slot}.employer`, value, `家庭条目「${label}」`);
+      else if (/(职务|职位|position|title)/i.test(label)) put(`family.${slot}.position`, value, `家庭条目「${label}」`);
+      else if (/(电话|手机|联系方式|phone)/i.test(label)) put(`family.${slot}.phone`, value, `家庭条目「${label}」`);
+      else if (/(出生|生日|birth)/i.test(label)) put(`family.${slot}.birthYear`, value, `家庭条目「${label}」`);
+      else if (/(政治面貌|党派|political)/i.test(label)) put(`family.${slot}.political`, value, `家庭条目「${label}」`);
+    }
+  }
+}
 
 /**
  * 从一行尾部文字里抽日期区间。支持：
@@ -292,8 +414,10 @@ export function importMarkdown(md, opts = {}) {
         const content = (cat[2] || t).trim();
         const label = (cat[1] || '').toLowerCase();
         let target = 'skills.domain';
-        if (/(软件|mlops|编程|程序|开发语言|software|platform|engineering|infrastructure)/.test(label)) target = 'skills.programming';
-        else if (/(工具|tool|办公|office|ide)/.test(label)) target = 'skills.tools';
+        // 办公软件要先判：它同时含"软件"和"工具"两类关键词，晚判就被抢进编程语言
+        if (/(办公|office|excel|ppt|powerpoint|word)/.test(label)) target = 'skills.office';
+        else if (/(软件|mlops|编程|程序|开发语言|software|platform|engineering|infrastructure)/.test(label)) target = 'skills.programming';
+        else if (/(工具|tool|ide)/.test(label)) target = 'skills.tools';
         else if (/(llm|算法|模型|ai|智能体|data|数据|分析)/.test(label)) target = 'skills.domain';
         const prev = String(getValueByPath(profile, target) || '');
         const merged = [prev, content].filter(Boolean).join('、');
@@ -305,14 +429,39 @@ export function importMarkdown(md, opts = {}) {
     }
 
     if (route === 'languages') {
-      const all = body.map(l => l.replace(BULLET_RE.source, '$2')).join(' ');
-      for (const lang of parseLanguages(all)) put(`languages.${nextSlot('languages')}.language`, lang.language, '语言条目'), put(`languages.${listCursor.languages}.level`, lang.level, '语言条目');
+      // 「语言与证书」是中文简历极常见的合并标题：两类信息都在这段里，
+      // 只按语言解析会把证书整行丢掉，而带 "语言：" 前缀时第一个语种会变成 "语言：普通话"
+      const lines = body.map(l => stripInline(l.replace(BULLET_RE.source, '$2'))).filter(Boolean);
+      const langTexts = [];
+      for (const line of lines) {
+        const cert = line.match(/^(?:证书|资格证书|获奖证书|certificat(?:ion|e))?[:：]\s*(.+)$/i);
+        if (/证书|certificat/i.test(line.split(/[：:]/)[0]) && cert) {
+          for (const c of cert[1].split(/[；;]/).map(x => x.trim()).filter(Boolean)) {
+            put(`certifications.${nextSlot('certifications')}.name`, c, '语言与证书·证书');
+          }
+          continue;
+        }
+        langTexts.push(line.replace(/^(?:语言|languages)\s*[:：]\s*/i, ''));
+      }
+      for (const lang of parseLanguages(langTexts.join('、'))) {
+        const i = nextSlot('languages');
+        put(`languages.${i}.language`, lang.language, '语言条目');
+        put(`languages.${listCursor.languages}.level`, lang.level, '语言条目');
+      }
+      continue;
+    }
+
+    if (route === 'family') {
+      parseIntoFamily([...new Set(body.map(l => stripInline(l)).filter(Boolean))], put);
       continue;
     }
 
     if (route === 'intent' || route === 'contact' || route === 'basics') {
-      for (const item of bulletsOf(body)) {
-        const t = stripInline(item.text);
+      // 基本信息常写成不带项目符号的一行（"性别：男　出生日期：2001-03-15"），也要吃进来
+      const texts = [...new Set(body.map(l => stripInline(l)).filter(Boolean))];
+      for (const raw of texts) {
+        // 项目符号要先脱掉：'- 语言：普通话（母语）' 以前会绕过语言专用解析，被通用 kv 抢走
+        const t = raw.replace(/^[-*+]\s+/, '').trim();
         const kv = t.match(/^(语言|languages)[:：]\s*(.+)$/i);
         if (kv && /语言|language/i.test(kv[1])) {
           for (const lang of parseLanguages(kv[2])) {
@@ -322,17 +471,23 @@ export function importMarkdown(md, opts = {}) {
           }
           continue;
         }
-        const label = (t.match(/^(.{2,12}?)[:：]\s*(.+)$/) || []);
-        if (label[1] && label[2]) {
-          if (/兴趣|爱好|hobb|interest/i.test(label[1])) put('others.hobbies', label[2], `条目「${label[1]}」`);
-          else if (/作品集|主页|portfolio|site/i.test(label[1])) put('others.portfolio', label[2], `条目「${label[1]}」`);
-          else if (/ github/i.test(label[1])) put('others.github', label[2], `条目「${label[1]}」`);
-          else if (/linkedin/i.test(label[1])) put('others.linkedin', label[2], `条目「${label[1]}」`);
-          else if (/期望|意向|城市|到岗|salary/i.test(label[1])) put('intent.willingnessNote', `${label[1]}：${label[2]}`, `条目「${label[1]}」`);
-          else put('others.otherInfo', `${label[1]}：${label[2]}`, `条目「${label[1]}」`);
-        } else if (t) {
-          put('others.otherInfo', t, `标题「${headingText}」`);
+        const pairs = splitKeyValuePairs(t);
+        let consumed = false;
+        for (const { label, value } of pairs) {
+          if (putKeyValue(label, value, put, '字段')) { consumed = true; continue; }
+          if (/兴趣|爱好|hobb|interest/i.test(label)) { put('others.hobbies', value, `字段「${label}」`); consumed = true; continue; }
+          if (/作品集|主页|portfolio|site/i.test(label)) { put('others.portfolio', value, `字段「${label}」`); consumed = true; continue; }
+          if (/github/i.test(label)) { put('others.github', value, `字段「${label}」`); consumed = true; continue; }
+          if (/linkedin/i.test(label)) { put('others.linkedin', value, `字段「${label}」`); consumed = true; continue; }
+          if (/期望|意向|城市|到岗|salary/i.test(label)) { put('intent.willingnessNote', `${label}：${value}`, `字段「${label}」`); consumed = true; continue; }
         }
+        if (consumed) continue;
+        if (pairs.length) {
+          // 标签认得出但词典没把握：原样存进"其他信息"，至少不丢内容
+          for (const { label, value } of pairs) put('others.otherInfo', `${label}：${value}`, `字段「${label}」（未识别）`);
+          continue;
+        }
+        if (t) put('others.otherInfo', t, `标题「${headingText}」`);
       }
       continue;
     }

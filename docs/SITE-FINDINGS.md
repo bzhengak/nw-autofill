@@ -109,3 +109,121 @@ Moka 的重复经历区块里，每个字段各自一个 `.mk-form-item`，页�
   **判分不承认配对正确**，避免把没解决的问题写成"通过"。
 - 真正的修法要等 P4：一致性断言（同块内的字段必须来自同一个 profile 列表条目），
   实现点是把 `detectRepeatedBlocks` 的卡片边界判定从"结构签名"扩到"重复标签序列 + 缩进/包裹猜测"。
+
+## 2026-09-28 · 年 + 月 成对框：从"整组拒填"改成"一个日期、两笔写入"
+
+实测形态（四份判分表单、14 个框）：Moka 把 `年/月` 两个 `<input placeholder="年|月">` 塞在同一个
+`.mk-control` 里，Workday 用「自:」「至:」两个 `wd-field`，海康自建用 `.se-field`。以前整组标
+`composite_date` 交回人工，理由是"单个框装不下一个完整日期，两个框会各自去抢 profile 的日期列"。
+这个理由成立，但结论过头了：抢列的问题在于**规划粒度**，不在于控件不可写。
+
+改法（三段，缺一都会留下假绿）：
+
+1. **扫描阶段配对**（`dom/scanner.js` `markCompositeDatePairs`）：同容器 + 同标签的年框与月框按
+   文档顺序两两成组，给出 `datePair = { id, part, role, roleSource }`。落单的年框仍然带
+   `compositeDate` 标记，否则它会被当成普通文本框，把整个日期写进年份框。
+2. **一组 = 一个问题**（`core/matcher.js`）：组长（年框）单独成行进匈牙利矩阵，只占一个 profile 列；
+   落笔前在 `assignments` 末尾统一展开成每成员一笔，`dateFormat` 分别给 `yyyy` / `MM`。
+   展开必须放在最后而不是打分分支里：Moka 适配器一钉位，只钉年框就会把月框整个弄丢（实测踩过，
+   `tests/core.test.js` 有一条专门盯它）。
+3. **起止角色**：标签自己说了「自/至/开始/结束」→ `roleSource='label'`；只写了「起止时间」这种
+   一句问两个框的范围词 → 按出现顺序推（第一组是起），`roleSource='order'` 一律黄字，
+   并且**保留先前的黄字理由再追加**，不让两处说明互相覆盖。
+
+顺带修掉一个真 bug：`detectRepeatedBlocks` 会把「自」「至」两个纯日期行当成第 0/1 段经历，于是
+`自 → work.0.startDate`、`至 → work.1.endDate` —— 一个时间段被拆到两段经历上，而且"自"那侧还能拿绿字。
+现在纯日期壳子不参与重复编号（`isDatePartShell`）。
+
+仍未解决（判分标准里如实写着，不掩盖）：Moka 的起止行**没有小节标题**，落在哪一段经历说不清，
+`y1..m2` 目前会拿到 `education.0.*` 这类同样合法但可能错位的路径，所以必须一直是黄字。
+根因是 `sectionHint` 只来自容器标题；下一步是让日期行继承邻近字段的章节线索（见任务 #5 一致性断言）。
+
+## 2026-09-28 · 第二轮：三个"看起来是我们的词不够"其实不是的归因错误
+
+跑完拆日期后把剩余缺口按原因排了一遍（`custom_control=27`、`no_candidate=12`、`subjective=5`…），
+逐条查下来发现 12 个 `no_candidate` 里有一多半是**我们自己的判读错误**，不是资料缺词：
+
+1. **附件按标签拒 → 漏进来被报成"没词"**。`BLOCK_PATTERNS` 的 file 规则要求标签命中
+   「上传/附件/upload/attachment」，于是 Sea 的 `Resume`/`Transcript`、Workday 的「简历履历」漏网，
+   落到候选打分后变成 `no_candidate`。用户看到"没有这个词"会去补资料，而真相是"这栏得你自己传"。
+   现在 `kind === 'file'` 直接归因 `file`，不再看标签。
+2. **枚举选项比对一直拿到 `[object object]`**。`scorePair` 里
+   `pageField.options.some(o => profileField.options.some(p => normalize(o) === normalize(p)))`
+   的 `o` 是 `{text,value}` 对象，`normalize(o)` 恒等于 `"[object object]"` → 永远 0 命中 →
+   **所有带选项的枚举字段都在吃 ×0.8 惩罚**。后果不是"少点分"而是排错序：SF 的
+   `Current Work Authorization` 输给"工作城市"（0.529 vs 0.554），整栏红字。改成比 `text/value`
+   并允许包含关系后，它自己回到了 `hkGlobal.workAuth` 并选中 Hong Kong Permanent Resident。
+3. **裸 `work` 把合规块认成工作经历**。SF 的 `<legend>Work Authorization</legend>` 命中章节词 `work`
+   → 该块字段拿到 `sectionHint=work` + 区块序号 0 →「Do you require sponsorship…」对
+   `hkGlobal.needSponsorship`（别名精确包含）被章节惩罚 ×0.75、槽位惩罚 ×0.8，0.84 掉到 0.50 出局。
+   `work` 现在带否定前后词（authorization/permit/visa/status/…），`Work Experience` 仍然照认。
+
+修 2 时顺带暴露并修掉一个更普遍的结构缺陷：**标签证据能撞到 1.0，结尾的 `Math.min(1, best)`
+就把后面的槽位惩罚一起抹平**。精确命中的 `education.0.school` 与 `education.1.school`
+都变成 1.000，匈牙利只能按列顺序随便挑 —— legacy 表单的「最高学历」因此拿到 `education.1.degree`
+（本科）而正确答案是 `education.0`（硕士），而且是**绿字**。现在标签证据封顶 0.95，
+章节/槽位的奖惩才有可见的地方。
+
+同轮修掉两处"假红"（写入层）：`<option value="2">共青团员</option>` 这种码值下拉，回读拿可见文本
+比码值永远不等 → 明明选对却报红；单选按 `value="M"` 勾上、验收却比 `男` → 同样假红。
+现在写入与回读共用同一个 `hitOf` 判定；站点真的把选择改回去时报 `selection_reverted` 红字（保留），
+计划阶段就知道选项对不上的（`needsChoice`）报橙色"需人工"而不是红色"填错了"。
+
+结果：9 份判分表单 186/186、越界 0、**红字 0**（本轮开始前是 7 条红字），
+`no_candidate` 从 12 降到 2（Workday 的「区」「电话分机」——profile 里确实没有这两栏，属真缺口）。
+
+## 2026-09-28 · 摊平表单的记录配对：出现次数是能用的证据，但不是"哪段经历"的证据
+
+`moka-klook-cn.html` 把两条工作经历摊成 8 个"一行一个控件"的 `.mk-item`，没有小节标题、没有卡片包裹，
+`detectRepeatedBlocks` 找不到任何边界（每个容器只有 1 个控件）。同块的 公司名称 / 职位名称 / 工作职责
+因此各自去抢 profile 列，会出现"A 公司的职位写进 B 公司那一栏"，而每个字段单独回读都是绿的。
+
+试过、被否掉的做法：把 `sectionHint` 从邻近字段继承过来 —— **Klook 整份表单一个章节线索都没有**，
+继承无源可继；有线索的表单（kpmg / workday）本来就已经对齐了。所以这条不在本轮做。
+
+实际做法（`markRecordOccurrences`）：把"同一个标签第 k 次出现"当作"第 k 条记录"的证据。
+三个关键约束，每一条都是实测踩出来的：
+
+1. **只给确实重复的标签编号**（出现次数 ≥2）。一次性字段（学校 / 专业 / 姓名）没有"第几条"可言，
+   给它们编 0 反而是无中生有 —— 老式 fieldset 布局的三个不同章节会被一起编号，
+   硕士槽位漂到本科槽位（`tests/scanner.test.js` 有一条专门钉这个）。
+2. **同一容器里的年月对折成一个单位**。Klook 的「起止时间」四个框 = 一条记录的开始与结束，
+   按框计数会把它当成两次出现。
+3. **`role=combobox` / `listbox` / `file` 不参与计数**。Sea 的 `Contact Number *` 是一个
+   `div[role=combobox]` 壳子和一个真空输入框共用同一条 `aria-labelledby`，壳子占掉"第 1 次出现"之后，
+   真输入框就成了"第 2 次"，实测去抢了 `family.1.phone`。
+
+序号一律带 `itemIndexSource='occurrence'`，匹配器据此**拒绝开绿字**：它说得出"第几条"，
+说不出"是工作还是实习"。绿字只认两种证据 —— DOM 区块序号，或页面小标题的章节归属与 profile 分组一致。
+另外加了一条错位点名：第 k 次出现的标签如果被派到序号 ≠ k 的条目上，黄字说明会写
+"这一栏是页面上第 k+1 次出现的「工作职责」，却拿到了资料里第 1 条，配对可能错位"。
+
+效果：Klook 第 2 条经历的 公司名称 / 职位名称 现在都落在 `work.1.*`（以前一个 work.0 一个 internship.0），
+剩下 1 处错位（`工作职责 → work.0`）被点名而不是静默通过。
+判分 186/186、越界 0、红字 0、需人工 2；112 单测全绿（本轮新增 4 条，其中 3 条验证过"去掉实现就失败"）。
+
+## 2026-09-28 · P3 混合 AI 兜底：边界能自证，但本仓库判分集上的增益是 0
+
+实现见 `core/ai.js` + `background/service-worker.js` 的 `nw:aiPreview / nw:aiAsk / nw:saveAiKey`。
+三条边界的落点（都不是"文档承诺"，都有测试）：
+
+1. **取值不出本机**：请求体由页面文字（标签/控件类型/站点选项文案）+ 槽位路径与中文名构成；
+   内容脚本回包 `aiFields` 时**刻意不带 `currentValue`**（站点预填的内容里就可能有用户姓名手机）。
+   发送前 `assertNoProfileValues()` 把整份 profile 逐值扫一遍，命中即拒发。
+   自检有个必须承认的坑：槽位目录自己的中文名（"掌握程度""与推荐人关系"）会和资料里的短值
+   （`熟练`、`导师`）撞字，第一版每次都把自己拦下 → 拦成"永远拒绝"等于没有。
+   现在只豁免**构造出来的目录文本**这一段，其余区域一律不豁免，植入取值仍能被抓住（有测试）。
+2. **只能选路径**：响应里的 path 必须命中白名单，值一律由本地从 profile 取；
+   证件号/护照/签证/薪酬/无犯罪/声明类路径根本不进白名单（`AI_FORBIDDEN_KEY`）。
+3. **永远黄字**：`tier='review'` 写死，且 AI 选中的 sensitive 槽位仍要走「允许填写敏感字段」那道闸；
+   候选带 `label` 落地时复核下标，页面在两次扫描之间改了控件顺序就整条丢弃（`stale`）。
+
+Key 进 `chrome.storage.session`（重启即失效，不会被 settings/profile 导出带走），
+Base URL 与模型名才进 `storage.local`。「预览将发送的内容」与实际请求共用同一次构造，
+看到的就是发出去的。
+
+**实测上限**：9 份仿真表单里 `no_candidate` 只剩 2 栏（Workday 的「区」「电话分机」），
+而这两栏在 profile 里本来就是空的 → AI 最多只能说"你资料里那栏没填"。
+所以本轮的量化结论是：**在仓库自带判分集上 AI 兜底增益为 0，真实增益未验证**，
+只能在用户实际遇到的自建门户上量。剩下的覆盖损失集中在 `custom_control=27`（需要点开下拉，未批准），
+那部分 AI 帮不上 —— 它答的是"这栏对应哪个槽位"，不是"这个控件怎么操作"。

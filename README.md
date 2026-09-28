@@ -44,8 +44,27 @@ Chrome / Edge MV3 扩展。在公司自建网申页面上，按你维护的一�
 3. **结果永远黄字**。AI 选中的栏位一律 `tier=review`，且仍受「允许填写敏感字段」那道闸约束；
    两次扫描之间页面控件数变了导致下标漂移时，整条建议丢弃而不是写进别的栏位。
 
-Key 只存 `chrome.storage.session`：重启浏览器即失效，不会随「导出 JSON」被带走；
-Base URL 与模型名可以持久化（它们不是秘密）。「预览将发送的内容」显示的就是实际请求体全文。
+### Key 怎么保护
+
+判定规则全部写在 `core/ai-security.js`（纯函数、离线单测覆盖），service worker 只是执行者：
+
+- **只进 session**：Key 存 `chrome.storage.session`，且代码显式钉成 `TRUSTED_CONTEXTS` 访问级别
+  （默认也是这个，写死是免得将来有人为了调试改成让注入页面的模块也读得到）。重启浏览器即失效。
+- **进不了持久化设置**：`nw:saveSettings` 走白名单，名字里带 `key/token/secret/password/auth` 的键
+  一律拒收，并把拒收原因回给界面——静默吞掉只会让人以为"Key 保存成功了"。
+- **Origin 绑定**：录入 Key 时记下当时的 Base URL origin。之后改了 Base URL，老 Key 不会跟着发去
+  新地址，必须重新录一次；「我确认把 Key 与字段名发往 `https://…`」这个勾必须打上且与当前 origin
+  一致，Base URL 一变勾就作废。
+- **禁跟跳转**：`redirect: 'error'`。否则一次 302 就把 `Authorization` 头带到别的域去了，
+  前面所有 origin 检查都白做。
+- **端点形状**：必须 https（`127.0.0.1` / `localhost` 例外，供本地 Ollama/LM Studio 自测）；
+  拒绝带 `user@` 的地址（看着是 A 域其实是 B 域）、拒绝带 `?query`/`#` 的地址（多半是把整条
+  带 token 的链接粘进来了）、拒绝非 http(s) 协议。
+- **不回显、不落日志**：Key 只做形状校验（长度/空格），界面与状态只报长度和 origin；
+  保存后立即清空输入框；错误文本过 `redact()` 才返回。`tests/sidepanel.test.js` 会断言
+  除 `nw:saveAiKey` 之外没有任何消息带着 Key，且页面上搜不到它。
+
+「预览将发送的内容」与实际请求共用同一次构造，并在开头写明收件人地址——看到的就是发出去的。
 
 **在仓库自带的 9 份仿真表单上，可问 AI 的缺口只有 2 栏**（Workday 的「区」「电话分机」，
 而这两栏在 profile 里本来就是空的，AI 也补不了）——也就是说这套兜底在本仓库的判分集上

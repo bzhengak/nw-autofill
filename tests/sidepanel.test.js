@@ -106,3 +106,47 @@ test('「只看没填的」切换不会炸，且全是空值行', async () => {
   assert.ok(rows.length > 0);
   assert.ok(rows.every(el => !String(el.value).trim()), '「只看没填的」不该还留着有值的行');
 });
+
+test('Key 卫生：录一次就擦掉输入框，只有 saveAiKey 能带它走，界面不回显', async () => {
+  const SECRET = 'sk-abcdefghijklmnop1234567890';
+  const { dom, doc, sent } = boot(null);
+  dom.window.chrome.runtime.sendMessage = async msg => {
+    sent.push(msg);
+    if (msg.type === 'nw:saveAiKey') return { ok: true, hasAiKey: true, length: String(msg.key || '').length, boundOrigin: 'https://api.openai.com', secure: true };
+    return { ok: true, profile: null, settings: {}, tabId: 1 };
+  };
+  await loadSidePanel();
+  await new Promise(r => setTimeout(r, 30));
+
+  doc.getElementById('aiBaseUrl').value = 'https://api.openai.com/v1';
+  doc.getElementById('aiModel').value = 'gpt-4o-mini';
+  doc.getElementById('aiKey').value = SECRET;
+  doc.getElementById('btnSaveKey').dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 30));
+
+  assert.equal(doc.getElementById('aiKey').value, '', '保存后输入框必须清空，不能把 Key 留在 DOM 里');
+  assert.ok(!doc.body.innerHTML.includes(SECRET), 'Key 的任何一个字符都不该出现在页面上');
+  const carriers = sent.filter(m => JSON.stringify(m).includes(SECRET));
+  assert.deepEqual(carriers.map(m => m.type), ['nw:saveAiKey'], '除了 saveAiKey，任何消息都不许携带 Key');
+  assert.ok(!sent.some(m => m.type === 'nw:saveSettings' && JSON.stringify(m.settings || {}).includes(SECRET)),
+    'saveSettings 里出现了 Key —— 那会随导出 JSON 离开本机');
+
+  // 没勾"确认发往这个地址"之前，问 AI 的按钮必须是死的
+  doc.getElementById('aiConsent').checked = false;
+  doc.getElementById('aiConsent').dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(doc.getElementById('btnAiAsk').disabled, true, '未确认收件人就不该发得出 Key');
+});
+
+test('Base URL 非法时不保存、不确认、也发不出去', async () => {
+  const { dom, doc, sent } = boot(null);
+  await loadSidePanel();
+  await new Promise(r => setTimeout(r, 30));
+  doc.getElementById('aiBaseUrl').value = 'http://api.example.com/v1';   // 明文 http
+  doc.getElementById('aiBaseUrl').dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  doc.getElementById('aiBaseUrl').dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 20));
+  assert.ok(!sent.some(m => m.type === 'nw:saveSettings' && m.settings?.aiBaseUrl), '不合法的端点不该被存下来');
+  assert.match(doc.getElementById('aiStatus').textContent, /https/, '要告诉用户为什么被拒');
+  assert.match(doc.getElementById('aiConsentTarget').textContent, /https/, '确认行也要显示同一个原因');
+});

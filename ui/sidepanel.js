@@ -1,11 +1,16 @@
 import { createEmptyProfile, SECTIONS, buildFields, setValueByPath, countFilled } from '../core/profile-schema.js';
 import { importMarkdown } from '../core/importers/markdown.js';
 import { auditProfile, editorModel, advice } from '../core/coverage.js';
+// 端点/Key 的判定规则与 service worker 用同一份代码：这里只用于即时反馈，
+// 真正的把关在 background（哪怕这个文件被改成永远不校验，请求也发不出去）。
+import { normalizeBaseUrl, sanityCheckKey } from '../core/ai-security.js';
 
 const $ = id => document.getElementById(id);
 let tabId = null;
 let lastState = null;
 let HIGH = null;
+let aiKeyPresent = false;      // 只记"有没有"，不记内容
+let aiKeyBoundOrigin = '';     // Key 录入时绑定的 origin；Base URL 换了就得重录
 
 async function highFreq() {
   if (HIGH) return HIGH;
@@ -27,13 +32,22 @@ async function refresh() {
   lastState = state;
   const profile = state?.profile;
   $('fillSensitive').checked = Boolean(state?.settings?.fillSensitive);
-  // Key 不回显（也不该回显）：只告诉用户本次会话里有没有
+  // Key 不回显（也不该回显）：只告诉用户本次会话里有没有、绑在哪个 origin
   if (state?.settings?.aiBaseUrl) $('aiBaseUrl').value = state.settings.aiBaseUrl;
   if (state?.settings?.aiModel) $('aiModel').value = state.settings.aiModel;
-  $('btnClearKey').disabled = !state?.hasAiKey;
-  $('aiKey').placeholder = state?.hasAiKey
-    ? '本次会话已有 Key（重新输入会覆盖）'
-    : 'API Key（只存本次会话，重启即失效）';
+  aiKeyPresent = Boolean(state?.hasAiKey);
+  aiKeyBoundOrigin = state?.aiKeyOrigin || '';
+  if (aiKeyPresent) {
+    $('aiKeyState').textContent = `本次会话已有 Key（长度 ${state.aiKeyLength} · 绑定 ${state.aiKeyOrigin}）· 重启浏览器即失效`;
+    // 只有当前 origin 与绑定 origin 一致、且用户之前确认过，才算已授权
+    $('aiConsent').checked = Boolean(state.settings?.aiConsentOrigin) && state.settings.aiConsentOrigin === state.aiKeyOrigin;
+  } else {
+    $('aiKeyState').textContent = '当前会话没有 Key。';
+    $('aiConsent').checked = false;
+  }
+  $('btnClearKey').disabled = !aiKeyPresent;
+  $('aiKey').placeholder = aiKeyPresent ? '重新输入会覆盖本次会话的 Key' : 'API Key（只存本次会话，重启即失效）';
+  aiUiSync();
   $('profileMeta').textContent = profile
     ? `已载入：${countFilled(profile)} 个字段有值 / 共 ${buildFields().length} 个可填项`
     : '还没有简历数据，先点「下载空白模板」或「编辑 / 导入 JSON」';
@@ -205,29 +219,85 @@ $('btnPreview').onclick = () => run('preview');
 
 // ―― AI 兜底 ――
 // 面板只负责"取最近一次扫描的缺口 → 交给 background → 拿回候选 → 重新扫描并落地"。
-// 边界的真正执行处不在这里：请求构造与自检在 core/ai.js + background，
-// 这里少写一行校验也不会把取值带出去。
-// Base URL / 模型名不是秘密，可以进 settings（会随导出走）；Key 只进 chrome.storage.session。
-for (const [id, key] of [['aiBaseUrl', 'aiBaseUrl'], ['aiModel', 'aiModel']]) {
-  $(id).onchange = async e => {
-    await chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { [key]: e.target.value.trim() } });
-    $('aiStatus').textContent = '已保存（不含 Key）';
-  };
+// 判定规则的实体在 core/ai-security.js（离线可测），这里只是把同一套规则用在输入框上，
+// 让错误在点按钮之前就看得见，而不是等请求被拒再猜原因。
+const ENDPOINT_ERROR_ZH = {
+  empty: 'Base URL 是空的', malformed: 'Base URL 不是合法网址', not_http: '只支持 http(s) 地址',
+  insecure: '必须是 https（本机 127.0.0.1 / localhost 例外）',
+  userinfo: '地址里不能带 user@ 这种账号信息', has_query: '地址不能带 ?query 或 #（可能粘错了整条链接）',
+};
+const KEY_ERROR_ZH = {
+  empty: 'Key 是空的', too_short: 'Key 太短（少于 12 字符）', too_long: 'Key 过长（超过 400 字符）',
+  has_space: 'Key 里有空格，检查是否误粘了前后内容',
+};
+
+function aiUiSync() {
+  const base = normalizeBaseUrl($('aiBaseUrl').value);
+  $('aiConsentTarget').textContent = base.ok ? base.origin : (ENDPOINT_ERROR_ZH[base.error] || '先填 Base URL');
+  // Base URL 与录入 Key 时不是同一个 origin → 确认必须作废、Key 也要重录
+  if (base.ok && aiKeyBoundOrigin && aiKeyBoundOrigin !== base.origin) {
+    $('aiConsent').checked = false;
+    $('aiKeyState').textContent = `Base URL 变了：之前录的 Key 绑在 ${aiKeyBoundOrigin}，不会跟着发到新地址。请重新保存 Key。`;
+  }
+  const ready = base.ok && $('aiConsent').checked && aiKeyPresent && aiKeyBoundOrigin === base.origin && $('aiModel').value.trim();
+  $('btnAiAsk').disabled = !ready;
+  $('btnAiAsk').title = ready ? '' : '需要：合法 https Base URL + 已保存的 Key + 模型名 + 勾选确认发往该地址';
 }
+$('aiBaseUrl').oninput = () => { aiUiSync(); };
+$('aiBaseUrl').onchange = async e => {
+  const base = normalizeBaseUrl(e.target.value);
+  if (!base.ok) {
+    // 不合法也要把原因显示在"确认发往"那一行：只报状态栏会让人以为勾了就能发
+    $('aiStatus').textContent = ENDPOINT_ERROR_ZH[base.error] || 'Base URL 不合法，未保存';
+    aiUiSync();
+    return;
+  }
+  const res = await chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { aiBaseUrl: base.url } });
+  $('aiStatus').textContent = res?.ok ? `Base URL 已保存：${base.url}` : '保存失败：' + (res?.error || '');
+  $('aiConsent').checked = false;
+  aiUiSync();
+};
+$('aiModel').onchange = async e => {
+  await chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { aiModel: e.target.value.trim() } });
+  aiUiSync();
+};
+$('aiConsent').onchange = async e => {
+  const base = normalizeBaseUrl($('aiBaseUrl').value);
+  if (!e.target.checked) { await chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { aiConsentOrigin: '' } }); aiUiSync(); return; }
+  if (!base.ok) { $('aiStatus').textContent = ENDPOINT_ERROR_ZH[base.error] || 'Base URL 不合法，无法确认'; $('aiConsent').checked = false; aiUiSync(); return; }
+  await chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { aiConsentOrigin: base.origin } });
+  aiUiSync();
+};
 async function aiNeedsScan() {
   if (!lastScan?.aiFields?.length) { $('aiStatus').textContent = '先「只预演不写入」扫一次本页'; return false; }
   return true;
 }
 $('btnSaveKey').onclick = async () => {
   const key = $('aiKey').value.trim();
+  $('aiKey').value = '';                       // 无论成败都先擦掉输入框，不留残余
   if (!key) { $('aiStatus').textContent = 'Key 输入框是空的，没有保存'; return; }
-  const res = await chrome.runtime.sendMessage({ type: 'nw:saveAiKey', key });
-  $('aiKey').value = '';
-  $('aiStatus').textContent = res?.ok ? 'Key 已存入本次会话（重启浏览器即失效，不写入导出文件）' : '保存失败';
+  const shape = sanityCheckKey(key);
+  if (!shape.ok) { $('aiStatus').textContent = KEY_ERROR_ZH[shape.error] || 'Key 形状不对，没有保存'; return; }
+  const res = await chrome.runtime.sendMessage({ type: 'nw:saveAiKey', key, baseUrl: $('aiBaseUrl').value });
+  if (!res?.ok) {
+    const why = res?.error?.startsWith('endpoint_') ? ENDPOINT_ERROR_ZH[res.error.slice(9)] || 'Base URL 不合法，Key 无处可去' : '保存失败';
+    $('aiStatus').textContent = why;
+    return;
+  }
+  aiKeyPresent = true;
+  aiKeyBoundOrigin = res.boundOrigin;
+  // 只报长度与 origin：任何 Key 字符都不回到 DOM
+  $('aiKeyState').textContent = `本次会话已有 Key（长度 ${res.length}${res.secure ? '' : ' · 注意：本机地址，明文传输'}）· 绑定 ${res.boundOrigin} · 重启浏览器即失效`;
+  $('aiStatus').textContent = 'Key 已存入本次会话，不写入导出文件';
+  aiUiSync();
 };
 $('btnClearKey').onclick = async () => {
   await chrome.runtime.sendMessage({ type: 'nw:saveAiKey', key: '' });
+  aiKeyPresent = false; aiKeyBoundOrigin = '';
+  $('aiKeyState').textContent = '当前会话没有 Key。';
+  $('aiConsent').checked = false;
   $('aiStatus').textContent = 'Key 已清除';
+  aiUiSync();
 };
 $('btnAiPreview').onclick = async () => {
   if (!await aiNeedsScan()) return;
@@ -244,8 +314,9 @@ $('btnAiPreview').onclick = async () => {
     return;
   }
   box.hidden = false;
-  box.textContent = res.text;
-  $('aiStatus').textContent = `将发送 ${res.asks} 个缺口 · ${res.bytes} 字节 · 以上文本就是实际请求体全文`;
+  // 预览必须把收件人一起显示：只核对内容不看地址，等于让用户以为"发给我核对过的地址"
+  box.textContent = `（将发往：${res.endpoint || '未配置地址'}）\n` + res.text;
+  $('aiStatus').textContent = `将发送 ${res.asks} 个缺口 · ${res.bytes} 字节 · 目标 ${res.endpoint || '未配置'} · 以上文本就是实际请求体全文`;
 };
 $('btnAiAsk').onclick = async () => {
   if (!await aiNeedsScan()) return;

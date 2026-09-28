@@ -1,21 +1,31 @@
 // MV3 service worker：跨 frame 汇总、profile 存取、命令下发、AI 兜底的唯一出网点。
 //
-// AI 出网的三条硬约束（与 core/ai.js 一致，改这里之前先改那里的测试）：
-//  1. Key 只存 chrome.storage.session：浏览器重启即消失，绝不写进 storage.local，
-//     也就不可能随 profile/settings 的"导出 JSON"一起被带到别处。
-//  2. 请求体由 core/ai.js 构造，发送前必须再过一次 assertNoProfileValues —— 漏值就地拒发。
-//  3. 响应只当"路径建议"用；这里不写页面、不提交，超时/体积都设上限。
+// AI 出网的四条硬约束（规则本体在 core/ai-security.js / core/ai.js，都有离线单测）：
+//  1. Key 只存 chrome.storage.session，且和"录入它时的那个 origin"绑在一起：
+//     换了 Base URL 就等于换了收件人，老 Key 不会跟着发出去，必须重新录一次。
+//  2. Base URL 必须是 https（本机 127.0.0.1/localhost 例外，供 Ollama/LM Studio 自测），
+//     不接受 userinfo、query、非 http 协议。
+//  3. 请求体由 core/ai.js 构造，发送前再过一次 assertNoProfileValues —— 漏值就地拒发。
+//  4. 响应只当"路径建议"；不写页面、不提交；超时 20s、禁跟跳转、体积上限。
 
 import { compileAdapters } from '../core/adapters.js';
 import { buildAiRequest, assertNoProfileValues, parseAiResponse, aiSlotCatalog } from '../core/ai.js';
+import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, redact } from '../core/ai-security.js';
 
 const AI_TIMEOUT_MS = 20000;
 const AI_MAX_BYTES = 12000;        // 请求体上限：只发字段名与槽位目录，超量说明构造出了问题
 const AI_MAX_OUT = 30;             // 一次最多问 30 个缺口，避免把整页字段都送出去
 
-/** Key 只放 session：浏览器重启即失效，也不会被 settings 导出带走 */
-async function readAiKey() {
-  try { return (await chrome.storage.session.get(['aiKey'])).aiKey || ''; } catch { return ''; }
+/** Key 与它的绑定 origin 一起放 session：重启即失效，也不会被 settings 导出带走 */
+async function readAiSession() {
+  try {
+    const s = await chrome.storage.session.get(['aiKey', 'aiKeyOrigin']);
+    return { key: s.aiKey || '', keyOrigin: s.aiKeyOrigin || '' };
+  } catch { return { key: '', keyOrigin: '' }; }
+}
+async function writeAiSession(key, keyOrigin) {
+  if (!key) { await chrome.storage.session.remove(['aiKey', 'aiKeyOrigin']); return; }
+  await chrome.storage.session.set({ aiKey: key, aiKeyOrigin: keyOrigin });
 }
 
 /** 组装请求；把"取值不许外发"的自检放在真正出网之前 */
@@ -28,13 +38,17 @@ async function buildAiCall(profile, plan, pageFields) {
 }
 
 async function callAiEndpoint({ baseUrl, model, key, text }) {
-  const url = String(baseUrl || '').replace(/\/+$/, '') + '/chat/completions';
-  if (!/^https:\/\//i.test(url)) return { ok: false, error: 'base_url_not_https' };
+  const base = normalizeBaseUrl(baseUrl);
+  if (!base.ok) return { ok: false, error: `endpoint_${base.error}` };
+  const url = base.url + '/chat/completions';
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), AI_TIMEOUT_MS);
   try {
     const res = await fetch(url, {
       method: 'POST',
+      // redirect:'error'：被 302 到别的域时直接失败。fetch 会跟着跳转并把 Authorization 带过去，
+      // 不关掉这一条，"Key 只发给这个 origin"就有个现实的后门。
+      redirect: 'error',
       headers: { 'content-type': 'application/json', authorization: 'Bearer ' + key },
       body: JSON.stringify({
         model,
@@ -51,7 +65,8 @@ async function callAiEndpoint({ baseUrl, model, key, text }) {
     return { ok: true, content };
   } catch (err) {
     const name = String(err?.name || '');
-    return { ok: false, error: name === 'AbortError' ? 'timeout' : 'network_error' };
+    // 错误文本可能带上请求 URL 甚至 Header，一律脱敏后再返回
+    return { ok: false, error: name === 'AbortError' ? 'timeout' : redact(String(err?.message || 'network_error'), key) };
   } finally { clearTimeout(timer); }
 }
 
@@ -87,18 +102,20 @@ async function getAdapterResolver() {
   return adapterResolver;
 }
 
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.local.get(['profile', 'settings'], (data) => {
-    if (!data.settings) {
-      chrome.storage.local.set({
-        settings: {
-          mode: 'full',
-          fillSensitive: false,   // 证件号/手机号默认不自动写，需显式打开
-          autoSubmitNever: true,  // 常量，仅作为可见的"设计承诺"
-        },
-      });
-    }
-  });
+chrome.runtime.onInstalled.addListener(async () => {
+  // 显式声明 session 存储只信任扩展自身上下文（这是默认值，但写死在这里，
+  // 免得将来谁为了调试方便改成 CONTENTS_SCRIPTS，把 Key 暴露给注入到页面的模块）。
+  try { await chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }); } catch { /* 老版本没有这个 API，默认即 TRUSTED_CONTEXTS */ }
+  const data = await chrome.storage.local.get(['settings']);
+  if (!data.settings) {
+    await chrome.storage.local.set({
+      settings: {
+        mode: 'full',
+        fillSensitive: false,   // 证件号/手机号默认不自动写，需显式打开
+        autoSubmitNever: true,  // 常量，仅作为可见的"设计承诺"
+      },
+    });
+  }
 });
 
 chrome.action.onClicked.addListener((tab) => {
@@ -179,8 +196,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     if (msg.type === 'nw:getState') {
       const { profile, settings } = await chrome.storage.local.get(['profile', 'settings']);
-      const session = await chrome.storage.session.get(['aiKey']).catch(() => ({ aiKey: '' }));
-      sendResponse({ ok: true, profile: profile || null, settings: settings || {}, hasAiKey: Boolean(session.aiKey), tabId });
+      const sess = await readAiSession();
+      // Key 本身永不回传，只回"有没有"和"绑在哪个 origin"
+      sendResponse({
+        ok: true, profile: profile || null, settings: settings || {},
+        hasAiKey: Boolean(sess.key), aiKeyLength: sess.key ? sess.key.length : 0, aiKeyOrigin: sess.keyOrigin,
+        tabId,
+      });
     } else if (msg.type === 'nw:aiPreview' || msg.type === 'nw:aiAsk') {
       // 预览与真正发送共用同一次构造：看到的就必须是发出去的，不能两套逻辑
       const { profile, gaps, fields } = msg;
@@ -188,14 +210,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const pageFields = fields || [];
       const built = await buildAiCall(profile, plan, pageFields);
       if (!built.ok) { sendResponse({ ok: false, error: built.error, leaks: built.leaks }); return; }
-      if (msg.type === 'nw:aiPreview') { sendResponse({ ok: true, text: built.req.text, bytes: new TextEncoder().encode(built.req.text).length, asks: built.req.gaps.length }); return; }
       const settings = (await chrome.storage.local.get('settings')).settings || {};
-      const key = await readAiKey();
-      if (!settings.aiBaseUrl || !settings.aiModel || !key) {
-        sendResponse({ ok: false, error: 'ai_not_configured' });
+      const target = normalizeBaseUrl(settings.aiBaseUrl);
+      if (msg.type === 'nw:aiPreview') {
+        sendResponse({
+          ok: true, text: built.req.text, bytes: new TextEncoder().encode(built.req.text).length,
+          asks: built.req.gaps.length,
+          // 预览必须把"这东西会发去哪儿"一起显示，否则用户核对了内容却不知道收件人
+          endpoint: target.ok ? target.url : '', endpointError: target.ok ? '' : target.error,
+        });
         return;
       }
-      const call = await callAiEndpoint({ baseUrl: settings.aiBaseUrl, model: settings.aiModel, key, text: built.req.text });
+      const sess = await readAiSession();
+      if (!target.ok) { sendResponse({ ok: false, error: `endpoint_${target.error}` }); return; }
+      if (!settings.aiModel || !sess.key) { sendResponse({ ok: false, error: 'ai_not_configured' }); return; }
+      // Key 与 origin 绑定 + 明确的收件人确认：Base URL 被改动后老 Key 不会跟着发出去，
+      // 而且用户没勾过"确认发往这个地址"时一律拒发。
+      const gate = maySendKey({ keyOrigin: sess.keyOrigin, targetOrigin: target.origin, consentOrigin: settings.aiConsentOrigin });
+      if (!gate.ok) { sendResponse({ ok: false, error: gate.error }); return; }
+      const call = await callAiEndpoint({ baseUrl: settings.aiBaseUrl, model: settings.aiModel, key: sess.key, text: built.req.text });
       if (!call.ok) { sendResponse({ ok: false, error: call.error }); return; }
       const parsed = parseAiResponse(call.content, {
         allowedPaths: new Set(aiSlotCatalog(profile).map(s => s.path)),
@@ -207,19 +240,39 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         ok: true,
         candidates: parsed.candidates.map(c => ({ ...c, label: labelOf.get(c.index) || '' })),
         dropped: parsed.dropped,
+        endpoint: target.url,
         rawChars: String(call.content || '').length,
       });
     } else if (msg.type === 'nw:saveAiKey') {
-      // Key 只进 session；传空串就是"清掉"
-      if (msg.key) await chrome.storage.session.set({ aiKey: String(msg.key) });
-      else await chrome.storage.session.remove('aiKey');
-      sendResponse({ ok: true, hasAiKey: Boolean(msg.key) });
+      // Key 只进 session，且必须绑定一个合法 origin：
+      // 空串就是清除；Base URL 没填或非法时拒绝录入（否则 Key 无处可去，只能等到将来某个 URL 上）。
+      const key = String(msg.key || '').trim();
+      if (!key) { await writeAiSession('', ''); sendResponse({ ok: true, hasAiKey: false }); return; }
+      const shape = sanityCheckKey(key);
+      if (!shape.ok) { sendResponse({ ok: false, error: shape.error }); return; }
+      const target = normalizeBaseUrl(msg.baseUrl);
+      if (!target.ok) { sendResponse({ ok: false, error: `endpoint_${target.error}` }); return; }
+      await writeAiSession(key, target.origin);
+      // 只回长度与 origin，绝不回任何 Key 字符
+      sendResponse({ ok: true, hasAiKey: true, length: shape.length, boundOrigin: target.origin, secure: target.secure });
     } else if (msg.type === 'nw:saveProfile') {
       await chrome.storage.local.set({ profile: msg.profile });
       sendResponse({ ok: true });
     } else if (msg.type === 'nw:saveSettings') {
-      await chrome.storage.local.set({ settings: { ...(await chrome.storage.local.get('settings')).settings, ...msg.settings } });
-      sendResponse({ ok: true });
+      // 白名单过滤：以前这里是无脑 merge，谁都能往 settings 里塞任意键。
+      // settings 会随「导出 JSON」离开本机，所以名字像 Key/Token 的一律拒收，
+      // 并把丢弃原因带回侧边栏 —— 静默吞掉只会让人以为"Key 保存成功了"。
+      const { clean, dropped } = sanitizeSettings(msg.settings);
+      const prev = (await chrome.storage.local.get('settings')).settings || {};
+      const next = { ...prev, ...clean };
+      // 端点一旦被改动，之前对旧端点的确认立即作废（必须重新勾选，Key 也要重录）
+      if (clean.aiBaseUrl) {
+        const t = normalizeBaseUrl(clean.aiBaseUrl);
+        if (!t.ok) { sendResponse({ ok: false, error: `endpoint_${t.error}`, dropped }); return; }
+        if (normalizeBaseUrl(prev.aiBaseUrl || '').origin !== t.origin) next.aiConsentOrigin = '';
+      }
+      await chrome.storage.local.set({ settings: next });
+      sendResponse({ ok: true, dropped, consentCleared: Boolean(clean.aiBaseUrl) && next.aiConsentOrigin === '' });
     } else if (msg.type === 'nw:scan' || msg.type === 'nw:undo' || msg.type === 'nw:ping' || msg.type === 'nw:clearMarks' || msg.type === 'nw:probe') {
       let payload = msg;
       if (msg.type === 'nw:scan' && tabId) {

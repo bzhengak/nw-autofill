@@ -136,13 +136,15 @@
       <input id="aiModel" placeholder="模型名，如 gpt-4o-mini">
     </div>
     <div class="row">
-      <input id="aiKey" type="password" placeholder="API Key（只存本次会话，重启即失效）" autocomplete="off">
+      <input id="aiKey" type="password" placeholder="API Key（只存本次会话，重启即失效）" autocomplete="off" spellcheck="false">
       <button id="btnSaveKey">保存 Key</button>
       <button id="btnClearKey">清除</button>
     </div>
+    <label class="chk"><input type="checkbox" id="aiConsent">我确认把 Key 与字段名发往：<b id="aiConsentTarget">（先填 Base URL）</b></label>
+    <p class="hint" id="aiKeyState">当前会话没有 Key。</p>
     <div class="row">
       <button id="btnAiPreview">预览将发送的内容</button>
-      <button id="btnAiAsk">问 AI 补全缺口</button>
+      <button id="btnAiAsk" disabled>问 AI 补全缺口</button>
       <span id="aiStatus" class="hint"></span>
     </div>
     <pre id="aiPreviewText" class="hint" hidden></pre>

@@ -124,6 +124,30 @@
     </div>
   </div>
 
+  <details id="aiPanel">
+    <summary>AI 兜底（只在本地词典答不上时问，且只问字段名）</summary>
+    <p class="hint">
+      发出去的只有：页面上那一栏的文字、控件类型、页面选项文本，以及本扩展自带的槽位名。
+      <b>你的简历取值不会离开本机</b>——发送前会再自检一次，命中就拒发。
+      AI 只能"从已有槽位里挑一个"，不能生成内容，结果一律黄字、由你核对。
+    </p>
+    <div class="row">
+      <input id="aiBaseUrl" placeholder="Base URL，如 https://api.openai.com/v1">
+      <input id="aiModel" placeholder="模型名，如 gpt-4o-mini">
+    </div>
+    <div class="row">
+      <input id="aiKey" type="password" placeholder="API Key（只存本次会话，重启即失效）" autocomplete="off">
+      <button id="btnSaveKey">保存 Key</button>
+      <button id="btnClearKey">清除</button>
+    </div>
+    <div class="row">
+      <button id="btnAiPreview">预览将发送的内容</button>
+      <button id="btnAiAsk">问 AI 补全缺口</button>
+      <span id="aiStatus" class="hint"></span>
+    </div>
+    <pre id="aiPreviewText" class="hint" hidden></pre>
+  </details>
+
   <script type="module" src="sidepanel.js"></script>
 </body>
 </html>

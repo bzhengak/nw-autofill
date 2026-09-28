@@ -1,7 +1,59 @@
-// MV3 service worker：跨 frame 汇总、profile 存取、命令下发。
-// 本阶段不做任何网络请求（AI 在 P3 才接入，且届时 Key 也只经这里出网）。
+// MV3 service worker：跨 frame 汇总、profile 存取、命令下发、AI 兜底的唯一出网点。
+//
+// AI 出网的三条硬约束（与 core/ai.js 一致，改这里之前先改那里的测试）：
+//  1. Key 只存 chrome.storage.session：浏览器重启即消失，绝不写进 storage.local，
+//     也就不可能随 profile/settings 的"导出 JSON"一起被带到别处。
+//  2. 请求体由 core/ai.js 构造，发送前必须再过一次 assertNoProfileValues —— 漏值就地拒发。
+//  3. 响应只当"路径建议"用；这里不写页面、不提交，超时/体积都设上限。
 
 import { compileAdapters } from '../core/adapters.js';
+import { buildAiRequest, assertNoProfileValues, parseAiResponse, aiSlotCatalog } from '../core/ai.js';
+
+const AI_TIMEOUT_MS = 20000;
+const AI_MAX_BYTES = 12000;        // 请求体上限：只发字段名与槽位目录，超量说明构造出了问题
+const AI_MAX_OUT = 30;             // 一次最多问 30 个缺口，避免把整页字段都送出去
+
+/** Key 只放 session：浏览器重启即失效，也不会被 settings 导出带走 */
+async function readAiKey() {
+  try { return (await chrome.storage.session.get(['aiKey'])).aiKey || ''; } catch { return ''; }
+}
+
+/** 组装请求；把"取值不许外发"的自检放在真正出网之前 */
+async function buildAiCall(profile, plan, pageFields) {
+  const req = buildAiRequest({ plan, profile, pageFields, limit: AI_MAX_OUT });
+  const leaks = assertNoProfileValues(req.text, profile, { exempt: [req.slotSection] });
+  if (leaks.length) return { ok: false, error: 'value_leak', leaks: leaks.slice(0, 8) };
+  if (new TextEncoder().encode(req.text).length > AI_MAX_BYTES) return { ok: false, error: 'payload_too_large' };
+  return { ok: true, req };
+}
+
+async function callAiEndpoint({ baseUrl, model, key, text }) {
+  const url = String(baseUrl || '').replace(/\/+$/, '') + '/chat/completions';
+  if (!/^https:\/\//i.test(url)) return { ok: false, error: 'base_url_not_https' };
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), AI_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + key },
+      body: JSON.stringify({
+        model,
+        temperature: 0,
+        max_tokens: 800,
+        messages: [{ role: 'user', content: text }],
+      }),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) return { ok: false, error: `http_${res.status}` };
+    const json = await res.json().catch(() => null);
+    const content = json?.choices?.[0]?.message?.content;
+    if (!content) return { ok: false, error: 'empty_response' };
+    return { ok: true, content };
+  } catch (err) {
+    const name = String(err?.name || '');
+    return { ok: false, error: name === 'AbortError' ? 'timeout' : 'network_error' };
+  } finally { clearTimeout(timer); }
+}
 
 const CHANNEL = 'nw-autofill';
 
@@ -127,7 +179,41 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     if (msg.type === 'nw:getState') {
       const { profile, settings } = await chrome.storage.local.get(['profile', 'settings']);
-      sendResponse({ ok: true, profile: profile || null, settings: settings || {}, tabId });
+      const session = await chrome.storage.session.get(['aiKey']).catch(() => ({ aiKey: '' }));
+      sendResponse({ ok: true, profile: profile || null, settings: settings || {}, hasAiKey: Boolean(session.aiKey), tabId });
+    } else if (msg.type === 'nw:aiPreview' || msg.type === 'nw:aiAsk') {
+      // 预览与真正发送共用同一次构造：看到的就必须是发出去的，不能两套逻辑
+      const { profile, gaps, fields } = msg;
+      const plan = { gaps: gaps || [], assignments: [] };
+      const pageFields = fields || [];
+      const built = await buildAiCall(profile, plan, pageFields);
+      if (!built.ok) { sendResponse({ ok: false, error: built.error, leaks: built.leaks }); return; }
+      if (msg.type === 'nw:aiPreview') { sendResponse({ ok: true, text: built.req.text, bytes: new TextEncoder().encode(built.req.text).length, asks: built.req.gaps.length }); return; }
+      const settings = (await chrome.storage.local.get('settings')).settings || {};
+      const key = await readAiKey();
+      if (!settings.aiBaseUrl || !settings.aiModel || !key) {
+        sendResponse({ ok: false, error: 'ai_not_configured' });
+        return;
+      }
+      const call = await callAiEndpoint({ baseUrl: settings.aiBaseUrl, model: settings.aiModel, key, text: built.req.text });
+      if (!call.ok) { sendResponse({ ok: false, error: call.error }); return; }
+      const parsed = parseAiResponse(call.content, {
+        allowedPaths: new Set(aiSlotCatalog(profile).map(s => s.path)),
+        askedIndexes: new Set(built.req.gaps.map(g => g.index)),
+      });
+      // 把标签带回去，让内容脚本落地时能复核下标有没有漂
+      const labelOf = new Map((fields || []).map(f => [f.index, f.label]));
+      sendResponse({
+        ok: true,
+        candidates: parsed.candidates.map(c => ({ ...c, label: labelOf.get(c.index) || '' })),
+        dropped: parsed.dropped,
+        rawChars: String(call.content || '').length,
+      });
+    } else if (msg.type === 'nw:saveAiKey') {
+      // Key 只进 session；传空串就是"清掉"
+      if (msg.key) await chrome.storage.session.set({ aiKey: String(msg.key) });
+      else await chrome.storage.session.remove('aiKey');
+      sendResponse({ ok: true, hasAiKey: Boolean(msg.key) });
     } else if (msg.type === 'nw:saveProfile') {
       await chrome.storage.local.set({ profile: msg.profile });
       sendResponse({ ok: true });

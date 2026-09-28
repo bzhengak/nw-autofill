@@ -27,6 +27,13 @@ async function refresh() {
   lastState = state;
   const profile = state?.profile;
   $('fillSensitive').checked = Boolean(state?.settings?.fillSensitive);
+  // Key 不回显（也不该回显）：只告诉用户本次会话里有没有
+  if (state?.settings?.aiBaseUrl) $('aiBaseUrl').value = state.settings.aiBaseUrl;
+  if (state?.settings?.aiModel) $('aiModel').value = state.settings.aiModel;
+  $('btnClearKey').disabled = !state?.hasAiKey;
+  $('aiKey').placeholder = state?.hasAiKey
+    ? '本次会话已有 Key（重新输入会覆盖）'
+    : 'API Key（只存本次会话，重启即失效）';
   $('profileMeta').textContent = profile
     ? `已载入：${countFilled(profile)} 个字段有值 / 共 ${buildFields().length} 个可填项`
     : '还没有简历数据，先点「下载空白模板」或「编辑 / 导入 JSON」';
@@ -159,12 +166,14 @@ function render(data, meta = {}) {
     ['扫描到', s.scanned || 0], ['计划填', s.planned || 0], ['绿·自动', s.green || s.auto || 0],
     ['黄·待复核', s.yellow || s.review || 0], ['红·失败', s.red || 0], ['待你处理', s.gaps || 0],
     ['资料已填', s.profileFilled != null ? s.profileFilled : '-'],
+    // AI 补了几栏要单独看得见：这些行永远黄字，用户需要知道"这一栏的依据不是本地词典"
+    ['AI 补栏', s.aiApplied || 0],
   ].map(([k, v]) => `<span><b>${k}</b> ${v}</span>`).join('') + adapterLine + banners.join('');
 
   $('results').innerHTML = (data?.results || [])
     .filter(r => !['skipped', 'planned'].includes(r.status) || r.status === 'planned')
     .map(r => `<tr><td><span class="dot ${r.status === 'manual' ? 'orange' : r.status}"></span></td>
-      <td>${escapeHtml(r.label || '(无标签)')}</td>
+      <td>${escapeHtml(r.label || '(无标签)')}${r.aiChosen ? ' <span class="note">〔AI 选路〕</span>' : ''}</td>
       <td class="note">${escapeHtml(r.path || '')}<br>${r.score != null ? '置信 ' + r.score : ''} ${r.note ? '· ' + escapeHtml(r.note) : ''} ${r.failReason ? '· ' + escapeHtml(r.failReason) : ''}</td>
       <td>${escapeHtml(String(r.actual ?? '')).slice(0, 40)}</td></tr>`).join('');
 
@@ -177,19 +186,87 @@ function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-async function run(mode) {
+let lastScan = null;   // 最近一次扫描的 {gaps, aiFields}：AI 兜底要问的就是这批缺口
+
+async function run(mode, extra = {}) {
   const tab = await activeTab();
   tabId = tab?.id;
-  const res = await chrome.runtime.sendMessage({ type: 'nw:scan', tabId, mode, dryRun: mode === 'preview' });
+  const res = await chrome.runtime.sendMessage({ type: 'nw:scan', tabId, mode, dryRun: mode === 'preview', ...extra });
   if (!res?.ok) {
     $('stats').innerHTML = `<span class="banner">页面未响应：${escapeHtml(res?.error || '未知错误')}。若是刚装扩展，请刷新目标页面后重试。</span>`;
     return;
   }
+  lastScan = res.data;
   render(res.data, { adapterId: res.adapterId, adapterInfo: res.adapterInfo });
 }
 
 $('btnScan').onclick = () => run('full');
 $('btnPreview').onclick = () => run('preview');
+
+// ―― AI 兜底 ――
+// 面板只负责"取最近一次扫描的缺口 → 交给 background → 拿回候选 → 重新扫描并落地"。
+// 边界的真正执行处不在这里：请求构造与自检在 core/ai.js + background，
+// 这里少写一行校验也不会把取值带出去。
+// Base URL / 模型名不是秘密，可以进 settings（会随导出走）；Key 只进 chrome.storage.session。
+for (const [id, key] of [['aiBaseUrl', 'aiBaseUrl'], ['aiModel', 'aiModel']]) {
+  $(id).onchange = async e => {
+    await chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { [key]: e.target.value.trim() } });
+    $('aiStatus').textContent = '已保存（不含 Key）';
+  };
+}
+async function aiNeedsScan() {
+  if (!lastScan?.aiFields?.length) { $('aiStatus').textContent = '先「只预演不写入」扫一次本页'; return false; }
+  return true;
+}
+$('btnSaveKey').onclick = async () => {
+  const key = $('aiKey').value.trim();
+  if (!key) { $('aiStatus').textContent = 'Key 输入框是空的，没有保存'; return; }
+  const res = await chrome.runtime.sendMessage({ type: 'nw:saveAiKey', key });
+  $('aiKey').value = '';
+  $('aiStatus').textContent = res?.ok ? 'Key 已存入本次会话（重启浏览器即失效，不写入导出文件）' : '保存失败';
+};
+$('btnClearKey').onclick = async () => {
+  await chrome.runtime.sendMessage({ type: 'nw:saveAiKey', key: '' });
+  $('aiStatus').textContent = 'Key 已清除';
+};
+$('btnAiPreview').onclick = async () => {
+  if (!await aiNeedsScan()) return;
+  const profile = JSON.parse($('profileText').value || '{}');
+  const res = await chrome.runtime.sendMessage({ type: 'nw:aiPreview', profile, gaps: lastScan.gaps, fields: lastScan.aiFields });
+  const box = $('aiPreviewText');
+  if (!res?.ok) {
+    box.hidden = false;
+    box.textContent = res?.error === 'value_leak'
+      ? `自检拦下了这次请求：下面这些槽位的取值出现在了待发文本里，已拒绝发送。\n`
+        + (res.leaks || []).map(l => `  · ${l.path}（开头「${l.sample}」）`).join('\n')
+      : '预览失败：' + (res?.error || '未知错误');
+    $('aiStatus').textContent = res?.error === 'value_leak' ? '已拒绝发送（取值泄漏）' : '预览失败';
+    return;
+  }
+  box.hidden = false;
+  box.textContent = res.text;
+  $('aiStatus').textContent = `将发送 ${res.asks} 个缺口 · ${res.bytes} 字节 · 以上文本就是实际请求体全文`;
+};
+$('btnAiAsk').onclick = async () => {
+  if (!await aiNeedsScan()) return;
+  $('aiStatus').textContent = '正在请求…（只发字段名）';
+  const profile = JSON.parse($('profileText').value || '{}');
+  const res = await chrome.runtime.sendMessage({ type: 'nw:aiAsk', profile, gaps: lastScan.gaps, fields: lastScan.aiFields });
+  if (!res?.ok) {
+    const why = {
+      ai_not_configured: '还没配好 Base URL / 模型 / Key（Key 只存本次会话）',
+      value_leak: '自检拦下了这次请求，已拒绝发送',
+      timeout: '请求超时（20s）',
+      network_error: '网络错误：检查 Base URL 与站点可达性',
+      payload_too_large: '请求体超限，缺口太多，先分批处理',
+    }[res?.error] || ('调用失败：' + (res?.error || '未知错误'));
+    $('aiStatus').textContent = why;
+    return;
+  }
+  if (!res.candidates.length) { $('aiStatus').textContent = `AI 没有给出可用建议（丢弃 ${res.dropped.length} 条）`; return; }
+  await run('preview', { aiCandidates: res.candidates });
+  $('aiStatus').textContent = `AI 补齐 ${res.candidates.length} 栏（全部黄字待你核对）；已用「只预演」应用，确认后点「扫描并填写」写入`;
+};
 $('btnUndo').onclick = async () => { await chrome.runtime.sendMessage({ type: 'nw:undo', tabId }); render({ stats: {}, results: [], gaps: [] }); };
 $('btnClear').onclick = () => chrome.runtime.sendMessage({ type: 'nw:clearMarks', tabId });
 $('btnEdit').onclick = () => $('editor').classList.toggle('on');

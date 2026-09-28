@@ -6,7 +6,7 @@ let mods = null;
 async function loadModules() {
   if (mods) return mods;
   const u = p => chrome.runtime.getURL(p);
-  const [scanner, filler, safety, matcher, schema, matching, probe] = await Promise.all([
+  const [scanner, filler, safety, matcher, schema, matching, probe, ai] = await Promise.all([
     import(u('dom/scanner.js')),
     import(u('dom/filler.js')),
     import(u('dom/safety.js')),
@@ -14,8 +14,9 @@ async function loadModules() {
     import(u('core/profile-schema.js')),
     import(u('core/matching.js')),
     import(u('dom/probe.js')),
+    import(u('core/ai.js')),
   ]);
-  mods = { scanner, filler, safety, matcher, schema, matching, probe };
+  mods = { scanner, filler, safety, matcher, schema, matching, probe, ai };
   return mods;
 }
 
@@ -53,11 +54,21 @@ if (!window.__nwSubmitListener) {
   });
 }
 
-async function handleScan({ profile, mode = 'full', dryRun = false, adapter = null, fillSensitive = false }) {
+async function handleScan({ profile, mode = 'full', dryRun = false, adapter = null, fillSensitive = false, aiCandidates = null }) {
   const { scanner, filler, matcher, safety, schema } = await loadModules();
   safety.armSubmitGuard(window, auditLog);
   const fields = scanner.scanForm(document);
   const plan = matcher.planFill(fields, profile, { mode, adapter, fillSensitive });
+  // AI 候选在这里落地：路径白名单与"空槽/敏感槽"的判断都交给 core/ai.js，
+  // 内容脚本只负责把结果并进 plan，再走同一条 applyPlan（写入与回读口径不另开一套）。
+  let aiApplied = 0;
+  if (aiCandidates?.length) {
+    const merged = mods.ai.applyAiCandidates(plan, profile, aiCandidates, { fillSensitive });
+    plan.assignments = merged.assignments;
+    plan.gaps = merged.gaps;
+    plan.stats = merged.stats;
+    aiApplied = merged.applied;
+  }
   const applied = await filler.applyPlan(fields, plan.assignments, { dryRun });
 
   clearMarks();
@@ -74,13 +85,31 @@ async function handleScan({ profile, mode = 'full', dryRun = false, adapter = nu
   }
 
   window.__nwLast = { fields, plan, applied, auditLog };
+  // AI 兜底要问的那几个缺口，字段描述在这里现取：
+  // 只给页面自己的文字（标签/类型/选项文本/邻近标签），**刻意不给 currentValue** ——
+  // 站点预填的内容里可能就有用户姓名手机，那才是真正会漏出去的东西。
+  const aiFields = [];
+  const eligible = new Set(mods.ai.aiEligibleGaps(plan.gaps).map(g => g.index));
+  for (const g of plan.gaps) {
+    if (!eligible.has(g.index)) continue;
+    const f = fields[g.index] || {};
+    aiFields.push({
+      index: g.index,
+      label: String(f.labelRaw || f.label || g.label || '').slice(0, 160),
+      kind: f.kind || g.kind || 'text',
+      options: (f.options || []).map(o => String(o.text ?? o).slice(0, 40)).filter(Boolean).slice(0, 24),
+      nearby: (f.nearbyLabels || []).slice(0, 3),
+      required: Boolean(f.required),
+    });
+  }
   // "计划填 0"有两种完全不同的原因：没资料 vs 页面确实填不了。
   // 不区分就会让人去调词典，而真正的问题是 profile 是空的（Klook 实测踩过）。
   const profileFilled = schema.countFilled(profile);
   return {
-    stats: { ...applied.summary, ...plan.stats, profileFilled },
-    results: applied.results.map(r => ({ path: r.path, label: r.label, score: r.score, status: r.status, reason: r.failReason || '', note: r.note || '', actual: r.actual, sensitive: r.sensitive })),
-    gaps: plan.gaps.map(g => ({ label: g.label, reason: g.reason, kind: g.kind })),
+    stats: { ...applied.summary, ...plan.stats, profileFilled, aiApplied },
+    results: applied.results.map(r => ({ path: r.path, label: r.label, score: r.score, status: r.status, reason: r.failReason || '', note: r.note || '', actual: r.actual, sensitive: r.sensitive, aiChosen: r.aiChosen })),
+    gaps: plan.gaps.map(g => ({ index: g.index, label: g.label, reason: g.reason, kind: g.kind, note: g.note || '' })),
+    aiFields,
     auditLog,
   };
 }
@@ -93,6 +122,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         sendResponse({ ok: true, data: await handleScan({
           profile: profile || {}, mode: msg.mode, dryRun: msg.dryRun,
           adapter: msg.adapter || null, fillSensitive: settings ? settings.fillSensitive === true : false,
+          aiCandidates: msg.aiCandidates || null,
         }) });
       } else if (msg?.type === 'nw:undo') {
         const r = await window.__nwLast?.applied?.undo?.();

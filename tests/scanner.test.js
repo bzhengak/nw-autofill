@@ -152,3 +152,69 @@ test('打分函数：显式来源加分、标题减分、噪声直接淘汰', ()
     { text: '手机号码', source: 'prev-sibling', depth: 1 },
   ]).text, '手机号码');
 });
+
+test('年月成对：一行四个框是起止两段，不是四条记录；纯日期行不得被当成重复经历编号', () => {
+  const dom = new JSDOM(`<div class="mk-form"><div class="mk-item"><div class="mk-label">起止时间</div>
+    <div class="mk-control"><input class="mk-input" placeholder="年" data-nw-test="y1"><span>-</span><input class="mk-input" placeholder="月" data-nw-test="m1">
+    <input class="mk-input" placeholder="年" data-nw-test="y2"><span>-</span><input class="mk-input" placeholder="月" data-nw-test="m2"></div></div></div>`, { url: 'https://x.test/' });
+  const fields = scanForm(dom.window.document);
+  const byName = Object.fromEntries(fields.map(f => [f.el.getAttribute('data-nw-test'), f]));
+  assert.equal(byName.y1.datePair.id, byName.m1.datePair.id, '年框和紧跟的月框必须是同一个逻辑日期');
+  assert.notEqual(byName.y1.datePair.id, byName.y2.datePair.id, '一行两组 = 开始与结束两个日期，不能全并成一组');
+  assert.equal(byName.y1.datePair.role, 'start');
+  assert.equal(byName.y2.datePair.role, 'end');
+  assert.equal(byName.y2.datePair.roleSource, 'order', '标签只说「起止时间」时角色是按顺序推的，必须让上层降级');
+  // 编号（第几段经历）只能来自真正的经历卡片；只由年/月框组成的行如果被编号，
+  // 「自」会变成第 0 段、「至」变成第 1 段，一个时间段就被拆到两段经历上。
+  for (const k of ['y1', 'm1', 'y2', 'm2']) assert.equal(byName[k].itemIndex, null, `${k} 不该拿到重复区块序号`);
+
+  const range = new JSDOM(`<div class="wd-form"><div class="wd-field"><span class="wd-lab">自:</span>
+    <div class="wd-control"><input placeholder="Year" data-nw-test="from_y"><input placeholder="Month" data-nw-test="from_m"></div></div>
+    <div class="wd-field"><span class="wd-lab">至:</span>
+    <div class="wd-control"><input placeholder="Year" data-nw-test="to_y"><input placeholder="Month" data-nw-test="to_m"></div></div></div>`, { url: 'https://x.test/' });
+  const rf = Object.fromEntries(scanForm(range.window.document).map(f => [f.el.getAttribute('data-nw-test'), f]));
+  assert.equal(rf.from_y.datePair.role, 'start', '「自」是标签直接说的，不是顺序猜的');
+  assert.equal(rf.from_y.datePair.roleSource, 'label');
+  assert.equal(rf.to_m.datePair.role, 'end');
+  for (const k of ['from_y', 'from_m', 'to_y', 'to_m']) assert.equal(rf[k].itemIndex, null, `纯日期行 ${k} 被当成重复经历编号了`);
+});
+
+test('摊平表单：同名标签第二次出现 = 第二条记录，但只当"第几条"的证据、不当"哪段经历"的证据', () => {
+  const dom = new JSDOM(`<div class="mk-form">
+      <div class="mk-item"><div class="mk-label">公司名称</div><input placeholder="公司名称" data-nw-test="c1"></div>
+      <div class="mk-item"><div class="mk-label">职位名称</div><input placeholder="职位名称" data-nw-test="t1"></div>
+      <div class="mk-item"><div class="mk-label">学校名称</div><input placeholder="学校名称" data-nw-test="s1"></div>
+      <div class="mk-item"><div class="mk-label">公司名称</div><input placeholder="公司名称" data-nw-test="c2"></div>
+      <div class="mk-item"><div class="mk-label">职位名称</div><input placeholder="职位名称" data-nw-test="t2"></div>
+    </div>`, { url: 'https://x.test/' });
+  const by = Object.fromEntries(scanForm(dom.window.document).map(f => [f.el.getAttribute('data-nw-test'), f]));
+  assert.equal(by.c1.itemIndex, 0);
+  assert.equal(by.c2.itemIndex, 1, '同名标签第二次出现必须拿到"第 2 条"，否则两条经历的字段会互相抢位');
+  assert.equal(by.t2.itemIndex, 1);
+  assert.equal(by.c1.itemIndexSource, 'occurrence', '这个序号是推断出来的，匹配器要靠它拒绝绿字');
+  assert.equal(by.s1.itemIndex, null, '只出现一次的标签没有"第几条"可言，不许编号');
+});
+
+test('一个标签同时挂着自定义下拉与真空输入框时，输入框是第 1 次出现（Sea 实测形态）', () => {
+  const dom = new JSDOM(`<div class="se-field"><span class="se-label" id="l-cn">Contact Number *</span>
+      <span class="se-select" id="l-cn-code" role="combobox" aria-haspopup="true" data-nw-test="code_combo">Select</span>
+      <input class="se-input" type="text" aria-labelledby="l-cn" data-nw-test="phone"></div>
+    <div class="se-field"><span class="se-label" id="l-cn2">Contact Number</span>
+      <input class="se-input" type="text" aria-labelledby="l-cn2" data-nw-test="phone2"></div>`, { url: 'https://x.test/' });
+  const by = Object.fromEntries(scanForm(dom.window.document).map(f => [f.el.getAttribute('data-nw-test'), f]));
+  assert.equal(by.phone.itemIndex, 0, 'role=combobox 那个壳子永远填不了，不能占掉一次出现');
+  assert.equal(by.phone2.itemIndex, 1);
+});
+
+test('「Work Authorization」是合规块，不是工作经历块；「Work Experience」仍然要认', () => {
+  const dom = new JSDOM(`<fieldset><legend>Work Authorization</legend>
+      <p><label for="wa">Current Work Authorization</label><select id="wa"><option>Hong Kong Permanent Resident</option></select></p>
+      <p><label for="sp">Do you require sponsorship?</label><input id="sp" type="text"></p></fieldset>
+    <fieldset><legend>Work Experience</legend>
+      <p><label for="co">Company</label><input id="co" type="text"></p></fieldset>`, { url: 'https://x.test/' });
+  const fields = scanForm(dom.window.document);
+  const wa = fields.find(f => f.el.id === 'wa');
+  assert.notEqual(wa.sectionHint, 'work',
+    '裸 "work" 命中章节词会把合规块当成工作经历块：「是否需要签证担保」被章节惩罚 ×0.75 后掉到候选线以下，整栏变成"我们没有这个词"');
+  assert.equal(fields.find(f => f.el.id === 'co').sectionHint, 'work', '真正的 Work Experience 还得认出来，不能一刀切');
+});

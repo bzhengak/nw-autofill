@@ -139,9 +139,28 @@ export function typeCompatible(fieldType, profileField, value) {
  */
 export const AMBIGUOUS_SECTIONS = new Set(['education', 'work', 'internship', 'projects', 'campus', 'awards', 'competitions', 'publications', 'languages', 'certifications', 'family', 'skills']);
 
+/**
+ * 问句式标签（"Do you require sponsorship to work in Hong Kong?"）。
+ * 两处要用它，理由相反相成：
+ * - matcher 用它收紧闸门：问句靠词元重合能被"兴趣爱好"蹭到，只许字面/主干命中。
+ * - scorePair 用它豁免中心词惩罚：英文陈述式标签是右分支结构（"Current Job Title" 问的是
+ *   title），末词是中心词；但问句不是——它的末词往往是 "hong kong" 这种状语，
+ *   照陈述式规则罚 0.8 会让「是否需要签证担保」这种精确别名只拿到 0.40，整栏变成"我们没有词"。
+ */
+const QUESTION_WORD_RE = /\b(what|which|how|why|when|who|do you|are you|tell us|interest you|consider|describe)\b/i;
+
+export function isQuestionLabel(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return false;
+  const words = core(raw).split(' ').filter(Boolean);
+  if (words.length < 5) return false;
+  return /[?？]$/.test(raw) || QUESTION_WORD_RE.test(raw);
+}
+
 export function scorePair(pageField, profileField) {
   const labelSigs = signals(pageField.label || '');
   const aliasSigs = signals(profileField.zh + ' ' + profileField.labels.join(' '));
+  const labelIsQuestion = isQuestionLabel(pageField.labelRaw || pageField.label);
   let best = 0;
 
   const normLabel = normalize(pageField.label);
@@ -172,7 +191,7 @@ export function scorePair(pageField, profileField) {
           const tail = aw.length ? aw[aw.length - 1] : '';
           const pureLatin = /^[a-z0-9. ]+$/.test(labelCore) && /^[a-z0-9. ]+$/.test(ac);
           const headHit = !head || !tail || head === tail || head.startsWith(tail) || tail.startsWith(head);
-          if (pureLatin && lw.length > 1 && !headHit) s *= 0.8;
+          if (pureLatin && lw.length > 1 && !headHit && !labelIsQuestion) s *= 0.8;
           best = Math.max(best, s);
         }
       } else if (ac.includes(labelCore) && labelCore.length >= 2) {
@@ -228,14 +247,28 @@ export function scorePair(pageField, profileField) {
 
   if (best === 0) return 0;
 
+  // 标签证据封顶 0.95，把最后的 0.05 留给"章节/槽位对得上"这种修正量。
+  // 不封顶的话结尾那个 Math.min(1, best) 会把奖惩一起抹平：别名精确命中的第 0 条与第 1 条经历
+  // 都是 1×0.9×1.12 与 1×1.12 → 双双夹到 1.0 → 打平，匈牙利只能按列顺序随便挑，
+  // 于是 legacy 表单的「最高学历」能拿到 education.1.degree（本科）而期待是 education.0（硕士）。
+  best = Math.min(0.95, best);
+
   const compat = typeCompatible(pageField.type, profileField, String(pageField.currentValue ?? ''));
   if (compat === 0) return 0;
   best *= compat >= 1 ? 1 : 0.72 + compat * 0.28;
 
-  // 枚举字段：页面 option 文本与 profile 候选值有交集则加权
+  // 枚举字段：页面的 option 文本与资料里的候选值有交集则加权，完全对不上则罚——
+  // 这是"页面下拉只有 男/女，而资料写 Male"这类无声失败的唯一提前信号。
+  // 以前这里拿 normalize(o) 比较，o 是 {text,value} 对象，永远得到 "[object object]"，
+  // 于是所有带选项的枚举字段都被判成"对不上"而吃 ×0.8：SF 的 Current Work Authorization
+  // 因此输给"工作城市"这种垃圾候选（0.529 vs 0.554），整栏红字。
   if (pageField.options?.length && profileField.options?.length) {
-    const hit = pageField.options.filter(o => profileField.options.some(p => normalize(o) === normalize(p))).length;
-    if (hit) best = Math.min(1, best + 0.08);
+    const terms = profileField.options.map(v => normalize(v)).filter(t => t.length >= 1);
+    const hit = pageField.options.filter(o => {
+      const t = normalize(o?.text ?? o?.label ?? o?.value);
+      return t && terms.some(x => t === x || (x.length >= 3 && (t.includes(x) || (t.length >= 3 && x.includes(t)))));
+    }).length;
+    if (hit) best = Math.min(0.95, best + 0.08);
     else best *= 0.8;
   }
 
@@ -348,6 +381,8 @@ const DATE_PATTERNS = [
   { id: 'MMM yyyy', re: /^[a-z]{3,9}\s+\d{4}$/i, out: d => `${MONTH_NAMES[d.m - 1]} ${d.y}` },
   { id: 'yyyy-MM-ddTHH:mm', re: /^\d{4}-\d{2}-\d{2}t/, out: d => `${d.y}-${d.m}-${d.dd}t00:00` },
   { id: 'yyyy', re: /^\d{4}$/, out: d => `${d.y}` },
+  // 年/月两个框拆开的实现（Moka、Workday）：月份框只吃两位月份
+  { id: 'MM', re: /^\d{2}$/, out: d => `${d.m}` },
 ];
 
 export const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -433,7 +468,22 @@ const DAY_LEVEL = {
   'MM/dd/yyyy': 'MM/yyyy',
   'dd/MM/yyyy': 'MM/yyyy',
 };
-const MONTH_LEVEL = new Set(['yyyy-MM', 'yyyy/MM', 'yyyyMM', 'yyyy年MM月', 'MMM yyyy', 'MM/yyyy', 'yyyy']);
+const MONTH_LEVEL = new Set(['yyyy-MM', 'yyyy/MM', 'yyyyMM', 'yyyy年MM月', 'MMM yyyy', 'MM/yyyy', 'yyyy', 'MM']);
+
+/**
+ * 把一个日期值拆成年/月/日三段（供"年框 + 月框"这种拆分实现使用）。
+ * 缺的段返回空串而不是补 01：拆分填写时，缺月份就必须让月框留空并说明原因，
+ * 借 formatDate 的降级逻辑会把年份写进月框里。
+ */
+export function dateParts(raw) {
+  const m = String(raw || '').trim().match(/(\d{4})(?:\D{0,3}(\d{1,2}))?(?:\D{0,3}(\d{1,2}))?/);
+  if (!m) return { year: '', month: '', day: '' };
+  return {
+    year: m[1] || '',
+    month: m[2] ? String(m[2]).padStart(2, '0') : '',
+    day: m[3] ? String(m[3]).padStart(2, '0') : '',
+  };
+}
 
 export function formatDate(raw, patternId) {
   const s = String(raw || '').trim();

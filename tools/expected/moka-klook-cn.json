@@ -18,12 +18,18 @@
     "project_duty": "projects.0.role",
     "project_desc": "projects.0.description",
     "language": "languages.0.language",
-    "award_name": "awards.0.title"
+    "award_name": "awards.0.title",
+    "y1": ["work.0.startDate", "work.1.startDate", "internship.0.startDate", "education.0.enrollDate"],
+    "m1": ["work.0.startDate", "work.1.startDate", "internship.0.startDate", "education.0.enrollDate"],
+    "y2": ["work.0.endDate", "work.1.endDate", "internship.0.endDate", "education.0.gradDate"],
+    "m2": ["work.0.endDate", "work.1.endDate", "internship.0.endDate", "education.0.gradDate"],
+    "duty_1": ["work.0.summary", "work.1.summary", "internship.0.summary", "internship.1.summary"],
+    "duty_2": ["work.0.summary", "work.1.summary", "internship.0.summary", "internship.1.summary"]
   },
   "mustNotTouch": [
     "name", "mobile", "email", "birth_ro",
     "gender", "work_exp", "highest_degree", "edu_degree", "proficiency", "listening", "writing",
-    "y1", "m1", "y2", "m2", "duty_1", "duty_2", "about_me"
+    "about_me"
   ],
-  "notes": "这张表用 oneOf 是因为它暴露了我们一个真实的未解问题：Moka 的重复经历块在这里没有可识别的卡片边界（每个字段各自一个 div，且没有小节标题），所以同块内的 公司名称 与 职位名称 可能来自 profile 的不同条目——路径各自合法但配对可能错。判分只承认落在 work/internship 之内，不假装我们能配对；配对的断言留给 P4 的一致性检查。另外 birth_ro 是站点从身份证推导的只读框，现在直接归 readonly_control 不再进入计划（以前会计划然后必然写失败报红）。"
+  "notes": "这张表用 oneOf 是因为它暴露了我们一个真实的未解问题：Moka 的重复经历块在这里没有可识别的卡片边界（每个字段各自一个 div，且没有小节标题），所以同块内的 公司名称 与 职位名称 可能来自 profile 的不同条目——路径各自合法但配对可能错。判分只承认落在 work/internship 之内，不假装我们能配对；配对的断言留给 P4 的一致性检查。另外 birth_ro 是站点从身份证推导的只读框，现在直接归 readonly_control 不再进入计划（以前会计划然后必然写失败报红）。y1..m2 是「起止时间」一行里的四个年/月框：现在会按一个日期拆成两笔写，但这一行既没有小节标题也没有卡片边界，落在哪段经历说不清，起止角色也只是按先后顺序推的，所以判分只承认路径集合、并要求它是黄字——敢给绿字就是假绿。"
 }

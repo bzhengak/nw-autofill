@@ -8,8 +8,10 @@
     "bachelor_school": "education.1.school",
     "bachelor_major": "education.1.major",
     "bachelor_start": "education.1.enrollDate",
-    "bachelor_end": "education.1.gradDate"
+    "bachelor_end": "education.1.gradDate",
+    "master_year": "education.0.enrollDate",
+    "master_month": "education.0.enrollDate"
   },
-  "mustNotTouch": ["highest_degree", "master_year", "master_month", "high_school", "high_start"],
-  "notes": "摊平学历的判分点不是\"填对几个字\"，而是槽位号：硕士栏必须落在 education.0、本科栏落在 education.1（顺序反过来就是填错学历）。资料里没有高中学位，所以高中栏必须留在待人工里——它一旦被写入，说明系统在猜。master_year/master_month 是 Moka 的成对日期框，未支持，必须整组不碰。"
+  "mustNotTouch": ["highest_degree", "high_school", "high_start"],
+  "notes": "摊平学历的判分点不是\"填对几个框\"，而是槽位号：硕士栏必须落在 education.0、本科栏落在 education.1（顺序反过来就是填错学历）。资料里没有高中学位，所以高中栏必须留在待人工里——它一旦被写入，说明系统在猜。master_year/master_month 是 Moka 的成对日期框，现在按一个日期拆两笔写（年框 2023、月框 09），槽位号对了但页面没说这是第几段学历，所以必须是黄字；它要是哪天变绿，就是假绿。"
 }

@@ -15,11 +15,16 @@
     "school": "education.0.school",
     "major": "education.0.major",
     "skill": "skills.domain",
-    "channel": "intent.channel"
+    "channel": "intent.channel",
+    "exp_from_y": ["work.0.startDate", "work.1.startDate"],
+    "exp_from_m": ["work.0.startDate", "work.1.startDate"],
+    "exp_to_y": ["work.0.endDate", "work.1.endDate"],
+    "exp_to_m": ["work.0.endDate", "work.1.endDate"],
+    "edu_to_y": ["education.0.gradDate", "education.1.gradDate"],
+    "edu_to_m": ["education.0.gradDate", "education.1.gradDate"]
   },
   "mustNotTouch": [
-    "district", "ext", "resume", "website",
-    "exp_from_y", "exp_from_m", "exp_to_y", "exp_to_m", "edu_to_y", "edu_to_m"
+    "district", "ext", "resume", "website"
   ],
-  "notes": "Workday 的判分重点是\"不越界\"：法定姓名四框不能串（中文姓≠拼音姓），Year/Month 成对框整组不碰，区/分机这种 profile 里没有对应栏的字段宁可留空也不能塞进近似栏位（把「区」填进现居城市就是错答）。简历/网站由用户自己处理。"
+  "notes": "Workday 的判分重点是\"不越界\"：法定姓名四框不能串（中文姓≠拼音姓），区/分机这种 profile 里没有对应栏的字段宁可留空也不能塞进近似栏位（把「区」填进现居城市就是错答）。简历/网站由用户自己处理。成对的 Year/Month 现在按一个日期拆两笔写：「自」/「至」的标签说清了起止角色，但这一行没被识别成第几段经历（它自己就是个日期行，不是经历卡片），所以只能黄字；判分用 oneOf 且要求 tier=review，就是为了盯住「开始时间和结束时间被分到两段经历上」这种自相矛盾的答案。"
 }

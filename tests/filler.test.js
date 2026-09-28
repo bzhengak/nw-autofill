@@ -99,3 +99,48 @@ test('回滚只撤销扩展改过的部分：站点/用户原有的勾选必须�
   assert.equal(code.checked, false, '扩展勾上的那个必须撤掉');
   assert.equal(doc.querySelector('input[value="run"]').checked, false);
 });
+
+test('下拉的 option 是码值时（value="2" 共青团员）选对就算成功，不能拿码值去比可见文本', async () => {
+  const { doc } = dom(`<form><select name="zzmm">
+      <option value="">请选择</option><option value="1">中共党员</option><option value="2">共青团员</option>
+    </select></form>`);
+  const fields = fieldsOf(doc);
+  const r = await applyPlan(fields, [entry(0, { value: '共青团员', optionValue: '2' })], {});
+  assert.equal(r.results[0].status, 'green', `以前这里报红：可见文本"共青团员"永远不等于码值"2"（${r.results[0].failReason}）`);
+  assert.equal(r.results[0].actual, '共青团员', '报表要显示用户看得见的文本');
+});
+
+test('站点把选择改回去时必须报红（受控组件回滚检测）', async () => {
+  const { doc } = dom(`<form><select name="ctl">
+      <option value="">请选择</option><option value="a">甲</option><option value="b">乙</option>
+    </select></form>`);
+  const el = doc.querySelector('select');
+  el.addEventListener('change', () => { el.selectedIndex = 0; });   // 模拟受控组件把值改回去
+  const fields = fieldsOf(doc);
+  const r = await applyPlan(fields, [entry(0, { value: '乙', optionValue: 'b' })], {});
+  assert.equal(r.results[0].status, 'red');
+  assert.equal(r.results[0].failReason, 'selection_reverted');
+});
+
+test('计划阶段就知道选项对不上 → 需人工（橙），不是填错了（红）', async () => {
+  const { doc } = dom(`<form><select name="ft">
+      <option value="">请选择</option><option value="1">全日制</option><option value="2">非全日制</option>
+    </select></form>`);
+  const fields = fieldsOf(doc);
+  const r = await applyPlan(fields, [entry(0, { value: '全日制在职', tier: 'review', needsChoice: true })], {});
+  assert.equal(r.results[0].status, 'manual', '这一栏得用户亲手表态，报红会把注意力从真错上引开');
+  assert.equal(String(doc.querySelector('select').value), '', '不能顺手替用户选一个');
+});
+
+test('单选按码值命中（value="M"）也要报绿：写入口径与回读口径必须一致', async () => {
+  const { doc } = dom(`<form>
+      <label><input type="radio" name="xb" value="M"> 男</label>
+      <label><input type="radio" name="xb" value="F"> 女</label>
+    </form>`);
+  const fields = fieldsOf(doc);
+  const idx = fields.indexOf(fields.find(f => f.kind === 'radio'));
+  const r = await applyPlan(fields, [entry(idx, { value: '男', optionValue: 'M' })], {});
+  assert.equal(r.results[0].status, 'green', `按 value 勾上、却按可见文本验收 = 假红（${r.results[0].failReason}）`);
+  assert.equal(doc.querySelector('input[value="M"]').checked, true);
+  assert.equal(doc.querySelector('input[value="F"]').checked, false);
+});

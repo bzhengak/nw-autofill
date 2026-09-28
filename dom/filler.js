@@ -103,7 +103,7 @@ export async function fillField(field, entry) {
     const list = Array.from(el.options || []);
     const opt = list.find(o => o.value === target && String(o.value) !== '')
       || list.find(o => tolerant(o.textContent, target));
-    if (!opt) return { ok: false, reason: 'option_missing', actual: el.value };
+    if (!opt) return { ok: false, reason: entry.needsChoice ? 'choice_required' : 'option_missing', actual: el.value };
     el.focus?.();
     // 很多站点的 option 全部 value=""（按文本区分），只设 el.value 会落到第一个空值项
     const idx = list.indexOf(opt);
@@ -111,35 +111,54 @@ export async function fillField(field, entry) {
     el.value = opt.value;
     dispatch(el, 'change');
     dispatch(el, 'blur');
-    const shown = (el.selectedIndex >= 0 ? el.options[el.selectedIndex]?.textContent : '') || opt.textContent;
-    return { ok: tolerant(shown, target) || tolerant(opt.textContent, target), actual: String(shown || '').trim(), shown: String(shown || '').trim(), error: validationErrorNear(el) };
+    const shown = String((el.selectedIndex >= 0 ? el.options[el.selectedIndex]?.textContent : '') || opt.textContent || '').trim();
+    // 验收只能问一句："我们选中的还是不是刚才那个 option？"
+    // 以前拿可见文本去比 target，而 target 常常是码值（政治面貌 <option value="2">共青团员</option>）：
+    // 共青团员 vs "2" 永远不等 → 明明选对了却报红。站点把选择改回去（受控组件）才算失败。
+    const nowOpt = el.selectedIndex >= 0 ? el.options[el.selectedIndex] : null;
+    const landed = !!nowOpt && (nowOpt === opt || (!!opt.value && nowOpt.value === opt.value));
+    return {
+      ok: landed, actual: shown, shown,
+      reason: landed ? '' : 'selection_reverted',
+      error: validationErrorNear(el),
+    };
   }
 
   if (kind === 'radio' || kind === 'checkbox') {
     const group = field.__group || [el];
     const wanted = String(entry.optionValue ?? entry.value ?? '').split(/[,，、|]/).map(s => normalize(s)).filter(Boolean);
     const wantTexts = new Set(wanted);
-    let touched = 0;
-    for (const box of group) {
+    // 一个框"是不是我们要的"只能算一次：写入时按 value 命中（optionValue 常是 M/1/0 这种码值），
+    // 回读却拿可见文本比，两边口径不同就会把已经选对的框报成红色 selection_mismatch
+    // （plain-cn 的 性别/政治面貌/婚姻状况 全中，判分其实是对的，红字纯属假警报）。
+    const hitOf = box => {
       const label = normalize(box.nextElementSibling?.textContent || box.parentElement?.textContent || '');
       const boxValue = normalize(box.value || '');
       // 空标签绝不能算命中：`wanted.some(w => w.includes(label))` 在 label='' 时恒真，
       // 老式表格里"整组被勾满"就是这么来的
       const textHit = !!label && (wantTexts.has(label) || wanted.some(w => w.length >= 2 && label.includes(w)));
       const valueHit = !!boxValue && wantTexts.has(boxValue);
-      const should = textHit || valueHit;
-      if (should && !box.checked) { box.checked = true; dispatch(box, 'input'); dispatch(box, 'change'); touched++; }
-      else if (!should && kind === 'checkbox' && box.checked && entry.mode === 'full') { box.checked = false; dispatch(box, 'change'); touched++; }
-      else if (should && box.checked) touched++;
+      return { label, boxValue, wantedBy: textHit ? label : (valueHit ? boxValue : ''), hit: textHit || valueHit };
+    };
+    let touched = 0;
+    for (const box of group) {
+      const { hit, label, boxValue } = hitOf(box);
+      if (hit && !box.checked) { box.checked = true; dispatch(box, 'input'); dispatch(box, 'change'); touched++; }
+      else if (!hit && kind === 'checkbox' && box.checked && entry.mode === 'full') { box.checked = false; dispatch(box, 'change'); touched++; }
+      else if (hit && box.checked) touched++;
     }
-    const chosen = group.filter(x => x.checked).map(x => normalize(x.nextElementSibling?.textContent || x.parentElement?.textContent || x.value));
-    const actual = group.filter(x => x.checked).map(x => x.value).join('|');
+    const chosenBoxes = group.filter(x => x.checked);
+    const chosen = chosenBoxes.map(x => hitOf(x));
     // 回读要比对"选中的集合"和"想选的集合"，而不是"有任意一个被勾上"——
-    // 后者在错选别人选项时也返回 true，等于把错答案报成绿
-    const allWantedChosen = wanted.length > 0 && wanted.every(w => chosen.some(c => c === w || c.includes(w)));
-    const noExtra = kind === 'radio' ? chosen.length <= 1 : chosen.every(c => wanted.some(w => c === w || c.includes(w)));
-    const ok = touched > 0 && allWantedChosen && noExtra && chosen.length > 0;
-    return { ok, actual, reason: ok ? '' : (touched ? 'selection_mismatch' : 'option_missing'), error: ok ? '' : validationErrorNear(el) };
+    // 后者在错选别人选项时也返回 true，等于把错答案报成绿。
+    // 判"选中的这个框是不是我们要的"直接复用 hitOf：与写入同一口径，
+    // 不会出现"按 value 选中、按 label 验收"这种自己验不过自己的红字。
+    const allWantedChosen = wanted.length > 0 && wanted.every(w => chosen.some(c => c.hit && (c.wantedBy === w || c.wantedBy.includes(w) || w.includes(c.wantedBy))));
+    const noExtra = kind === 'radio' ? chosenBoxes.length <= 1 : chosen.every(c => c.hit);
+    const actual = chosenBoxes.map(x => x.value).join('|');
+    const shown = chosen.map(c => c.label || c.boxValue).filter(Boolean).join('|');
+    const ok = touched > 0 && allWantedChosen && noExtra && chosenBoxes.length > 0;
+    return { ok, actual: shown || actual, reason: ok ? '' : (touched ? 'selection_mismatch' : (entry.needsChoice ? 'choice_required' : 'option_missing')), error: ok ? '' : validationErrorNear(el) };
   }
 
   if (kind === 'contenteditable') {
@@ -211,7 +230,10 @@ export async function applyPlan(fields, assignments, opts = {}) {
 
     results.push({
       ...entry,
-      status: outcome.ok ? (entry.tier === 'auto' ? 'green' : 'yellow') : (outcome.reason === 'file_manual' ? 'manual' : 'red'),
+      // 'choice_required'：计划阶段就知道页面选项跟资料对不上（entry.needsChoice）。
+      // 这不是"我们填错了"，是"这一栏得你亲手表态"，报红会把用户的注意力从真错上引开。
+      status: outcome.ok ? (entry.tier === 'auto' ? 'green' : 'yellow')
+        : (outcome.reason === 'file_manual' || outcome.reason === 'choice_required') ? 'manual' : 'red',
       actual: outcome.actual,
       failReason: outcome.reason || '',
     });

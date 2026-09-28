@@ -58,6 +58,9 @@ export function sampleProfile() {
     'work.0.title': '软件开发工程师',
     'work.0.startDate': '2026-07-01',
     'work.0.endDate': '2026-08-31',
+    // 站点真的会单开一个"工作职责"大 textarea（Moka 一次给两段）。以前样例资料这里空着，
+    // 判分表只能把它列进 mustNotTouch——等于我们把一个本可以填的栏目当成不会填的。
+    'work.0.summary': '负责检索召回链路的接口开发与线上稳定性，P99 从 420ms 降到 180ms。',
     'work.0.salary': '12000',
     'intent.position': '软件开发工程师',
     'intent.cities': '上海、杭州',

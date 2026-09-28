@@ -3,7 +3,7 @@
 
 import { buildFields, getValueByPath, equivalentsOf } from './profile-schema.js';
 import { planFromAdapter, dateFormatOverride } from './adapters.js';
-import { assignMaxWeight, scorePair, normalize, core, inferDateFormat, boolLike, signals, negationMismatch, AMBIGUOUS_SECTIONS } from './matching.js';
+import { assignMaxWeight, scorePair, normalize, core, inferDateFormat, boolLike, signals, negationMismatch, AMBIGUOUS_SECTIONS, dateParts, isQuestionLabel } from './matching.js';
 
 const AUTO_THRESHOLD = 0.75;   // 绿：直接填
 const REVIEW_THRESHOLD = 0.52; // 黄：填了但要求你复核
@@ -13,8 +13,10 @@ const TOP_K = 6;
 const BLOCK_PATTERNS = [
   { re: /(captcha|recaptcha|滑块|验证码|校验码|语音验证码|短信验证码|人机验证|行为验证|图形验证|verif(?:ication)?\s*(?:code|check)|(?<![a-z])otp(?![a-z])|security\s*(?:code|check|question)|check\s*code)/i, reason: 'captcha' },
   { re: /(password|密码|口令|api\s*key|secret)/i, reason: 'credential' },
-  { re: /(上传|附件|简历文件|upload|attachment|portfolio\s*file)/i, reason: 'file', whenFile: true },
-  { re: /(自我评价|自我描述|自我介绍|个人简介|个人总结|个人优势|self[\s-]?introduction|about\s*me|why\s*you|profile\s*summary|为什么|动机|cover\s*letter|career\s*plan|职业规划|describe\s*your|short\s*answer|essay)/i, reason: 'subjective' },
+  // 主观题名单要覆盖英文问句：Sea 自建页的 "Beyond the GMAP program, which functions interest you?"
+  // 是动机题，以前只靠 why you / describe your 这些词蹭，漏进来的结果是"没有候选"（看着像我们缺词），
+  // 实际是这题根本不该由机器答。归因错了，用户就会去补资料而不是去写答案。
+  { re: /(自我评价|自我描述|自我介绍|个人简介|个人总结|个人优势|self[\s-]?introduction|about\s*me|why\s*you|profile\s*summary|为什么|动机|cover\s*letter|career\s*plan|职业规划|describe\s*your|short\s*answer|essay|which\s+\w+\s+(?:interest|appeal|attract)|interest(?:s|ing)?\s+you|(额外|其他|其它)\s*(信息|说明|备注))/i, reason: 'subjective' },
   { re: /(测评|笔试|性格测试|认知能力|assessment|aptitude|psychometric)/i, reason: 'assessment' },
   { re: /(电子签名|签名|signature)/i, reason: 'signature' },
   // 同意类声明必须由本人勾选：某同类开源项目自动勾选"已阅读并同意隐私政策"并自动应答合规声明，
@@ -24,19 +26,9 @@ const BLOCK_PATTERNS = [
 
 const SUBJECTIVE_OK = /(姓名|手机|电话|邮箱|身份证|证件|学历|学位|学校|专业|公司|职位|城市|日期|时间|薪资|到岗|编号|地址)/i;
 
-/**
- * 问句式标签：Sea 自研页的 "Beyond the GMAP program, which functions interest you?"
- * 是问动机的开放题，靠词元重合能被"兴趣/爱好"之类蹭到。
- * 这类标签只允许字面/主干命中的别名通过（0.95 以上），弱匹配一律不进候选——宁可标橙交人工。
- */
-const QUESTION_WORD_RE = /\b(what|which|how|why|when|who|do you|are you|tell us|interest you|consider|describe)\b/i;
-export function isQuestionLabel(text) {
-  const raw = String(text || '').trim();
-  if (!raw) return false;
-  const words = core(raw).split(' ').filter(Boolean);
-  if (words.length < 5) return false;
-  return /[?？]$/.test(raw) || QUESTION_WORD_RE.test(raw);
-}
+// 问句式标签的判定住在 matching.js：scorePair 也要用它（问句没有"末词即中心词"的结构），
+// 两边各写一份必然漂移。这里继续转出它，免得调用方改 import 路径。
+export { isQuestionLabel } from './matching.js';
 
 /** 摊平字段里的"归属"等价：站点的「硕士」要能对上资料里的「硕士研究生 / Master」，「父亲」对上 Father */
 function slotValueEquivalent(a, b) {
@@ -67,7 +59,26 @@ function resolveListSlot(profile, schemaFields, slot) {
   return { path, field, value, ambiguous: hits.length > 1, slots: hits };
 }
 
+/**
+ * 年框+月框这一组的"合成提问"。
+ * 角色是从标签里读出来的（Workday 的「自」/「至」、Moka 的「硕士开始时间」）→ 保留原标签，
+ * 只补规范词，因为原标签本身带着"哪一段经历的哪个时间"这类信息。
+ * 角色只是按文档顺序推断的（Moka 把 年/月/年/月 四个框塞在一句「起止时间」下）→ 原标签
+ * 必须丢掉：那句"起止时间"同时问着两个框，留着它只会稀释词元，实测把 开始时间 的打分
+ * 从 0.91 拖到 0.75，两个日期框会一起掉到待复核线以下，等于什么都没填。
+ */
+function dateGroupLabel(label, group) {
+  const member = group.members.find(m => m.role);
+  if (!member) return label;
+  const canonical = member.role === 'start' ? '开始时间 start date from' : '结束时间 end date to';
+  return member.roleSource === 'label' ? `${label} ${canonical}`.trim() : canonical;
+}
+
 function blockReason(pageField) {
+  // 附件按控件类型拒，不看标签：Sea 的 label 是 "Resume"/"Transcript"、Workday 是「简历履历」，
+  // 用关键词名单永远漏一批，漏进来的会被报成"我们没有这个词"（no_candidate），
+  // 用户于是去补资料，而真正的答案是"这一栏得你自己上传"。
+  if (pageField.kind === 'file') return 'file';
   // Moka 这类站点的下拉框是"placeholder=Please select 的普通文本框"，没有 select 元素。
   // 往里打字不会选中任何值，反而可能把站点自己的校验搞乱 → 一律标为待人工处理。
   const ph = String(pageField.placeholder || '').trim();
@@ -84,7 +95,6 @@ function blockReason(pageField) {
   const hay = [pageField.label, pageField.labelRaw, pageField.name, pageField.id, pageField.placeholder, pageField.ownerText, pageField.className]
     .filter(Boolean).join(' ');
   for (const rule of BLOCK_PATTERNS) {
-    if (rule.whenFile && pageField.kind !== 'file') continue;
     if (rule.re.test(hay)) {
       // 主观题规则让位于明确的客观字段（"求职动机说明：期望工作城市"这类混排）
       if (rule.reason === 'subjective' && SUBJECTIVE_OK.test(core(pageField.label || ''))) continue;
@@ -149,13 +159,48 @@ export function planFill(pageFields, profile, opts = {}) {
   const assignments = [];
   const gaps = [];
   const considered = [];
+  // 「年框 + 月框」是同一个问题拆出来的两个框：整组只能占一个 profile 槽位，
+  // 否则两个框会各自去抢日期列（把月份写进年份框、或把开始/结束对调）。
+  // 所以这里把组收敛成"组长行"（年框），成员在落笔时再展开成两笔。
+  const pairGroups = new Map();
+  pageFields.forEach((pf, index) => {
+    const dp = pf.datePair;
+    if (!dp) return;
+    if (!pairGroups.has(dp.id)) pairGroups.set(dp.id, { id: dp.id, members: [] });
+    const g = pairGroups.get(dp.id);
+    g.members.push({ index, part: dp.part, role: dp.role, roleSource: dp.roleSource });
+  });
+  const groupOfIndex = new Map();
+  for (const g of pairGroups.values()) {
+    const year = g.members.find(m => m.part === 'year');
+    const month = g.members.find(m => m.part === 'month');
+    g.complete = Boolean(year && month);
+    g.leader = year ? year.index : (month ? month.index : -1);
+    // 角色是照标签读的（Workday 的「自」/「至」）还是只按文档顺序推的（Moka 四个框同一句标签）：
+    // 后者是我们猜的，必须降级为待复核
+    g.inferredRole = g.members.some(m => m.role && m.roleSource === 'order');
+    g.roleSource = (g.members.find(m => m.roleSource) || {}).roleSource || null;
+    for (const m of g.members) groupOfIndex.set(m.index, g);
+  }
+  // 组里任何一个成员被适配器钉住 = 整组钉住：年框和月框问的是同一件事，
+  // 只钉月框（Moka 的 data-nw-test 常两个框各有一条规则）也必须让组长拿到那个槽位。
+  for (const g of pairGroups.values()) {
+    if (!g.complete || pins.has(g.leader) || (slotPins || new Map()).has(g.leader)) continue;
+    for (const m of g.members) {
+      if (pins.has(m.index)) { pins.set(g.leader, pins.get(m.index)); break; }
+      if ((slotPins || new Map()).has(m.index)) { slotPins.set(g.leader, slotPins.get(m.index)); break; }
+    }
+  }
   // 敏感字段（证件号/手机号等）默认不写入：设置项 fillSensitive 明确打开才写。
   // 这条以前只是界面上一个复选框，没人读它——等于承诺了但没做。
   const allowSensitive = opts.fillSensitive === true;
   const withheld = field => Boolean(field && field.sensitive) && !allowSensitive;
 
   pageFields.forEach((pf, index) => {
-    const blocked = blockReason(pf);
+    const group = groupOfIndex.get(index);
+    if (group && group.complete && index !== group.leader) return;   // 成员由组长代表，不单独出行
+    const asDate = Boolean(group && group.complete);
+    const blocked = blockReason(asDate ? { ...pf, compositeDate: undefined } : pf);
     if (blocked) {
       gaps.push({ index, label: pf.label || pf.name || pf.id || '(未命名字段)', reason: blocked, kind: pf.kind });
       return;
@@ -208,19 +253,28 @@ export function planFill(pageFields, profile, opts = {}) {
       }
       return;
     }
-    const hasValue = String(pf.currentValue ?? '').trim() !== '';
+    const memberFilled = m => String(pageFields[m.index].currentValue ?? '').trim() !== '';
+    const hasValue = group && group.complete
+      ? group.members.every(memberFilled)          // 拆开的日期框：只填了年不算填过这一栏
+      : String(pf.currentValue ?? '').trim() !== '';
     if (mode === 'incremental' && hasValue) {
-      assignments.push({ index, skip: true, reason: 'already_filled' });
+      if (group && group.complete) for (const m of group.members) assignments.push({ index: m.index, skip: true, reason: 'already_filled' });
+      else assignments.push({ index, skip: true, reason: 'already_filled' });
       return;
     }
 
+    // 日期组用一个"合成提问"去打标：标签补上起止角色词、占位符清空
+    // （占位符是「年」「月」，留着会把 inferDateFormat 带偏成单段格式）
+    const scoring = asDate ? { ...pf, compositeDate: undefined, placeholder: '', label: dateGroupLabel(pf.label, group) } : pf;
+    const dateish = sf => sf.type === 'date' || sf.type === 'month' || sf.type === 'year';
     const candidates = [];
     const questionish = isQuestionLabel(pf.labelRaw || pf.label);
     for (let c = 0; c < schemaFields.length; c++) {
       const sf = schemaFields[c];
+      if (asDate && !dateish(sf)) continue;        // 年框+月框问的就是一个日期，别让它去抢文本栏
       const value = String(getValueByPath(profile, sf.path) ?? '').trim();
       if (!value) continue;
-      const s = scorePair(pf, sf);
+      const s = scorePair(scoring, sf);
       // 问句式标签：港企/SF 里"Do you require sponsorship?"这类是合规判断题（bool/enum），该填；
       // 而"which functions interest you?"这类动机题靠词元重合能蹭到"兴趣爱好"，必须挡住。
       // 折中：问句只允许 bool/enum 目标，或字面/主干命中（≥0.95）的文本目标。
@@ -232,9 +286,10 @@ export function planFill(pageFields, profile, opts = {}) {
     // 而这份简历只有实习经历（work.* 全空）→ 实习的 summary 被 0.55 罚下后一个候选都不剩，
     // 页面就变成"我们没有词"。这里放宽一次章节惩罚重算，命中就降级为待复核，绝不自动写。
     if (!candidates.length && pf.sectionHint) {
-      const relaxed = { ...pf, sectionHint: '' };
+      const relaxed = { ...scoring, sectionHint: '' };
       for (let c = 0; c < schemaFields.length; c++) {
         const sf = schemaFields[c];
+        if (asDate && !dateish(sf)) continue;
         if (sf.section !== pf.sectionHint && !AMBIGUOUS_SECTIONS.has(sf.section)) continue;
         const value = String(getValueByPath(profile, sf.path) ?? '').trim();
         if (!value) continue;
@@ -242,6 +297,19 @@ export function planFill(pageFields, profile, opts = {}) {
         if (s >= REVIEW_THRESHOLD) candidates.push({ c, sf, value, s: s * 0.95, relaxedHint: true });
       }
       candidates.sort((a, b) => b.s - a.s);
+    }
+    if (!candidates.length && asDate) {
+      // 一个日期候选都没有：整组退回人工，别只说"没词"
+      const why = (group.members.find(m => m.role) || {}).role
+        ? '没能确定这一对年/月框对应资料里的哪个时间，请人工填写'
+        : '这一对年/月框只写了时段（如「Study period」），没说清是开始还是结束，无法对应到资料里的时间，请人工填写';
+      for (const m of group.members) {
+        gaps.push({
+          index: m.index, label: pageFields[m.index].label || '(未命名字段)',
+          reason: 'composite_date', kind: pageFields[m.index].kind, note: why,
+        });
+      }
+      return;
     }
     considered.push({ index, top: candidates.slice(0, TOP_K) });
   });
@@ -300,9 +368,34 @@ export function planFill(pageFields, profile, opts = {}) {
       tier: chosen.score >= AUTO_THRESHOLD && !sf.sensitive ? 'auto' : 'review',
     };
     if (sf.sensitive && chosen.score >= AUTO_THRESHOLD) entry.reason = 'sensitive_requires_review';
+    // 判断题（是/否、单选合规项）永远黄字：这类栏填下去是对雇主的一句话（"我不需要签证担保"），
+    // 而资料里的值可能早就过时了 —— 打字的代价是一次改正，猜错的代价是一次不实陈述。
+    if ((sf.type === 'bool' || pf.kind === 'radio' || pf.kind === 'checkbox') && entry.tier === 'auto') {
+      entry.tier = 'review';
+      entry.note = '这是你的选择而不是抄写，请核对再提交';
+    }
     if (chosen.cand.relaxedHint) { entry.tier = 'review'; entry.note = '章节线索与资料分组不一致，请确认这一栏到底算哪段经历'; }
+    // 列表槽位要有"页面自己给的证据"才许绿字，两种证据：
+    // ① DOM 里的重复区块序号（卡片/fieldset 边界，itemIndexSource='dom' 或没标来源）；
+    // ② 页面小标题的章节归属跟 profile 的分组一致。
+    // 按"同名标签第几次出现"推断出来的序号（'occurrence'）不算证据①：它只说得出"第几条"，
+    // 说不出"是工作还是实习"，让它开绿字就等于允许"A 公司的职位写进 B 公司那一栏"，
+    // 而每个字段单独回读都是绿的，事后根本发现不了。
+    const domEvidence = pf.itemIndex != null && pf.itemIndexSource !== 'occurrence';
+    const sectionEvidence = Boolean(pf.sectionHint) && pf.sectionHint === sf.section;
+    if (sf.itemIndex != null && !domEvidence && !sectionEvidence) {
+      entry.tier = 'review';
+      entry.note = `无法确定这是第 ${(sf.itemIndex ?? 0) + 1} 段「${sf.section}」经历，请核对`;
+    }
+    // 配对错位检测：页面这一栏是"某个标签的第 k 次出现"，却被派到资料里序号不等于 k 的条目上，
+    // 说明同块内的字段来自不同条目（Klook 两个「公司名称」互相换位就是这么发生的）。
+    if (sf.itemIndex != null && pf.itemIndexSource === 'occurrence' && pf.itemIndex != null && sf.itemIndex !== pf.itemIndex) {
+      entry.tier = 'review';
+      const swapNote = `这一栏是页面上第 ${pf.itemIndex + 1} 次出现的「${pf.label || pf.name}」，却拿到了资料里第 ${sf.itemIndex + 1} 条，配对可能错位`;
+      entry.note = entry.note ? `${entry.note}；${swapNote}` : swapNote;
+    }
 
-    if (entry.tier === 'review' && chosen.score < AUTO_THRESHOLD) entry.note = '置信度不足，请复核';
+    if (entry.tier === 'review' && chosen.score < AUTO_THRESHOLD && !entry.note) entry.note = '置信度不足，请复核';
 
     if (pf.kind === 'select' || pf.kind === 'radio' || pf.kind === 'checkbox' || sf.type === 'enum' || sf.type === 'bool') {
       const pageOptions = pf.options || [];
@@ -319,7 +412,7 @@ export function planFill(pageFields, profile, opts = {}) {
         option = resolveOption(pf, value);
       }
       if (option) entry.optionValue = option.value ?? option.text;
-      else if (pageOptions.length) { entry.tier = 'review'; entry.note = '页面选项与你的资料无对应，需人工选择'; delete entry.value; }
+      else if (pageOptions.length) { entry.tier = 'review'; entry.note = '页面选项与你的资料无对应，需人工选择'; entry.needsChoice = true; delete entry.value; }
     }
 
     const adapterDate = dateFormatOverride(opts.adapter, pf);
@@ -344,7 +437,7 @@ export function planFill(pageFields, profile, opts = {}) {
     if (pf.kind === 'select' || pf.kind === 'radio' || pf.kind === 'checkbox') {
       const opt = resolveOption(pf, entry.value);
       if (opt) entry.optionValue = opt.value ?? opt.text;
-      else { entry.tier = 'review'; entry.note = '页面选项与你的资料无对应，需人工选择'; }
+      else { entry.tier = 'review'; entry.note = '页面选项与你的资料无对应，需人工选择'; entry.needsChoice = true; }
     }
     const df = dateFormatOverride(opts.adapter, pf);
     if (df) entry.dateFormat = df;
@@ -353,6 +446,45 @@ export function planFill(pageFields, profile, opts = {}) {
     }
     assignments.push(entry);
   }
+
+  // 成对日期在落笔前展开：组长那一笔（打分行或适配器钉位行都算）换成每个成员一笔。
+  // 必须在最后统一做：以前只在打分行里展开，Moka 适配器一钉位，年框带着整组的槽位号走，
+  // 月框被当成"已由组长代表"直接丢掉，页面上就少填一个框，而且报表里看不出少了谁。
+  const expanded = [];
+  for (const a of assignments) {
+    const g = groupOfIndex.get(a.index);
+    if (!g || !g.complete || g.leader !== a.index) { expanded.push(a); continue; }
+    if (a.skip) { for (const m of g.members) expanded.push({ ...a, index: m.index }); continue; }
+    const parts = dateParts(a.value ?? '');
+    const needOf = m => (m.part === 'year' ? parts.year : m.part === 'month' ? parts.month : parts.day);
+    for (const m of g.members) {
+      if (needOf(m)) continue;
+      const el = pageFields[m.index];
+      gaps.push({
+        index: m.index, label: el.label || '(未命名字段)', reason: 'composite_date', kind: el.kind,
+        note: `资料里「${a.path}」只有${parts.month ? '年月' : '年份'}，${m.part === 'month' ? '月份' : '日期'}这一框请手填`,
+      });
+    }
+    for (const m of g.members) {
+      if (!needOf(m)) continue;
+      const copy = {
+        ...a,
+        index: m.index,
+        label: pageFields[m.index].label || a.label,
+        datePart: m.part,
+        dateFormat: m.part === 'year' ? 'yyyy' : m.part === 'month' ? 'MM' : 'dd',
+      };
+      if (g.inferredRole) {
+        copy.tier = 'review';
+        // 两条理由都要留：一处黄字说明盖掉另一处，用户看到的永远是后写的那句，
+        // 于是"不知道是第几段经历"和"不知道是开始还是结束"同时存在时只提醒了后者。
+        const roleNote = '开始/结束是按页面里出现的先后顺序推的，请核对';
+        copy.note = a.note ? `${a.note}；${roleNote}` : roleNote;
+      }
+      expanded.push(copy);
+    }
+  }
+  assignments.splice(0, assignments.length, ...expanded);
 
   const total = pageFields.length;
   const stats = {

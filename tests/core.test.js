@@ -9,7 +9,10 @@ import { planFill, resolveOption } from '../core/matcher.js';
 import { SUBMIT_TEXT_RE, classifyClick } from '../dom/safety.js';
 
 const profileField = (o) => ({ path: o.path, key: o.key || o.path.split('.').pop(), section: o.section || 'basics', itemIndex: o.itemIndex ?? null, zh: o.zh, labels: [o.zh, ...(o.al || [])].map(s => s.toLowerCase()), type: o.type || 'text', options: o.options || [], sensitive: Boolean(o.sensitive) });
-const pageField = (o) => ({ kind: o.kind || 'text', label: o.label || '', name: o.name || '', id: o.id || '', placeholder: o.placeholder || '', currentValue: o.currentValue ?? '', options: o.options || [], required: Boolean(o.required), sectionHint: o.sectionHint || '', itemIndex: o.itemIndex ?? null, nearbyLabels: o.nearbyLabels || [], autocomplete: o.autocomplete || '', type: o.type || '', compositeDate: o.compositeDate, maxLength: o.maxLength });
+const pageField = (o) => ({ kind: o.kind || 'text', label: o.label || '', name: o.name || '', id: o.id || '', placeholder: o.placeholder || '', currentValue: o.currentValue ?? '', options: o.options || [], required: Boolean(o.required), sectionHint: o.sectionHint || '', itemIndex: o.itemIndex ?? null, nearbyLabels: o.nearbyLabels || [], autocomplete: o.autocomplete || '', type: o.type || '', compositeDate: o.compositeDate, datePair: o.datePair, itemIndexSource: o.itemIndexSource, maxLength: o.maxLength });
+
+// 扫描器对"年框+月框"的产物，测试里手搓一份，避免依赖 DOM
+const dp = (id, part, role, roleSource = 'label', ordinal = 0, size = 1) => ({ id, part, role, roleSource, ordinal, size });
 
 test('归一化：全半角 / 简繁 / 括号降级', () => {
   assert.equal(normalize('姓　名：'), '姓名:');
@@ -262,4 +265,195 @@ test('敏感字段默认不写入，勾了 fillSensitive 才写（设置以前�
   const on = planFill(fields, p, { mode: 'full', fillSensitive: true });
   assert.equal(on.assignments.length, 3);
   assert.ok(on.gaps.every(g => g.reason !== 'sensitive_withheld'));
+});
+
+test('列表槽位没有区块证据时不许拿绿字（Moka 双「公司名称」是盲猜）', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'work.0.company', '甲科技');
+  setValueByPath(p, 'internship.0.company', '乙银行');
+
+  // 页面上两个同名输入框，既没识别出重复区块序号，也没读到小节标题
+  const blind = planFill([
+    pageField({ label: '公司名称', name: 'c1' }),
+    pageField({ label: '公司名称', name: 'c2' }),
+  ], p, { mode: 'full' });
+  assert.equal(blind.assignments.length, 2, '两栏都该进计划，不能因为拿不准就整栏丢掉');
+  for (const a of blind.assignments) {
+    assert.ok(a.score >= 0.75, `这条本来是绿字（score=${a.score}），才会被规则打下来`);
+    assert.equal(a.tier, 'review', `${a.path} 凭什么算绿字：页面没给任何「这是第几段」的证据`);
+    assert.match(String(a.note), /无法确定这是第 \d+ 段/, '黄字必须说清为什么黄，而不是含糊的「置信度不足」');
+  }
+
+  // 给了小节标题 = 有证据，恢复绿字
+  const bySection = planFill([
+    pageField({ label: '公司名称', name: 'c1', sectionHint: 'work' }),
+    pageField({ label: '公司名称', name: 'c2', sectionHint: 'internship' }),
+  ], p, { mode: 'full' });
+  const tiers = Object.fromEntries(bySection.assignments.map(a => [a.path, a.tier]));
+  assert.deepEqual(tiers, { 'work.0.company': 'auto', 'internship.0.company': 'auto' });
+
+  // 给了区块序号 = 同样算证据
+  setValueByPath(p, 'work.1.company', '丙集团');
+  const byIndex = planFill([pageField({ label: '公司名称', name: 'c1', itemIndex: 1 })], p, { mode: 'full' });
+  assert.equal(byIndex.assignments[0]?.tier, 'auto', '页面明确说这是第二段经历，就该是绿字');
+});
+
+test('年框+月框 = 一个日期问题：只占一个槽位，落笔才拆成两笔', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'work.0.startDate', '2025-03-15');
+  setValueByPath(p, 'work.1.startDate', '2023-07-01');
+  const pair = [
+    pageField({ label: '开始时间', name: 'fy', placeholder: 'Year', compositeDate: 'year', datePair: dp('dp0', 'year', 'start'), sectionHint: 'work' }),
+    pageField({ label: '开始时间', name: 'fm', placeholder: 'Month', compositeDate: 'month', datePair: dp('dp0', 'month', 'start'), sectionHint: 'work' }),
+  ];
+  const plan = planFill(pair, p, { mode: 'full' });
+  assert.equal(plan.assignments.length, 2, '一笔规划要展开成两笔写入');
+  assert.deepEqual(plan.assignments.map(a => [a.datePart, a.path, a.dateFormat]),
+    [['year', 'work.0.startDate', 'yyyy'], ['month', 'work.0.startDate', 'MM']],
+    '两笔必须共用同一个槽位：年框月框各自抢列时会把开始时间填进上一段经历');
+  assert.deepEqual(plan.gaps.map(g => g.reason), [], '整组不该再产生 composite_date 缺口');
+});
+
+test('资料里只有年份时：年框照写，月框留空并说明，绝不拿年份凑月份', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'work.0.startDate', '2025');
+  const plan = planFill([
+    pageField({ label: '开始时间', name: 'fy', placeholder: 'Year', compositeDate: 'year', datePair: dp('dp0', 'year', 'start'), sectionHint: 'work' }),
+    pageField({ label: '开始时间', name: 'fm', placeholder: 'Month', compositeDate: 'month', datePair: dp('dp0', 'month', 'start'), sectionHint: 'work' }),
+  ], p, { mode: 'full' });
+  assert.deepEqual(plan.assignments.map(a => a.datePart), ['year']);
+  assert.equal(plan.gaps.length, 1);
+  assert.equal(plan.gaps[0].reason, 'composite_date');
+  assert.match(plan.gaps[0].note, /只有年份/);
+});
+
+test('起止一行：开始与结束必须落在同一段经历，不能一个第 0 段一个第 1 段', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'work.0.startDate', '2025-03-01');
+  setValueByPath(p, 'work.0.endDate', '2025-08-01');
+  setValueByPath(p, 'work.1.startDate', '2023-07-01');
+  setValueByPath(p, 'work.1.endDate', '2023-09-01');
+  const mk = (name, ph, part, role, ord) => pageField({
+    label: part === 'year' ? '自' : '至', name, placeholder: ph,
+    compositeDate: part, datePair: dp(`dp${ord}`, part, role, 'label', ord, 2), sectionHint: 'work',
+  });
+  const plan = planFill([
+    mk('fy', 'Year', 'year', 'start', 0), mk('fm', 'Month', 'month', 'start', 0),
+    mk('ty', 'Year', 'year', 'end', 1), mk('tm', 'Month', 'month', 'end', 1),
+  ], p, { mode: 'full' });
+  const slot = a => a.path.split('.').slice(0, 2).join('.');
+  assert.equal(new Set(plan.assignments.map(slot)).size, 1,
+    `一行起止应当属于同一段经历，实得 ${plan.assignments.map(a => a.path).join(', ')}`);
+});
+
+test('只写了时段的成对框（Study period）不许猜起止，整组退回人工', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'education.0.enrollDate', '2019-09-01');
+  setValueByPath(p, 'education.0.gradDate', '2023-06-30');
+  const plan = planFill([
+    pageField({ label: 'study period', name: 'py', placeholder: 'Year', compositeDate: 'year', datePair: dp('dp0', 'year', null, null, 0, 1) }),
+    pageField({ label: 'study period', name: 'pm', placeholder: 'Month', compositeDate: 'month', datePair: dp('dp0', 'month', null, null, 0, 1) }),
+  ], p, { mode: 'full' });
+  assert.equal(plan.assignments.length, 0, '说不清是入学还是毕业，就不该有任何一笔');
+  assert.equal(plan.gaps.length, 2);
+  assert.match(plan.gaps[0].note, /没说清是开始还是结束/);
+});
+
+test('适配器钉位也必须展开年月组：钉住年框不能把月框弄丢', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'work.0.startDate', '2025-03-15');
+  const adapter = { id: 'test-pin', domains: ['x.test'], pins: [{ match: '开始时间', path: 'work.0.startDate' }] };
+  const plan = planFill([
+    pageField({ label: '开始时间', name: 'fy', placeholder: 'Year', compositeDate: 'year', datePair: dp('dp0', 'year', 'start') }),
+    pageField({ label: '开始时间', name: 'fm', placeholder: 'Month', compositeDate: 'month', datePair: dp('dp0', 'month', 'start') }),
+  ], p, { mode: 'full', adapter });
+  assert.deepEqual(plan.assignments.map(a => [a.datePart, a.path]), [['year', 'work.0.startDate'], ['month', 'work.0.startDate']],
+    '月框曾经被当成"已由年框代表"直接丢掉：页面上少填一个框，报表还看不出少了谁');
+});
+
+test('枚举选项比对：option 是 {text,value} 对象时不能一律判"对不上"', () => {
+  const schema = buildFields();
+  const gender = schema.find(f => f.path === 'basics.gender');
+  const match = scorePair(pageField({ label: '性别', kind: 'select', options: [{ text: '男', value: 'M' }, { text: '女', value: 'F' }] }), gender);
+  const miss = scorePair(pageField({ label: '性别', kind: 'select', options: [{ text: 'X', value: '1' }] }), gender);
+  assert.ok(match > miss, `选项文本能对上就该加权、对不上才罚（实得 ${match} vs ${miss}）`);
+});
+
+test('标签证据不许撞到 1.0：否则结尾的封顶会把章节/槽位惩罚一起抹平', () => {
+  const schema = buildFields();
+  const pf = pageField({ label: '学校', sectionHint: 'education' });
+  const s0 = scorePair(pf, schema.find(f => f.path === 'education.0.school'));
+  const s1 = scorePair(pf, schema.find(f => f.path === 'education.1.school'));
+  assert.ok(s0 > s1, `别名精确命中时第 0 条必须严格高于第 1 条（实得 ${s0} vs ${s1}）`);
+  // 打平会让匈牙利按列顺序随便挑，legacy 表单的「最高学历」就是这样拿到了 education.1.degree（本科）
+  const pf2 = pageField({ label: '学位', kind: 'select', sectionHint: 'education', options: [{ text: '学士' }, { text: '硕士' }] });
+  const d0 = scorePair(pf2, schema.find(f => f.path === 'education.0.degree'));
+  const d1 = scorePair(pf2, schema.find(f => f.path === 'education.1.degree'));
+  assert.ok(d0 > d1, `带选项的枚举字段同样要保住槽位顺序（实得 ${d0} vs ${d1}）`);
+});
+
+test('附件按控件类型归因：标签叫 Resume / Transcript / 上传附件 都是 file', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'others.selfIntro', '三年经验');
+  const plan = planFill([
+    pageField({ label: 'Resume', name: 'resume', kind: 'file' }),
+    pageField({ label: 'Transcript', name: 'transcript', kind: 'file' }),
+    pageField({ label: '上传附件', name: 'att', kind: 'file' }),
+  ], p, { mode: 'full' });
+  assert.deepEqual(plan.gaps.map(g => g.reason), ['file', 'file', 'file'],
+    '以前只靠"上传/附件"关键词，英文站的 resume/transcript 漏进来后被报成 no_candidate，用户会去补资料而不是自己上传');
+  assert.equal(plan.assignments.length, 0);
+});
+
+test('英文动机问句归 subjective：which functions interest you 不是"我们没有词"', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'interests.hobbies', '跑步、篮球');
+  const plan = planFill([
+    pageField({ label: 'Beyond the GMAP program, which functions interest you?', name: 'beyond' }),
+  ], p, { mode: 'full' });
+  assert.equal(plan.gaps[0]?.reason, 'subjective');
+  assert.equal(plan.assignments.length, 0, '动机题不能让机器代答，哪怕资料里有"兴趣"能蹭上');
+});
+
+test('合规问句能对上自己的槽位：Do you require sponsorship 不是工作城市', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'hkGlobal.needSponsorship', '否');
+  setValueByPath(p, 'work.0.city', '上海');
+  const schema = buildFields();
+  const pf = pageField({
+    label: 'do you require sponsorship to work in hong kong',
+    labelRaw: '* Do you require sponsorship to work in Hong Kong? Yes No',
+    kind: 'radio', name: 'sponsorship',
+    options: [{ text: 'Yes', value: 'Y' }, { text: 'No', value: 'N' }],
+  });
+  const sponsorship = scorePair(pf, schema.find(f => f.path === 'hkGlobal.needSponsorship'));
+  const city = scorePair(pf, schema.find(f => f.path === 'work.0.city'));
+  assert.ok(sponsorship > city, `问句的中心词不是末词，别按"右分支"罚它（${sponsorship} vs ${city}）`);
+  const plan = planFill([pf], p, { mode: 'full', fillSensitive: true });
+  assert.equal(plan.assignments[0]?.path, 'hkGlobal.needSponsorship');
+  assert.equal(plan.assignments[0]?.tier, 'review', '签证担保这类合规答复至少要你亲眼过一遍');
+});
+
+test('推断出来的记录序号不能开绿字，只能用来对齐槽位', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'work.0.company', '甲科技');
+  setValueByPath(p, 'work.1.company', '乙银行');
+  // 页面上第二次出现的「公司名称」，扫描器按出现次数给出 itemIndex=1（source='occurrence'）
+  const second = planFill([pageField({ label: '公司名称', name: 'c2', itemIndex: 1, itemIndexSource: 'occurrence' })], p, { mode: 'full' });
+  assert.equal(second.assignments[0].path, 'work.1.company', '出现次数要把槽位对齐到第 2 条');
+  assert.equal(second.assignments[0].tier, 'review', '第几条知道了，"是工作还是实习"仍然不知道 → 不许绿字');
+  // 同样数据，但页面自己说了这块是 work（小标题证据）→ 才允许绿字
+  const titled = planFill([pageField({ label: '公司名称', name: 'c2', sectionHint: 'work', itemIndex: 1 })], p, { mode: 'full' });
+  assert.equal(titled.assignments[0].tier, 'auto', 'DOM 区块序号 + 章节标题是两种真证据');
+});
+
+test('同块配对错位要说出来：第 2 次出现的标签拿到了资料里第 1 条', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'work.0.summary', '第一条的工作内容');
+  setValueByPath(p, 'basics.name', '张伟');
+  const plan = planFill([pageField({ label: '工作职责', name: 'duty2', itemIndex: 1, itemIndexSource: 'occurrence', sectionHint: 'work' })], p, { mode: 'full' });
+  const a = plan.assignments[0];
+  assert.equal(a.path, 'work.0.summary');
+  assert.match(String(a.note), /第 2 次出现/, '章节标题对得上但记录序号对不上，同样是一种错位，不能只报"无法确定"');
+  assert.equal(a.tier, 'review');
 });

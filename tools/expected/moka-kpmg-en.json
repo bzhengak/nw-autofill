@@ -8,7 +8,7 @@
     "expected_salary": "intent.salary",
     "company": "work.0.company",
     "job_title": "work.0.title",
-    "responsibilities": ["work.0.summary", "internship.0.summary"],
+    "responsibilities": "work.0.summary",
     "project_name": "projects.0.name",
     "project_role": "projects.0.role",
     "project_desc": "projects.0.description",
@@ -19,5 +19,5 @@
     "gender", "work_exp", "highest_degree", "edu_degree", "proficiency", "listening",
     "about_me", "audio_code", "name", "mobile", "edu_year_a", "edu_month_a"
   ],
-  "notes": "必须不碰的两类：Please select 自定义下拉（打字进去不会选中值，反而搞乱站点校验）与语音验证码框。Year/Month 成对日期是 Moka 已知限制，需要专门的复合日期规则，暂不宣称支持。"
+  "notes": "必须不碰的两类：Please select 自定义下拉（打字进去不会选中值，反而搞乱站点校验）与语音验证码框。Year/Month 成对日期这一份里仍是人工：edu_year_a/edu_month_a 的标签只写了「Study period」，没说清是入学还是毕业，整组退回人工比猜一个诚实。responsibilities 以前是 oneOf（work 还是 internship 说不清），现在收窄成 work.0.summary——这份表单的工作块有 Company/Job title/Responsibilities 三行小标题，sectionHint 是页面自己给的证据，够绿。"
 }

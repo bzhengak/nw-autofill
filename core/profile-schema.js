@@ -118,7 +118,7 @@ export const SECTIONS = [
       ['startDate', '开始时间', 'start date|from|开始时间', 'month', ''],
       ['endDate', '结束时间', 'end date|to|结束时间', 'month', ''],
       ['city', '实习城市', 'location|city|实习地点', 'text', ''],
-      ['summary', '实习内容', 'description|responsibilities|internship content|实习内容|工作描述', 'textarea', ''],
+      ['summary', '实习内容', 'description|responsibilities|internship content|实习内容|工作描述|工作内容|工作职责|职责|duties', 'textarea', ''],
       ['offer', '是否获转正 offer', 'return offer|conversion|是否转正', 'bool', ''],
       ['durationMonths', '实习时长（月）', 'duration|internship duration|实习时长', 'num', ''],
     ],

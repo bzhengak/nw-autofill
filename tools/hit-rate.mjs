@@ -23,7 +23,7 @@ function profileForJudging() {
   return importMarkdown(fs.readFileSync(file, 'utf8')).profile;
 }
 import { getValueByPath, equivalentsOf } from '../core/profile-schema.js';
-import { normalize, core, boolLike } from '../core/matching.js';
+import { normalize, core, boolLike, AMBIGUOUS_SECTIONS } from '../core/matching.js';
 import { matchAdapter } from '../core/adapters.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -110,9 +110,14 @@ for (const file of forms) {
     } else {
       rightValue = valueEquivalent(actualText, truth);
     }
-    const ok = rightPath && rightValue;
+    // 判分标准写成数组且数组里全是「可重复经历槽位」= 承认"我们分辨不出这是哪一段"。
+    // 那这一栏就必须是黄字；若匹配器哪天敢把它当绿字直填，这里不能跟着一起骗自己。
+    // 而 ["others.personalSite","others.portfolio"] 这类"两个一次性字段填哪个都算对"不算歧义。
+    const slotAmbiguous = wantPaths.length > 1 && wantPaths.every(p => AMBIGUOUS_SECTIONS.has(String(p).split('.')[0]));
+    const falseGreen = slotAmbiguous && got && got.tier === 'auto';
+    const ok = rightPath && rightValue && !falseGreen;
     if (ok) correct++;
-    else rows.push({ name, wantPath, gotPath: got?.path || '(未分配)', gotValue: String(actualText || '').slice(0, 28), want: truth.slice(0, 28), status: got?.status || 'missing' });
+    else rows.push({ name, wantPath, gotPath: got?.path || '(未分配)', gotValue: String(actualText || '').slice(0, 28), want: truth.slice(0, 28), status: (got?.status || 'missing') + (falseGreen ? '/假绿' : '') });
   }
 
   const violations = [];

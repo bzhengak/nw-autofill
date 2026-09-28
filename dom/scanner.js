@@ -9,7 +9,10 @@ const CONTROL_SELECTOR = 'input, textarea, select, [contenteditable="true"], [ro
 const SECTION_HINTS = [
   { re: /(教育|学历|学校|院校|专业|graduate|education|academic|school)/i, key: 'education' },
   { re: /(实习|intern)/i, key: 'internship' },
-  { re: /(工作|任职|职业|经验|experience|employment|work|career)/i, key: 'work' },
+  // 裸 'work' 不能算工作经历：SF 的合规块标题是 "Work Authorization"（工作许可），
+  // 按 'work' 命中就会拿到 hint=work + 区块序号 0，于是「是否需要签证担保」被章节惩罚 ×0.75、
+  // 槽位惩罚 ×0.8，从 0.84 掉到 0.50 而整栏变成"我们没有这个词"。
+  { re: /(工作|任职|职业|经验|experience|employment|career|work\b(?![\s（]*(?:authorization|authorisation|permit|visa|status|permissible|mode|day|place)))/i, key: 'work' },
   { re: /(项目|project)/i, key: 'projects' },
   { re: /(校园|社团|学生|activity|campus|leadership)/i, key: 'campus' },
   { re: /(获奖|荣誉|奖项|award|honor|scholarship)/i, key: 'awards' },
@@ -254,6 +257,16 @@ function controlSignature(c) {
   return ctl.map(x => normRaw(x.getAttribute('name') || x.getAttribute('placeholder') || x.getAttribute('aria-label') || '')).filter(Boolean).join('|');
 }
 
+/** 容器里是不是只有"年/月"这类日期拆分框（自…至…这种时间行） */
+function isDatePartShell(c) {
+  const ctl = Array.from(c.querySelectorAll?.(CONTROL_SELECTOR) || []);
+  if (ctl.length < 2) return false;
+  return ctl.every(x => {
+    const t = normRaw(x.getAttribute('placeholder') || x.getAttribute('aria-label') || '');
+    return /^(year|年|yyyy|month|月|mm)$/i.test(t);
+  });
+}
+
 /** 重复经历区块：同一父级下结构相同、且含 ≥2 个控件的块才算"一条经历"。
  *  老式表格里一行只有一个输入框，那是"字段"而不是"区块"，误判会让 itemIndex 全体错位。 */
 function detectRepeatedBlocks(root) {
@@ -264,6 +277,9 @@ function detectRepeatedBlocks(root) {
     const own = Array.from(controls).filter(x => x.closest('[class*="item"],[class*="row"],[class*="card"],li,tr,fieldset') === c || x.parentElement === c);
     if (controls.length < 2 && own.length < 2) continue;
     if (controls.length > 12) continue;
+    // 只由年/月框组成的容器是一行"时间段"，不是两条重复经历。给它编号的话，
+    // Workday 的「自」会被当成第 0 段、「至」当成第 1 段，一个时间段被拆到两段经历上。
+    if (isDatePartShell(c)) continue;
     const key = `${c.parentElement ? (c.parentElement.className || c.parentElement.tagName) : ''}::${c.className || c.tagName}::${controls.length}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push({ c, sig: controlSignature(c) });
@@ -423,7 +439,61 @@ export function scanForm(root = document) {
   const out = fields.filter(f => f.label || f.name || f.id || f.placeholder || f.testId || f.autocomplete);
   renumberItemIndexBySection(out, blockIndex);
   markCompositeDatePairs(out);
+  markRecordOccurrences(out);
   return out;
+}
+
+/**
+ * 用"同名标签第几次出现"推断这是第几条记录。
+ *
+ * Moka 把每条经历摊平成若干个"一行一个控件"的 .mk-item，没有小节标题也没有卡片包裹，
+ * detectRepeatedBlocks 什么都找不到（每个容器只有 1 个控件），于是同块的 公司名称 / 职位名称 /
+ * 起止时间 各自去抢 profile 列，最后可能给出"A 公司的职位名称写进 B 公司那一栏"——
+ * 每个字段单独回读都是绿的，事后根本看不出来（Klook 实测：公司名称@11、@21 两次）。
+ *
+ * 做法：把"同一容器里的年/月对"折成一个单位（起止时间是同一条记录的开始与结束，不算两次出现），
+ * 然后按标签记出现次数，第 k 次出现 ⇒ 该章节的第 k 条记录。
+ * 只给"完全没有 DOM 区块序号"的字段补这个推断值，且 itemIndexSource 标成 'occurrence'：
+ * 它只是"第几条"的证据，不是"哪段经历"的证据（work 还是 internship 仍然不知道），
+ * 匹配器据此拒绝给绿字。
+ */
+function markRecordOccurrences(fields) {
+  // 自定义下拉/附件框不参与计数：Sea 的 "Contact Number *" 是一个 div[role=combobox] 加一个真空输入框
+  // 共用同一条 aria-labelledby，两个单位都算一次出现的话，真空输入框就成了"第 2 次出现"，
+  // 于是它去抢 family.1.phone（实测）。这些控件本来也永远不会被填。
+  const countable = f => f.kind !== 'combobox' && f.kind !== 'listbox' && f.kind !== 'file';
+  const hostUnit = new Map();          // 容器元素 -> units 下标（一个容器里的多个年月对算一个单位）
+  const units = [];
+  for (const f of fields) {
+    const label = normText(f.label);
+    if (!label || !countable(f)) continue;
+    if (f.datePair) {
+      const host = f.el?.parentElement;
+      if (host && hostUnit.has(host)) { hostUnit.get(host).members.push(f); continue; }
+      const u = { label, members: [f] };
+      if (host) hostUnit.set(host, u);
+      units.push(u);
+      continue;
+    }
+    units.push({ label, members: [f] });
+  }
+  const totals = new Map();
+  for (const u of units) totals.set(u.label, (totals.get(u.label) || 0) + 1);
+  // 只给"确实重复出现的标签"编号：一次性字段（学校/专业/姓名）本来就没有"第几条"可言，
+  // 给它们编 0 反而是无中生有（老式 fieldset 布局里三个不同章节的字段名互不重复，
+  // 一旦被编号就会把硕士槽位漂到本科槽位 —— scanner 回归里钉着这条）。
+  const seen = new Map();
+  for (const u of units) {
+    const k = seen.get(u.label) || 0;
+    seen.set(u.label, k + 1);
+    if ((totals.get(u.label) || 0) < 2) continue;
+    for (const f of u.members) f.recordIndex = k;
+  }
+  for (const f of fields) {
+    if (f.recordIndex == null || f.itemIndex != null) continue;
+    f.itemIndex = f.recordIndex;
+    f.itemIndexSource = 'occurrence';
+  }
 }
 
 /**
@@ -458,25 +528,61 @@ function blockOf(el, blockIndex) {
 
 
 /**
- * 标记"年 + 月"成对输入框（Moka 等的日期实现）：同一容器里既有 year 框又有 month 框时，
- * 单个框无法承载一个完整日期值，必须整组交给人工，否则会出现两个框被填成同一个值。
+ * 把"年 + 月"成对输入框配成一个逻辑日期（Moka / Workday / 自建门户都这么实现）。
+ *
+ * 为什么配对必须发生在扫描阶段：单个框装不下一个完整日期，而两个框的标签常常一模一样
+ * （Moka 的「起止时间」把 年/月/年/月 四个框塞在同一容器里，标签是同一句话）。
+ * 若只打个 compositeDate 标记就交给匹配器，两个框会各自去抢 profile 的日期列，
+ * 结果是年份框拿到月份值、或开始/结束对调 —— 所以这里直接给出组号与 start/end 角色，
+ * 让匹配器把「一组」当成「一个问题」规划，落笔时再拆成两笔。
  */
+const DATE_ROLE_START = /(start|begin|joining|\bfrom\b|入[职学]|开始|起始|起|自)/i;
+const DATE_ROLE_END = /(end|\bto\b|until|leaving|expiry|离|结束|截止|止|至)/i;
+
 function markCompositeDatePairs(fields) {
-  const byParent = new Map();
-  for (const f of fields) {
-    if (!f.el?.parentElement) continue;
-    const key = f.el.parentElement;
-    if (!byParent.has(key)) byParent.set(key, []);
-    byParent.get(key).push(f);
+  const partOf = f => {
+    if (f.kind !== 'text' && f.kind !== 'number') return null;
+    const hay = [f.placeholder, f.label].map(normText);
+    if (hay.some(t => /^(year|年|yyyy)$/i.test(t))) return 'year';
+    if (hay.some(t => /^(month|月|mm)$/i.test(t))) return 'month';
+    return null;
+  };
+  // 先打标：落了单的框（只有年没有月）也仍然是"日期的一部分"，
+  // 不标就会被当成普通文本框，把整个日期写进年份框里。
+  const bucketed = [];
+  for (const [i, f] of fields.entries()) {
+    const part = partOf(f);
+    if (!part) continue;
+    f.compositeDate = part;
+    if (f.el?.parentElement) bucketed.push({ i, f, part });
   }
-  for (const group of byParent.values()) {
-    const isYear = f => /^(year|年|yyyy)$/i.test(normText(f.placeholder)) || /^(year|年|yyyy)$/i.test(normText(f.label));
-    const isMonth = f => /^(month|月|mm)$/i.test(normText(f.placeholder)) || /^(month|月|mm)$/i.test(normText(f.label));
-    const years = group.filter(f => f.kind === 'text' && isYear(f));
-    const months = group.filter(f => f.kind === 'text' && isMonth(f));
-    if (years.length && months.length) {
-      for (const f of years) f.compositeDate = 'year';
-      for (const f of months) f.compositeDate = 'month';
+  // 分桶：同父容器 + 同标签，才认定是"同一句问题拆出来的几个框"
+  const buckets = new Map();
+  for (const b of bucketed) {
+    const key = `${b.f.el.parentElement.tagName}.${b.f.el.parentElement.className}§${normText(b.f.label)}`;
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(b);
+  }
+  let seq = 0;
+  for (const bucket of buckets.values()) {
+    const years = bucket.filter(b => b.part === 'year');
+    const months = bucket.filter(b => b.part === 'month');
+    const n = Math.min(years.length, months.length);
+    if (!n) continue;
+    const labelText = normText(bucket[0].f.label);
+    // 标签自己说清了是起还是止（Workday 的「自」/「至」），多组也不含糊；
+    // 只说「起止时间」的（Moka）按文档顺序排：第一组是起，第二组是止 —— 顺序是推断出来的，
+    // 所以 roleSource 记 'order'，让匹配器降级为待复核。
+    const roleFromLabel = !labelText ? null
+      : DATE_ROLE_START.test(labelText) && !DATE_ROLE_END.test(labelText) ? 'start'
+      : DATE_ROLE_END.test(labelText) && !DATE_ROLE_START.test(labelText) ? 'end' : null;
+    for (let k = 0; k < n; k++) {
+      const id = `dp${seq++}`;
+      const role = roleFromLabel || (years.length > 1 ? (k === 0 ? 'start' : 'end') : null);
+      const roleSource = roleFromLabel ? 'label' : (role ? 'order' : null);
+      for (const [b, part] of [[years[k], 'year'], [months[k], 'month']]) {
+        b.f.datePair = { id, part, role, roleSource, ordinal: k, size: years.length };
+      }
     }
   }
 }

@@ -36,9 +36,12 @@ test('空 profile：高频槽位全部列成缺口，并按被问次数排序', 
   assert.equal(a.filled, 0);
   assert.equal(a.rate, 0);
   assert.equal(a.missingHigh.length, Object.keys(HIGH.paths).length);
-  assert.equal(a.missingHigh[0].path, 'education.0.major');
-  assert.equal(a.missingHigh[0].label, '专业');
-  assert.equal(a.missingHigh[0].sectionZh, '教育经历');
+  assert.equal(a.missingHigh[0].askedBy, Math.max(...a.missingHigh.map(m => m.askedBy)));
+  // 首位是"毕业时间"还是"专业"取决于判分标准里各被问几次（两者并列），
+  // 这里只钉住"第一名必须拿满次数、且属于教育经历"，不钉死并列时的先后。
+  assert.ok(['education.0.gradDate', 'education.0.major'].includes(a.missingHigh[0].path),
+    `并列第一应当出自教育经历的两个 9 次字段，实得 ${a.missingHigh[0].path}`);
+  assert.ok(a.missingHigh[0].label && a.missingHigh[0].sectionZh === '教育经历');
   for (let i = 1; i < a.missingHigh.length; i++) {
     assert.ok(a.missingHigh[i - 1].askedBy >= a.missingHigh[i].askedBy, '缺口必须按被问次数降序');
   }

@@ -3,7 +3,7 @@ import { importMarkdown } from '../core/importers/markdown.js';
 import { auditProfile, editorModel, advice } from '../core/coverage.js';
 // 端点/Key 的判定规则与 service worker 用同一份代码：这里只用于即时反馈，
 // 真正的把关在 background（哪怕这个文件被改成永远不校验，请求也发不出去）。
-import { normalizeBaseUrl, sanityCheckKey } from '../core/ai-security.js';
+import { normalizeBaseUrl, sanityCheckKey, findLeaksInExport } from '../core/ai-security.js';
 
 const $ = id => document.getElementById(id);
 let tabId = null;
@@ -37,12 +37,14 @@ async function refresh() {
   if (state?.settings?.aiModel) $('aiModel').value = state.settings.aiModel;
   aiKeyPresent = Boolean(state?.hasAiKey);
   aiKeyBoundOrigin = state?.aiKeyOrigin || '';
+  $('aiPersist').checked = Boolean(state?.aiKeyPersisted);
   if (aiKeyPresent) {
-    $('aiKeyState').textContent = `本次会话已有 Key（长度 ${state.aiKeyLength} · 绑定 ${state.aiKeyOrigin}）· 重启浏览器即失效`;
+    $('aiKeyState').textContent = `已有 Key（长度 ${state.aiKeyLength} · 绑定 ${state.aiKeyOrigin}）`
+      + (state.aiKeyPersisted ? ' · 记住在本机（明文落在浏览器 profile 里，点「清除」删除）' : ' · 只存本次会话，重启即失效');
     // 只有当前 origin 与绑定 origin 一致、且用户之前确认过，才算已授权
     $('aiConsent').checked = Boolean(state.settings?.aiConsentOrigin) && state.settings.aiConsentOrigin === state.aiKeyOrigin;
   } else {
-    $('aiKeyState').textContent = '当前会话没有 Key。';
+    $('aiKeyState').textContent = '当前没有 Key。';
     $('aiConsent').checked = false;
   }
   $('btnClearKey').disabled = !aiKeyPresent;
@@ -278,7 +280,8 @@ $('btnSaveKey').onclick = async () => {
   if (!key) { $('aiStatus').textContent = 'Key 输入框是空的，没有保存'; return; }
   const shape = sanityCheckKey(key);
   if (!shape.ok) { $('aiStatus').textContent = KEY_ERROR_ZH[shape.error] || 'Key 形状不对，没有保存'; return; }
-  const res = await chrome.runtime.sendMessage({ type: 'nw:saveAiKey', key, baseUrl: $('aiBaseUrl').value });
+  const persist = $('aiPersist').checked;
+  const res = await chrome.runtime.sendMessage({ type: 'nw:saveAiKey', key, baseUrl: $('aiBaseUrl').value, persist });
   if (!res?.ok) {
     const why = res?.error?.startsWith('endpoint_') ? ENDPOINT_ERROR_ZH[res.error.slice(9)] || 'Base URL 不合法，Key 无处可去' : '保存失败';
     $('aiStatus').textContent = why;
@@ -287,14 +290,16 @@ $('btnSaveKey').onclick = async () => {
   aiKeyPresent = true;
   aiKeyBoundOrigin = res.boundOrigin;
   // 只报长度与 origin：任何 Key 字符都不回到 DOM
-  $('aiKeyState').textContent = `本次会话已有 Key（长度 ${res.length}${res.secure ? '' : ' · 注意：本机地址，明文传输'}）· 绑定 ${res.boundOrigin} · 重启浏览器即失效`;
-  $('aiStatus').textContent = 'Key 已存入本次会话，不写入导出文件';
+  $('aiKeyState').textContent = `Key 已保存（长度 ${res.length}）· 绑定 ${res.boundOrigin}`
+    + (persist ? ' · 明文存在浏览器 profile，重启后仍在' : ' · 只存本次会话，重启即失效')
+    + (res.secure ? '' : ' · 注意：目标是本机 http 地址，Key 走明文链路');
+  $('aiStatus').textContent = persist ? 'Key 已记住（本机明文，不进导出文件）' : 'Key 已存入本次会话';
   aiUiSync();
 };
 $('btnClearKey').onclick = async () => {
   await chrome.runtime.sendMessage({ type: 'nw:saveAiKey', key: '' });
   aiKeyPresent = false; aiKeyBoundOrigin = '';
-  $('aiKeyState').textContent = '当前会话没有 Key。';
+  $('aiKeyState').textContent = '当前没有 Key（会话与本机两个位置都已清除）。';
   $('aiConsent').checked = false;
   $('aiStatus').textContent = 'Key 已清除';
   aiUiSync();
@@ -431,6 +436,13 @@ $('btnProbeCopy').onclick = async () => {
   catch { $('probeOut').select(); document.execCommand('copy'); $('probeMeta').textContent = '已选中并尝试复制。'; }
 };
 $('btnProbeSave').onclick = () => {
+  // 导出守卫：这份文件是要粘贴给别人看的。今天它只含结构，但"只含结构"必须是被检查的事实，
+  // 而不是"我记得没写进去"。命中任何像 Key 的东西就拒绝导出。
+  const leaks = findLeaksInExport(probeJson, {});
+  if (leaks.length) {
+    $('probeMeta').textContent = '已拒绝导出：内容里出现像 API Key 的字符串（' + leaks.map(l => l.key).join(', ') + '）';
+    return;
+  }
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([probeJson], { type: 'application/json' }));
   a.download = 'page-structure-' + new Date().toISOString().slice(0, 10) + '.json';

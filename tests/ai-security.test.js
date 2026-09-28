@@ -4,7 +4,27 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, redact, SETTING_KEYS } from '../core/ai-security.js';
+import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, redact, SETTING_KEYS, SECRETS_BUCKET, findLeaksInExport } from '../core/ai-security.js';
+
+test('持久化 Key 只能进独立桶：SECRETS_BUCKET 不在 settings 白名单里', () => {
+  assert.equal(SECRETS_BUCKET, 'aiSecrets');
+  assert.ok(!SETTING_KEYS.includes(SECRETS_BUCKET), 'settings 会被导出 JSON 带走，Key 不能住在里面');
+  assert.ok(!SETTING_KEYS.includes('aiKey'));
+  // 就算有人把 Key 塞进 settings 补丁，也照样被拒
+  const { clean } = sanitizeSettings({ aiKey: 'sk-abcdefghijklmnop', aiModel: 'x' });
+  assert.deepEqual(Object.keys(clean), ['aiModel']);
+});
+
+test('导出守卫：内容里带 Key（或带 Key 形状的东西）就拒绝导出', () => {
+  const secret = 'sk-abcdefghijklmnop1234567890';
+  const probe = JSON.stringify({ url: 'https://x.test', fields: [{ label: '姓名', kind: 'text' }] });
+  assert.deepEqual(findLeaksInExport(probe, {}), [], '干净的结构导出不该被误拦');
+  assert.ok(findLeaksInExport({ a: 1, b: secret }, {}).length >= 1, '形状匹配没抓到');
+  assert.ok(findLeaksInExport({ note: '看这个 ' + secret }, { aiKey: secret }).some(l => l.key === 'aiKey'));
+  // 泄漏清单本身只带前缀，不能把整串 Key 再抄一遍到错误信息里
+  const report = JSON.stringify(findLeaksInExport({ b: secret }, { aiKey: secret }));
+  assert.ok(!report.includes(secret), '错误信息里不该出现完整 Key');
+});
 
 test('Base URL 只收 https；本机例外；userinfo / query / 怪协议一律拒', () => {
   assert.equal(normalizeBaseUrl('https://api.openai.com/v1').ok, true);

@@ -140,6 +140,13 @@
       <button id="btnSaveKey">保存 Key</button>
       <button id="btnClearKey">清除</button>
     </div>
+    <label class="chk"><input type="checkbox" id="aiPersist">记住 Key，别每次重开浏览器都让我输一遍</label>
+    <p class="hint" id="aiPersistHint">
+      勾上后 Key 会写进浏览器自己的 profile 目录（<code>chrome.storage.local</code> 的独立 <code>aiSecrets</code> 桶）。
+      扩展拿不到系统钥匙串，所以它是<b>明文落盘</b>：任何能读到你这个 Windows 账户磁盘的人都能取出。
+      它<b>不在 settings 里</b>，因此不会随「下载空白模板 / 编辑导入 JSON / 导出本页结构」离开本机；
+      用「清除」两个位置一起删。公用电脑或别人能碰你电脑的情况，建议别勾。
+    </p>
     <label class="chk"><input type="checkbox" id="aiConsent">我确认把 Key 与字段名发往：<b id="aiConsentTarget">（先填 Base URL）</b></label>
     <p class="hint" id="aiKeyState">当前会话没有 Key。</p>
     <div class="row">

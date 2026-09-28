@@ -48,10 +48,18 @@ Chrome / Edge MV3 扩展。在公司自建网申页面上，按你维护的一�
 
 判定规则全部写在 `core/ai-security.js`（纯函数、离线单测覆盖），service worker 只是执行者：
 
-- **只进 session**：Key 存 `chrome.storage.session`，且代码显式钉成 `TRUSTED_CONTEXTS` 访问级别
+- **默认只进 session**：Key 存 `chrome.storage.session`，且代码显式钉成 `TRUSTED_CONTEXTS` 访问级别
   （默认也是这个，写死是免得将来有人为了调试改成让注入页面的模块也读得到）。重启浏览器即失效。
-- **进不了持久化设置**：`nw:saveSettings` 走白名单，名字里带 `key/token/secret/password/auth` 的键
-  一律拒收，并把拒收原因回给界面——静默吞掉只会让人以为"Key 保存成功了"。
+- **可以记住 Key（可选，默认不勾）**：勾上后写进 `chrome.storage.local` 的**独立顶层桶 `aiSecrets`**，
+  重启仍在、不必每次重录。代价说白：扩展拿不到系统钥匙串（要走 DPAPI/Keychain 就得装 native host，
+  违反"纯浏览器插件"这条边界），所以它是**明文落盘**在你 Windows 账户的浏览器 profile 目录里——
+  能读那个目录的人（同账户、备份盘、取证镜像）就能取出它。公用电脑或别人碰得到你的电脑就别勾。
+  「清除」一次把 session 与 local 两个位置都删掉，不留"关了但还有一份"的半状态。
+- **进不了会被导出的地方**：`nw:saveSettings` 走白名单，名字里带 `key/token/secret/password/auth` 的键
+  一律拒收并把原因回给界面（静默吞掉只会让人以为"Key 保存成功了"）；`aiSecrets` 这个桶名本身也不在
+  白名单里，所以 Key 永远不可能混进 settings。另外「导出本页字段结构」在写文件前过一次
+  `findLeaksInExport()`：出现完整 Key 或 `sk-…`/`ghp_…`/`AKIA…` 这类形状就**拒绝导出**，
+  且泄漏清单里只带前 6 个字符。「下载空白模板」导出的永远是空模板。
 - **Origin 绑定**：录入 Key 时记下当时的 Base URL origin。之后改了 Base URL，老 Key 不会跟着发去
   新地址，必须重新录一次；「我确认把 Key 与字段名发往 `https://…`」这个勾必须打上且与当前 origin
   一致，Base URL 一变勾就作废。

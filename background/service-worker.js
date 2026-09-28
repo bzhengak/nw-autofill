@@ -10,22 +10,30 @@
 
 import { compileAdapters } from '../core/adapters.js';
 import { buildAiRequest, assertNoProfileValues, parseAiResponse, aiSlotCatalog } from '../core/ai.js';
-import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, redact } from '../core/ai-security.js';
+import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, redact, findLeaksInExport, SECRETS_BUCKET } from '../core/ai-security.js';
 
 const AI_TIMEOUT_MS = 20000;
 const AI_MAX_BYTES = 12000;        // 请求体上限：只发字段名与槽位目录，超量说明构造出了问题
 const AI_MAX_OUT = 30;             // 一次最多问 30 个缺口，避免把整页字段都送出去
 
-/** Key 与它的绑定 origin 一起放 session：重启即失效，也不会被 settings 导出带走 */
+/**
+ * Key 的读取顺序：先看 session（本次会话），再看用户勾了"记住 Key"时写入的 local.aiSecrets。
+ * local.aiSecrets 是独立的顶层桶，**不在 settings 里** —— settings 会被导出 JSON 带走。
+ */
 async function readAiSession() {
-  try {
-    const s = await chrome.storage.session.get(['aiKey', 'aiKeyOrigin']);
-    return { key: s.aiKey || '', keyOrigin: s.aiKeyOrigin || '' };
-  } catch { return { key: '', keyOrigin: '' }; }
+  const sess = await chrome.storage.session.get(['aiKey', 'aiKeyOrigin']).catch(() => ({}));
+  if (sess.aiKey) return { key: sess.aiKey, keyOrigin: sess.aiKeyOrigin || '', persisted: false };
+  const bucket = (await chrome.storage.local.get([SECRETS_BUCKET]))[SECRETS_BUCKET];
+  if (bucket?.aiKey) return { key: bucket.aiKey, keyOrigin: bucket.aiKeyOrigin || '', persisted: true };
+  return { key: '', keyOrigin: '', persisted: false };
 }
-async function writeAiSession(key, keyOrigin) {
-  if (!key) { await chrome.storage.session.remove(['aiKey', 'aiKeyOrigin']); return; }
-  await chrome.storage.session.set({ aiKey: key, aiKeyOrigin: keyOrigin });
+async function writeAiSession(key, keyOrigin, persist) {
+  // 先清干净两个桶，再按选择写一个 —— 否则会留下"关掉了但 session 里还有一份"的半状态
+  await chrome.storage.session.remove(['aiKey', 'aiKeyOrigin']).catch(() => {});
+  await chrome.storage.local.remove([SECRETS_BUCKET]);
+  if (!key) return;
+  if (persist) await chrome.storage.local.set({ [SECRETS_BUCKET]: { aiKey: key, aiKeyOrigin: keyOrigin } });
+  else await chrome.storage.session.set({ aiKey: key, aiKeyOrigin: keyOrigin });
 }
 
 /** 组装请求；把"取值不许外发"的自检放在真正出网之前 */
@@ -197,10 +205,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === 'nw:getState') {
       const { profile, settings } = await chrome.storage.local.get(['profile', 'settings']);
       const sess = await readAiSession();
-      // Key 本身永不回传，只回"有没有"和"绑在哪个 origin"
+      // Key 本身永不回传，只回"有没有"、"绑在哪个 origin"、"是否已持久化"
       sendResponse({
         ok: true, profile: profile || null, settings: settings || {},
-        hasAiKey: Boolean(sess.key), aiKeyLength: sess.key ? sess.key.length : 0, aiKeyOrigin: sess.keyOrigin,
+        hasAiKey: Boolean(sess.key), aiKeyLength: sess.key ? sess.key.length : 0,
+        aiKeyOrigin: sess.keyOrigin, aiKeyPersisted: sess.persisted,
         tabId,
       });
     } else if (msg.type === 'nw:aiPreview' || msg.type === 'nw:aiAsk') {
@@ -244,17 +253,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         rawChars: String(call.content || '').length,
       });
     } else if (msg.type === 'nw:saveAiKey') {
-      // Key 只进 session，且必须绑定一个合法 origin：
-      // 空串就是清除；Base URL 没填或非法时拒绝录入（否则 Key 无处可去，只能等到将来某个 URL 上）。
+      // Key 只进 session 或独立的 local.aiSecrets 桶；传空串就是"两个桶都清掉"
       const key = String(msg.key || '').trim();
-      if (!key) { await writeAiSession('', ''); sendResponse({ ok: true, hasAiKey: false }); return; }
+      if (!key) { await writeAiSession('', '', false); sendResponse({ ok: true, hasAiKey: false }); return; }
       const shape = sanityCheckKey(key);
       if (!shape.ok) { sendResponse({ ok: false, error: shape.error }); return; }
       const target = normalizeBaseUrl(msg.baseUrl);
       if (!target.ok) { sendResponse({ ok: false, error: `endpoint_${target.error}` }); return; }
-      await writeAiSession(key, target.origin);
+      await writeAiSession(key, target.origin, msg.persist === true);
       // 只回长度与 origin，绝不回任何 Key 字符
-      sendResponse({ ok: true, hasAiKey: true, length: shape.length, boundOrigin: target.origin, secure: target.secure });
+      sendResponse({
+        ok: true, hasAiKey: true, length: shape.length, boundOrigin: target.origin,
+        secure: target.secure, persisted: msg.persist === true,
+      });
     } else if (msg.type === 'nw:saveProfile') {
       await chrome.storage.local.set({ profile: msg.profile });
       sendResponse({ ok: true });

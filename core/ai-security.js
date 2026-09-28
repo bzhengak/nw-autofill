@@ -78,6 +78,33 @@ export function maySendKey({ keyOrigin, targetOrigin, consentOrigin }) {
   return { ok: true };
 }
 
+/**
+ * Key 若要持久化，只能进这个**独立的桶**（storage.local 的顶层键 aiSecrets），
+ * 绝不进 settings —— 因为 settings/profile 是会被"导出 JSON"带走的东西，
+ * 而 chrome.storage.local 是明文落盘，扩展拿不到系统钥匙串（要走 DPAPI 就得装
+ * native host，那违反"纯浏览器插件"的边界）。
+ * 便利与暴露面就换在这里：记住 Key = 明文留在本机浏览器 profile 里，直到你点清除。
+ */
+export const SECRETS_BUCKET = 'aiSecrets';
+
+const SECRET_VALUED = /(sk-[A-Za-z0-9_\-]{12,}|AKIA[0-9A-Z]{16,}|ghp_[A-Za-z0-9]{20,}|xox[baprs]-)/;
+
+/**
+ * 导出守卫：任何要写文件 / 复制到剪贴板的对象，先扫一遍有没有把 Key 带进去。
+ * 命中就返回泄漏清单，调用方必须拒绝导出 —— 宁可让人来问"为什么导不出"，
+ * 也不能让人把 Key 发到聊天窗口里。
+ */
+export function findLeaksInExport(payload, secrets = {}) {
+  const text = JSON.stringify(payload ?? null);
+  const leaks = [];
+  for (const [k, v] of Object.entries(secrets || {})) {
+    const s = String(v || '');
+    if (s.length >= 12 && text.includes(s)) leaks.push({ key: k, sample: s.slice(0, 6) });
+  }
+  const m = text.match(SECRET_VALUED);
+  if (m) leaks.push({ key: '(形状匹配)', sample: m[1].slice(0, 6) });
+  return leaks;
+}
 /** 日志与错误信息里一律不许出现 Key：任何要写出去的东西先过这道 */
 export function redact(text, secret) {
   const s = String(secret || '');

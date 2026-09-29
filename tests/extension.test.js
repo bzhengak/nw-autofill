@@ -4,6 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = f => fileURLToPath(new URL(f, import.meta.url));
@@ -35,13 +36,47 @@ function coveredBy(pat, p) {
   return re.test(p);
 }
 
-test('content.js 动态 import 的模块都存在，且在 web_accessible_resources 里', () => {
-  const src = read('../dom/content.js');
-  const paths = [...src.matchAll(/import\(u\('([^']+)'\)\)/g)].map(m => m[1]);
-  assert.ok(paths.length >= 5, `没抓到动态 import（${paths.length}）`);
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+/** 收集从入口出发、沿静态 import 能走到的全部模块（相对仓库根的路径） */
+function moduleGraph(entries) {
+  const seen = new Set();
+  const resolve = (fromFile, spec) => {
+    if (!spec.startsWith('.')) return null;                       // 扩展 API 之外的东西不管
+    const abs = new URL(spec, new URL(`../${fromFile}`, import.meta.url));
+    if (abs.protocol !== 'file:') return null;
+    return path.relative(repoRoot, fileURLToPath(abs)).split(path.sep).join('/');
+  };
+  const stack = [...entries];
+  while (stack.length) {
+    const f = stack.shift();
+    if (seen.has(f) || !fs.existsSync(root(`../${f}`))) continue;
+    seen.add(f);
+    const src = fs.readFileSync(root(`../${f}`), 'utf8');
+    for (const m of src.matchAll(/(?:^|\n)\s*(?:import|export)[\s\S]{0,200}?from\s+['"](\.[^'"]+)['"]/g)) {
+      const next = resolve(f, m[1]);
+      if (next) stack.push(next);
+    }
+    // 两类写法都要认：普通 `import('./x.js')`，和 content.js 的 `import(u('dom/scanner.js'))`
+    // —— u() 给的是"相对扩展根"的路径，不认这一类就等于图只有一层，测试形同虚设。
+    for (const m of src.matchAll(/import\(\s*u\(\s*['"]([^'"]+)['"]\s*\)\s*\)/g)) stack.push(m[1]);
+    for (const m of src.matchAll(/import\(\s*['"](\.[^'"]+)['"]\s*\)/g)) {
+      const next = resolve(f, m[1]);
+      if (next) stack.push(next);
+    }
+  }
+  return [...seen];
+}
+
+test('内容脚本能触达的每个模块都必须在 web_accessible_resources 里（走完整 import 图）', () => {
+  // 曾经只检查 content.js 里字面写了的那几个路径：给 dom/filler.js 加一句
+  // import './select-opener.js' 就静默漏掉，真实浏览器里整个扫描直接挂。
+  const graph = moduleGraph(['dom/content.js']);
+  assert.ok(graph.length >= 8, `import 图只抓到 ${graph.length} 个文件，多半是解析写错了`);
   const war = (manifest.web_accessible_resources || []).flatMap(e => e.resources || []);
-  for (const p of paths) {
-    assert.ok(fs.existsSync(root(`../${p}`)), `${p} 不存在`);
+  for (const p of graph) {
+    if (p === 'dom/content.js') continue;                          // 入口本身由 content_scripts 注入
+    assert.ok(fs.existsSync(root(`../${p}`)), `${p} 被引用但不存在`);
     assert.ok(war.some(pat => coveredBy(pat, p)), `${p} 未列入 web_accessible_resources，运行时 import 会被拒`);
   }
 });

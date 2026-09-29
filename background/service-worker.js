@@ -159,32 +159,53 @@ async function sendToTab(tabId, msg) {
     // 现状本来就不可靠，宁可明确不支持，也不误写。
     if (msg.type !== 'nw:probe') return await chrome.tabs.sendMessage(tabId, { ...msg, __nwFrame: 'all' }, { frameId: 0 });
 
-    // 探针要遍历该标签页的**全部 frame**再挑一个，而不是"谁先答用谁"：
-    // SF/汇丰 这类页面里 match.adsrvr.org 的 cookie-sync 框秒回 0 控件，
-    // 真表单框（document_idle + 动态 import）慢半拍，结果导出的是广告框。
+    // 探针要遍历该标签页的**全部 frame**：SF/汇丰 这类页面里 match.adsrvr.org 的 cookie-sync 框
+    // 秒回 0 控件，真表单框（document_idle + 动态 import）慢半拍。
+    //
+    // 但"挑一个最富的框"不够：分步/向导式简历（智联校园、部分自建门户）把表单拆在
+    // 多个首方 iframe 里，只取一个就字段不全，看起来像"导出失败"。
+    // 所以改成：按 frame 全收，凡是**有控件且不是明显跟踪域**的框都合并进导出，
+    // 每个字段带上它来自哪个 frame —— 取错了框时一眼看得出来，而不是静默少一批。
     const frames = await chrome.webNavigation.getAllFrames({ tabId }).catch(() => null);
     const ids = frames?.length ? frames.map(f => f.frameId) : [0];
     const urls = new Map((frames || []).map(f => [f.frameId, f.url || '']));
-    let best = null, bestQuality = -1;
+    const JUNK_FRAME = /(adsrvr|doubleclick|cookie|consent|onetrust|trustarc|quantserve|facebook|analytics|gtm|google-analytics)/i;
+    const replies = [];
     const seen = [];
     for (const frameId of ids) {
       const res = await replyFrom(tabId, frameId, msg);
       const q = probeQuality(res);
-      seen.push({
-        frameId,
-        url: String(res?.data?.url || urls.get(frameId) || '').slice(0, 120),
-        controls: Number(res?.data?.totals?.controls) || 0,
-        usable: q >= 0,
-      });
-      if (q > bestQuality) { bestQuality = q; best = res; }
+      const controls = Number(res?.data?.totals?.controls) || 0;
+      seen.push({ frameId, url: String(res?.data?.url || urls.get(frameId) || '').slice(0, 120), controls, usable: q >= 0 });
+      if (res?.ok && controls > 0 && !JUNK_FRAME.test(String(res.data?.url || urls.get(frameId) || ''))) replies.push(res);
     }
-    if (best) {
-      // 把"从哪个框取的结构、还有哪些框是空的"一起带出去：导出错了框时一眼能看出来
-      best.frameReport = { chosen: best.__frameId ?? null, tried: seen };
-      delete best.__frameId;
-      return best;
+    // 全是跟踪框/全是 0 时退回"控件最多的那个框"，至少把空结果和 frame 地图交出去，别报成扩展坏了
+    const richest = seen.slice().sort((a, b) => b.controls - a.controls)[0];
+    if (!replies.length) {
+      const fallback = richest && await replyFrom(tabId, richest.frameId, msg);
+      if (fallback?.ok) { fallback.frameReport = { chosen: richest.frameId, tried: seen, merged: 0 }; delete fallback.__frameId; return fallback; }
+      return await chrome.tabs.sendMessage(tabId, { ...msg, __nwFrame: 'all' });
     }
-    return await chrome.tabs.sendMessage(tabId, { ...msg, __nwFrame: 'all' });
+    replies.sort((a, b) => {
+      if ((a.__frameId === 0) !== (b.__frameId === 0)) return a.__frameId === 0 ? -1 : 1;   // 顶层框优先
+      return (Number(b.data?.totals?.controls) || 0) - (Number(a.data?.totals?.controls) || 0);
+    });
+    const [head, ...rest] = replies;
+    const merged = { ...head, __frameId: head.__frameId };
+    merged.data = {
+      ...head.data,
+      frames: replies.map(r => ({ frameId: r.__frameId, url: String(r.data?.url || '').slice(0, 140), controls: Number(r.data?.totals?.controls) || 0 })),
+      fields: [...(head.data.fields || []), ...rest.flatMap(r => (r.data.fields || []).map(f => ({ ...f, frameId: r.__frameId })))].slice(0, 400),
+      sections: [...new Set(replies.flatMap(r => r.data.sections || []))].slice(0, 32),
+      componentLibs: Object.fromEntries(replies.reduce((m, r) => {
+        for (const [k, v] of Object.entries(r.data.componentLibs || {})) m.set(k, (m.get(k) || 0) + (Number(v) || 0));
+        return m;
+      }, new Map())),
+    };
+    merged.data.totals = { ...merged.data.totals, fields: merged.data.fields.length, frames: replies.length };
+    merged.frameReport = { chosen: head.__frameId ?? 0, tried: seen, merged: replies.length };
+    delete merged.__frameId;
+    return merged;
   } catch (err) {
     return { ok: false, error: String(err?.message || err), noContentScript: true };
   }

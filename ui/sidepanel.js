@@ -413,6 +413,7 @@ $('btnProbe').onclick = async () => {
     componentLibs: d.componentLibs, topLibrary: d.topLibrary, totals: d.totals,
     sections: d.sections, fields: d.fields,
     probeBuild: d.probeBuild, isTopFrame: d.isTopFrame, iframeMap: d.iframeMap,
+    emptyHints: d.totals?.controls ? undefined : d.emptyHints,
     frames: fr?.tried || undefined,
     note: d.note,
   }, null, 1);
@@ -423,7 +424,7 @@ $('btnProbe').onclick = async () => {
     + ' · 控件 <b>' + d.totals.controls + '</b> · 可见 <b>' + d.totals.visible + '</b> · 下拉 ' + d.totals.selects
     + ' · 单选 ' + d.totals.radios + ' · 文件 ' + d.totals.fileInputs + ' · iframe ' + d.totals.iframes
     + ' · Shadow ' + d.totals.shadowHosts + ' · 组件库判定: <b>' + d.topLibrary + '</b>'
-    + (fr ? ' · 取自 frame#' + fr.chosen + '（共遍历 ' + fr.tried.length + ' 个框）' : '');
+    + (fr ? ` · 取自 frame#${fr.chosen}${fr.merged > 1 ? ' 并合并 ' + fr.merged + ' 个框' : ''}（共遍历 ${fr.tried.length} 个框）` : '');
   // 空结果必须自己说清"取的是哪个框"，否则用户只知道失败、维护者只能靠猜
   if (!d.totals.controls) {
     const picked = fr?.tried?.find(x => x.frameId === fr.chosen);
@@ -434,10 +435,16 @@ $('btnProbe').onclick = async () => {
         : '（探针是旧版：请在 edge://extensions 点「重新加载」，关掉侧边栏再重开，然后刷新目标页面）');
     const sub = (d.iframeMap || []).filter(x => x.sameOrigin && x.controls > 0)
       .map(x => '同源 iframe 有 ' + x.controls + ' 个控件（name=' + (x.frameName || '无名') + '）');
+    // 分步向导（智联校园等）要先点『填写/继续填写』才渲染表单：直接把页面上的按钮文案念出来，
+    // 而不是让人对着"0 个控件"猜扩展坏没坏。
+    const gates = (d.emptyHints?.gateButtons || []).filter(Boolean);
     $('probeMeta').innerHTML += '<br><span style="color:var(--warn-fg);background:var(--warn-bg);border:1px solid var(--warn-line);border-radius:4px;padding:2px 6px;display:inline-block">'
       + '这个框里没有表单控件（URL: ' + escapeHtml(picked?.url || d.url || '未知') + '）。'
       + escapeHtml(framesTxt)
       + (sub.length ? '。' + escapeHtml(sub.join('；')) + ' → 表单可能在首方 iframe 里' : '')
+      + (gates.length ? '。页面上有像入口的按钮：「' + escapeHtml(gates.slice(0, 5).join('」「')) + '」→ 先点它出现表单，再点一次导出' : '')
+      + (d.emptyHints?.loginWall ? '。页面文案疑似登录墙，先确认已登录' : '')
+      + (d.emptyHints?.customElementHosts ? `。另有 ${d.emptyHints.customElementHosts} 个自定义元素拿不到 shadow（可能是 closed shadow，探针读不到内部）` : '')
       + '。把这一段一起发我。</span>';
   }
 };

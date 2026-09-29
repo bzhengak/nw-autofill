@@ -8,7 +8,7 @@ const CONTROL_SELECTOR = 'input, textarea, select, [contenteditable="true"], [ro
 const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
 // 导出物自带版本号：用户贴回来的 JSON 能直接证明"他浏览器里跑的是哪一版探针"，
 // 不用再靠"你是不是重载了扩展"这种对话去猜。
-const PROBE_BUILD = '2026-09-27-1';
+const PROBE_BUILD = '2026-09-29-1';
 
 function escapeId(id) {
   return (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(id) : String(id).replace(/([^\w-])/g, '\\$1');
@@ -216,6 +216,23 @@ export function probePageStructure(doc, locationHref = '', win = doc.defaultView
     sections: [...new Set([...doc.querySelectorAll('h1,h2,h3,h4,legend,caption,[class*="step"],[role="tab"]')]
       .map(e => norm(e.textContent)).filter(t => t && t.length <= 16))].slice(0, 24),
     iframeMap,
+    // 扫到 0 个控件时，"为什么"必须自己说出来。多页向导（智联校园、SF 的分步简历）
+    // 要先点『填写/继续填写』才渲染表单；这类情况以前只回一个空数组，
+    // 用户以为是扩展坏了，其实是这一页还没到表单那一步。
+    emptyHints: (() => {
+      const gate = /(填写|继续|下一步|去完善|开始|编辑|添加|上传|next|continue|edit|fill|get started)/i;
+      const clickables = [...doc.querySelectorAll('button, [role="button"], a[href], .btn, [class*="button"]')]
+        .map(b => norm(b.textContent).slice(0, 20))
+        .filter(t => t && t.length <= 20 && gate.test(t));
+      const customHosts = [...doc.querySelectorAll('*')].filter(e => e.tagName.includes('-') && !e.shadowRoot).length;
+      return {
+        gateButtons: [...new Set(clickables)].slice(0, 8),
+        customElementHosts: customHosts,
+        readyState: doc.readyState,
+        bodyChildren: doc.body ? doc.body.children.length : 0,
+        loginWall: /登录|请先登录|sign in|log in/i.test(norm(doc.title + ' ' + (doc.body ? doc.body.textContent.slice(0, 400) : ''))),
+      };
+    })(),
     fields: fields.filter(f => f.vis).slice(0, 200),
     note: '本输出不含任何已填写内容，只有字段结构与站点自带候选项文案。',
   };

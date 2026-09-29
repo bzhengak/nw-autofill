@@ -81,3 +81,31 @@ test('导出物自带探针版本与子框地图（SF/汇丰 靠它定位表单�
   assert.equal(ad.controls, null);
   assert.ok(!JSON.stringify(out).includes('value'), '子框地图同样不得带出任何填写值');
 });
+
+test('0 控件时探针自己说清"下一步做什么"（分步向导要先点填写）', () => {
+  const dom = new JSDOM(`<!doctype html><html><body>
+    <h2>我的简历</h2>
+    <button>开始填写</button><a href="/x">继续完善</a><button>下一步</button>
+    <my-widget></my-widget><my-widget></my-widget>
+  </body></html>`, { url: 'https://zhaopin.test/resume2' });
+  const out = probePageStructure(dom.window.document, 'https://zhaopin.test/resume2', dom.window);
+  assert.equal(out.totals.controls, 0);
+  assert.ok(out.emptyHints.gateButtons.includes('开始填写'), JSON.stringify(out.emptyHints));
+  assert.ok(out.emptyHints.gateButtons.includes('继续完善'));
+  assert.equal(out.emptyHints.customElementHosts, 2, 'closed shadow 的自定义元素要报出来：探针读不到内部不是 bug，是要让人知道');
+  assert.equal(out.emptyHints.loginWall, false);
+  assert.ok(!JSON.stringify(out).includes('13800'), '诊断信息里不许出现填写值');
+});
+
+test('登录墙文案要标出来，别让人以为是扩展坏了', () => {
+  const dom = new JSDOM(`<!doctype html><html><body><p>请先登录后再查看职位并填写简历</p></body></html>`, { url: 'https://x.test/' });
+  const out = probePageStructure(dom.window.document, 'https://x.test/', dom.window);
+  assert.equal(out.emptyHints.loginWall, true);
+});
+
+test('有控件时不产生误导性的空态诊断', () => {
+  const dom = new JSDOM(`<!doctype html><html><body><input name="nm"><button>提交</button></body></html>`, { url: 'https://x.test/' });
+  const out = probePageStructure(dom.window.document, 'https://x.test/', dom.window);
+  assert.ok(out.totals.controls >= 1);
+  assert.deepEqual(out.emptyHints.gateButtons, [], '提交按钮不该被当成"先点这里出现表单"的提示');
+});

@@ -150,3 +150,46 @@ test('Base URL 非法时不保存、不确认、也发不出去', async () => {
   assert.match(doc.getElementById('aiStatus').textContent, /https/, '要告诉用户为什么被拒');
   assert.match(doc.getElementById('aiConsentTarget').textContent, /https/, '确认行也要显示同一个原因');
 });
+
+// needs_consent 那次事故的界面侧保证：勾显示的是"后台真记下的确认"，不是用户手点的意图。
+test('确认勾选状态跟随存储：后台没记下，勾就不会亮、按钮也不会解锁', async () => {
+  let stored = {};                       // 模拟 chrome.storage.local 里的 settings
+  const { doc } = boot({});
+  doc.defaultView.chrome.runtime.sendMessage = async msg => {
+    if (msg.type === 'nw:saveSettings') {
+      stored = { ...stored, ...msg.settings };
+      if (msg.settings.aiBaseUrl) {
+        // 复现后台规则：只有端点 origin 与确认不一致时才作废
+        const origin = new URL(msg.settings.aiBaseUrl).origin;
+        if (stored.aiConsentOrigin && stored.aiConsentOrigin !== origin) stored.aiConsentOrigin = '';
+      }
+      return { ok: true, dropped: [], consentOrigin: stored.aiConsentOrigin || '' };
+    }
+    return {
+      ok: true, profile: {}, settings: { ...stored }, tabId: 1,
+      hasAiKey: true, aiKeyLength: 24, aiKeyOrigin: 'https://api.a.test', aiKeyPersisted: false,
+    };
+  };
+  globalThis.chrome = doc.defaultView.chrome;
+  await loadSidePanel();
+  const $ = id => doc.getElementById(id);
+  $('aiBaseUrl').value = 'https://api.a.test/v1';
+  $('aiModel').value = 'gpt-4o-mini';
+  $('aiBaseUrl').dispatchEvent(new doc.defaultView.Event('change', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 40));
+  assert.equal($('btnAiAsk').disabled, true, '还没确认就该锁着');
+
+  $('aiConsent').checked = true;
+  $('aiConsent').dispatchEvent(new doc.defaultView.Event('change', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 40));
+  assert.equal(stored.aiConsentOrigin, 'https://api.a.test', '确认没写进存储');
+  assert.equal($('btnAiAsk').disabled, false, '确认已记下、Key 与模型都在，按钮仍锁着就是界面在骗人');
+
+  // 换成别的端点：后台作废确认，界面那个勾必须自己灭掉
+  $('aiBaseUrl').value = 'https://api.b.test/v1';
+  $('aiBaseUrl').dispatchEvent(new doc.defaultView.Event('change', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 40));
+  assert.equal($('aiConsent').checked, false, '确认已被作废，勾还亮着就是在骗用户');
+  assert.equal($('btnAiAsk').disabled, true);
+  assert.match($('aiStatus').textContent, /作废|重新勾/, '没说清端点变了要重勾');
+});

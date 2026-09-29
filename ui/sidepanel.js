@@ -13,6 +13,10 @@ let lastState = null;
 let HIGH = null;
 let aiKeyPresent = false;      // 只记"有没有"，不记内容
 let aiKeyBoundOrigin = '';     // Key 录入时绑定的 origin；Base URL 换了就得重录
+// 真正被后台接受的确认（origin 字符串）。勾只是意图，这个才是事实：
+// 之前 ready 判定看勾选状态，后台看存储，两者会分叉（先勾确认再保存 URL 时确认被擦掉，
+// 界面上勾还在，点「问 AI」只得到一句 needs_consent —— 用户没做错任何事）。
+let aiConsentStored = '';
 
 async function highFreq() {
   if (HIGH) return HIGH;
@@ -45,7 +49,8 @@ async function refresh() {
     $('aiKeyState').textContent = `已有 Key（长度 ${state.aiKeyLength} · 绑定 ${state.aiKeyOrigin}）`
       + (state.aiKeyPersisted ? ' · 记住在本机（明文落在浏览器 profile 里，点「清除」删除）' : ' · 只存本次会话，重启即失效');
     // 只有当前 origin 与绑定 origin 一致、且用户之前确认过，才算已授权
-    $('aiConsent').checked = Boolean(state.settings?.aiConsentOrigin) && state.settings.aiConsentOrigin === state.aiKeyOrigin;
+    aiConsentStored = String(state.settings?.aiConsentOrigin || '');
+    $('aiConsent').checked = Boolean(aiConsentStored) && aiConsentStored === state.aiKeyOrigin;
   } else {
     $('aiKeyState').textContent = '当前没有 Key。';
     $('aiConsent').checked = false;
@@ -247,17 +252,49 @@ const KEY_ERROR_ZH = {
   has_space: 'Key 里有空格，检查是否误粘了前后内容',
 };
 
+/**
+ * AI 两条链路（填写兜底 / 辅助导入）共用的失败文案。
+ * 之前两处各写一份 map，同一种错误一边说"调用失败：xxx"、另一边说人话 ——
+ * 漂移的方向永远是"少写一条"，所以合并成一份并让两边都查它。
+ */
+const AI_ERROR_ZH = {
+  ai_not_configured: '还没配好 Base URL / 模型 / Key（Key 只存本次会话）',
+  value_leak: '自检拦下了这次请求，已拒绝发送',
+  timeout: '请求超时（20s）：模型太慢或网络不通，先少问几栏再试',
+  network_error: '网络错误：检查 Base URL 与站点可达性',
+  payload_too_large: '请求体超限，一次问太多了，先分批',
+  no_fragments: '本地解析没有剩余片段，不需要 AI 辅助',
+  not_confirmed: '这次没点确认，没有发送任何内容',
+  // 闸门拦下的几种（不是 API 出错）：措辞要说清按哪一步重来
+  needs_consent: '没勾「我确认把 Key 与字段名发往 …」那一格 —— 勾上才允许发',
+  origin_changed: 'Base URL 换过了，之前对旧地址的确认已作废：重新勾一次确认',
+  origin_mismatch: 'Key 是在别的地址下录的，不会跟着发到这里：在当前 Base URL 下重新保存 Key',
+  no_endpoint: '还没填 Base URL（应形如 https://…/v1）',
+  no_key: '还没保存 Key（会话 Key 重启浏览器就失效，需要重录）',
+  // 上游回得"没内容"的几种，各自成因不同、修法也不同
+  reasoning_only: '模型只输出了"思考过程"，正文是空的 —— 换个非 reasoning 模型（或把它关掉）再来',
+  truncated: '答案被长度上限砍断，JSON 不完整 —— 先少问几栏',
+  empty_content: '上游回了 200 但正文是空的（多半是模型名或兼容层不对）',
+  not_json: '上游回的不是 JSON：Base URL 可能指到了网页而不是 API 根路径（应形如 https://…/v1）',
+};
+
+function aiErrorText(res) {
+  return AI_ERROR_ZH[res?.error] || ('调用失败：' + (res?.error || '未知错误'));
+}
+
 function aiUiSync() {
   const base = normalizeBaseUrl($('aiBaseUrl').value);
   $('aiConsentTarget').textContent = base.ok ? base.origin : (ENDPOINT_ERROR_ZH[base.error] || '先填 Base URL');
+  // 勾是"意图"，aiConsentStored 才是后台认的事实。让界面显示等于事实：
+  // 之前两者会分叉（确认被后台作废了、勾还留着），点「问 AI」只得到一句 needs_consent。
+  $('aiConsent').checked = Boolean(aiConsentStored) && base.ok && aiConsentStored === base.origin;
   // Base URL 与录入 Key 时不是同一个 origin → 确认必须作废、Key 也要重录
   if (base.ok && aiKeyBoundOrigin && aiKeyBoundOrigin !== base.origin) {
-    $('aiConsent').checked = false;
     $('aiKeyState').textContent = `Base URL 变了：之前录的 Key 绑在 ${aiKeyBoundOrigin}，不会跟着发到新地址。请重新保存 Key。`;
   }
-  const ready = base.ok && $('aiConsent').checked && aiKeyPresent && aiKeyBoundOrigin === base.origin && $('aiModel').value.trim();
+  const ready = base.ok && aiConsentStored === base.origin && aiKeyPresent && aiKeyBoundOrigin === base.origin && Boolean($('aiModel').value.trim());
   $('btnAiAsk').disabled = !ready;
-  $('btnAiAsk').title = ready ? '' : '需要：合法 https Base URL + 已保存的 Key + 模型名 + 勾选确认发往该地址';
+  $('btnAiAsk').title = ready ? '' : '需要：合法 https Base URL + 已保存的 Key + 模型名 + 勾上「确认发往该地址」';
 }
 $('aiBaseUrl').oninput = () => { aiUiSync(); };
 $('aiBaseUrl').onchange = async e => {
@@ -269,8 +306,10 @@ $('aiBaseUrl').onchange = async e => {
     return;
   }
   const res = await chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { aiBaseUrl: base.url } });
-  $('aiStatus').textContent = res?.ok ? `Base URL 已保存：${base.url}` : '保存失败：' + (res?.error || '');
-  $('aiConsent').checked = false;
+  aiConsentStored = String(res?.consentOrigin || '');
+  $('aiStatus').textContent = res?.ok
+    ? `Base URL 已保存：${base.url}` + (aiConsentStored === base.origin ? '' : ' · 端点变了，之前的确认已作废，需要重新勾')
+    : '保存失败：' + (res?.error || '');
   aiUiSync();
 };
 $('aiModel').onchange = async e => {
@@ -279,9 +318,20 @@ $('aiModel').onchange = async e => {
 };
 $('aiConsent').onchange = async e => {
   const base = normalizeBaseUrl($('aiBaseUrl').value);
-  if (!e.target.checked) { await chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { aiConsentOrigin: '' } }); aiUiSync(); return; }
-  if (!base.ok) { $('aiStatus').textContent = ENDPOINT_ERROR_ZH[base.error] || 'Base URL 不合法，无法确认'; $('aiConsent').checked = false; aiUiSync(); return; }
-  await chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { aiConsentOrigin: base.origin } });
+  if (!e.target.checked) {
+    const off = await chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { aiConsentOrigin: '' } });
+    aiConsentStored = String(off?.consentOrigin || '');
+    $('aiStatus').textContent = '已收回确认：现在一个字节都不会发出去';
+    aiUiSync();
+    return;
+  }
+  if (!base.ok) { $('aiStatus').textContent = ENDPOINT_ERROR_ZH[base.error] || 'Base URL 不合法，无法确认'; aiUiSync(); return; }
+  const on = await chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { aiConsentOrigin: base.origin } });
+  aiConsentStored = String(on?.consentOrigin || '');
+  // 后台没记下就必须如实说，不能让那个勾留在界面上骗人
+  $('aiStatus').textContent = aiConsentStored === base.origin
+    ? `已确认：Key 与字段名只发往 ${base.origin}`
+    : '确认没有被记下（端点与确认对不上），请重新填 Base URL 后再勾一次';
   aiUiSync();
 };
 async function aiNeedsScan() {
@@ -313,9 +363,11 @@ $('btnSaveKey').onclick = async () => {
 $('btnClearKey').onclick = async () => {
   await chrome.runtime.sendMessage({ type: 'nw:saveAiKey', key: '' });
   aiKeyPresent = false; aiKeyBoundOrigin = '';
-  $('aiKeyState').textContent = '当前没有 Key（会话与本机两个位置都已清除）。';
-  $('aiConsent').checked = false;
-  $('aiStatus').textContent = 'Key 已清除';
+  // 清除 Key 时把端点确认一起收掉：留着"已确认发往 https://…"但没 Key 的空壳状态，
+  // 下次重录 Key 就会带着一个用户已经不记得给过的授权直接发出去
+  aiConsentStored = '';
+  $('aiKeyState').textContent = '当前没有 Key（会话与本机两个位置都已清除，端点确认同时作废）。';
+  $('aiStatus').textContent = 'Key 与确认都已清除';
   aiUiSync();
 };
 $('btnAiPreview').onclick = async () => {
@@ -343,19 +395,7 @@ $('btnAiAsk').onclick = async () => {
   const profile = JSON.parse($('profileText').value || '{}');
   const res = await chrome.runtime.sendMessage({ type: 'nw:aiAsk', profile, gaps: lastScan.gaps, fields: lastScan.aiFields });
   if (!res?.ok) {
-    const why = {
-      ai_not_configured: '还没配好 Base URL / 模型 / Key（Key 只存本次会话）',
-      value_leak: '自检拦下了这次请求，已拒绝发送',
-      timeout: '请求超时（20s）：模型太慢或网络不通，先少问几栏再试',
-      network_error: '网络错误：检查 Base URL 与站点可达性',
-      payload_too_large: '请求体超限，缺口太多，先分批处理',
-      no_fragments: '本地解析没有剩余片段，不需要 AI 辅助',
-      not_confirmed: '这次没点确认，没有发送任何内容',
-      reasoning_only: '模型只输出了"思考过程"，正文是空的 —— 换个非 reasoning 模型（或把它关掉）再来',
-      truncated: '模型答案被长度上限砍断，JSON 不完整 —— 先少问几栏',
-      empty_content: '上游回了 200 但正文是空的（多半是模型名或兼容层不对）',
-      not_json: '上游回的不是 JSON：Base URL 可能指到了网页而不是 API 根路径（应形如 https://…/v1）',
-    }[res?.error] || ('调用失败：' + (res?.error || '未知错误'));
+    const why = aiErrorText(res);
     $('aiStatus').textContent = why;
     const box = $('aiPreviewText');
     box.hidden = false;
@@ -480,16 +520,7 @@ $('btnExtractRun').onclick = async () => {
   const profile = JSON.parse($('profileText').value || '{}');
   const res = await chrome.runtime.sendMessage({ type: 'nw:extractRun', profile, report: lastImportReport, confirm: true });
   if (!res?.ok) {
-    const why = {
-      ai_not_configured: '还没配好 Base URL / 模型 / Key',
-      not_confirmed: '这次没点确认，没有发送任何内容',
-      no_fragments: '本地解析没有剩余片段需要帮忙',
-      reasoning_only: '模型只输出了"思考过程"，正文为空 —— 换非 reasoning 模型再来',
-      truncated: '答案被长度上限砍断，JSON 不完整 —— 少勾几段再来',
-      empty_content: '上游回了 200 但正文为空（模型名或兼容层多半不对）',
-      not_json: '上游回的不是 JSON：Base URL 应指到 API 根路径（形如 https://…/v1）',
-      payload_too_large: '请求体超限，先分批',
-    }[res?.error] || ('调用失败：' + (res?.error || '未知错误'));
+    const why = aiErrorText(res);
     $('extractStatus').textContent = why;
     const box = $('extractPreviewText');
     box.hidden = false;

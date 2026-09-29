@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, redact, SETTING_KEYS, SECRETS_BUCKET, findLeaksInExport } from '../core/ai-security.js';
+import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, redact, SETTING_KEYS, SECRETS_BUCKET, findLeaksInExport, consentAfterSettingsPatch } from '../core/ai-security.js';
 
 test('持久化 Key 只能进独立桶：SECRETS_BUCKET 不在 settings 白名单里', () => {
   assert.equal(SECRETS_BUCKET, 'aiSecrets');
@@ -82,4 +82,46 @@ test('错误文本脱敏：Key 出现在任何要写出去的字符串里都得�
   assert.ok(!out.includes(secret), '错误信息把 Key 带出去了');
   assert.match(out, /\[REDACTED\]/);
   assert.equal(redact('plain', ''), 'plain');
+});
+
+// needs_consent 那次事故：勾了确认、点了「问 AI」，后台却说没确认。
+// 根因在"存设置时怎么处置旧确认"这条规则上，所以规则挪进纯函数并逐条钉住。
+test('先勾确认、再保存同一个 Base URL：确认必须留着（旧写法会把它擦掉 → needs_consent）', () => {
+  const prev = { aiBaseUrl: '', aiConsentOrigin: '' };
+  const afterConsent = consentAfterSettingsPatch({ prev, patch: { aiConsentOrigin: 'https://api.a.test' } });
+  assert.equal(afterConsent, 'https://api.a.test');
+  // 用户接着补保存 URL（origin 相同）——这一步在旧逻辑里把上面的确认清了
+  const afterUrl = consentAfterSettingsPatch({
+    prev: { aiConsentOrigin: afterConsent },
+    patch: { aiBaseUrl: 'https://api.a.test/v1' },
+  });
+  assert.equal(afterUrl, 'https://api.a.test', '同一端点不该作废确认');
+  assert.equal(maySendKey({ keyOrigin: 'https://api.a.test', targetOrigin: 'https://api.a.test', consentOrigin: afterUrl }).ok, true);
+});
+
+test('换端点就真的作废：确认指向 A、Base URL 改成 B → 必须重勾', () => {
+  const got = consentAfterSettingsPatch({
+    prev: { aiBaseUrl: 'https://api.a.test/v1', aiConsentOrigin: 'https://api.a.test' },
+    patch: { aiBaseUrl: 'https://api.b.test/v1' },
+  });
+  assert.equal(got, '');
+  assert.equal(maySendKey({ keyOrigin: 'https://api.a.test', targetOrigin: 'https://api.b.test', consentOrigin: got }).error, 'needs_consent');
+});
+
+test('同端点只改路径（/v1 → /v1beta）不算换地址，确认继续有效', () => {
+  const got = consentAfterSettingsPatch({
+    prev: { aiBaseUrl: 'https://api.a.test/v1', aiConsentOrigin: 'https://api.a.test' },
+    patch: { aiBaseUrl: 'https://api.a.test/v1beta' },
+  });
+  assert.equal(got, 'https://api.a.test');
+});
+
+test('取消确认就立刻清空；还没填端点时确认留着（另有 no_endpoint 闸拦发送）', () => {
+  assert.equal(consentAfterSettingsPatch({ prev: { aiConsentOrigin: 'https://api.a.test' }, patch: { aiConsentOrigin: '' } }), '');
+  assert.equal(consentAfterSettingsPatch({ prev: {}, patch: { aiConsentOrigin: 'https://api.a.test' } }), 'https://api.a.test',
+    '先勾确认再填 URL 是合法顺序，这里清了就是 needs_consent 的成因');
+  // 不合法的 Base URL 由 nw:saveSettings 直接拒收，所以这里不该把它当成"端点变了"
+  assert.equal(consentAfterSettingsPatch({ prev: {}, patch: { aiConsentOrigin: 'https://api.a.test', aiBaseUrl: 'not a url' } }), 'https://api.a.test');
+  assert.equal(maySendKey({ keyOrigin: '', targetOrigin: 'https://api.a.test', consentOrigin: 'https://api.a.test' }).error, 'no_key',
+    '确认留着也不构成放行：没 Key 照样发不出去');
 });

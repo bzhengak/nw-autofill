@@ -79,6 +79,30 @@ export function maySendKey({ keyOrigin, targetOrigin, consentOrigin }) {
 }
 
 /**
+ * 存设置之后，"确认发往某地址"这条记录该留什么值。
+ *
+ * 曾经的写法是"patch 里带了 aiBaseUrl 且它和 prev.aiBaseUrl 的 origin 不一样 → 清空确认"。
+ * 这在用户先勾确认、后（或几乎同时）保存 Base URL 时会把刚记下的确认擦掉：
+ * prev.aiBaseUrl 还是空串或不一致的旧值，于是 origin 判定不相等 → 确认清零，
+ * 而界面上那个勾还留着 → 点「问 AI」就得到一句看不懂的 needs_consent。
+ *
+ * 判据应该是"这条确认对新端点还成不成立"，不是"URL 字符串变没变"：
+ *  · 确认的 origin 与最终生效端点的 origin 一致 → 保留；
+ *  · 不一致，或端点根本不合法 → 作废（必须重勾）。
+ */
+export function consentAfterSettingsPatch({ prev = {}, patch = {} } = {}) {
+  const granted = patch.aiConsentOrigin !== undefined ? String(patch.aiConsentOrigin || '') : String(prev.aiConsentOrigin || '');
+  if (!granted) return '';
+  const url = patch.aiBaseUrl !== undefined ? patch.aiBaseUrl : prev.aiBaseUrl;
+  // 没有可比端点时留着这条确认：发送时另有 no_endpoint 闸兜着，
+  // 而"先勾确认、后填 URL"是合法顺序，这里清掉就正是 needs_consent 的成因。
+  // 不合法的 URL 也留着：nw:saveSettings 根本不会让它存进 settings（另一条闸）。
+  if (!url || !normalizeBaseUrl(String(url)).ok) return granted;
+  const t = normalizeBaseUrl(String(url));
+  return t.origin === granted ? granted : '';
+}
+
+/**
  * Key 若要持久化，只能进这个**独立的桶**（storage.local 的顶层键 aiSecrets），
  * 绝不进 settings —— 因为 settings/profile 是会被"导出 JSON"带走的东西，
  * 而 chrome.storage.local 是明文落盘，扩展拿不到系统钥匙串（要走 DPAPI 就得装

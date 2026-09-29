@@ -11,7 +11,7 @@
 import { compileAdapters } from '../core/adapters.js';
 import { buildAiRequest, assertNoProfileValues, parseAiResponse, aiSlotCatalog, interpretAiReply } from '../core/ai.js';
 import { extractFragments, buildExtractRequest, parseExtractResponse } from '../core/ai-extract.js';
-import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, redact, findLeaksInExport, SECRETS_BUCKET } from '../core/ai-security.js';
+import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, redact, findLeaksInExport, SECRETS_BUCKET, consentAfterSettingsPatch } from '../core/ai-security.js';
 
 const AI_TIMEOUT_MS = 20000;
 const AI_MAX_BYTES = 12000;        // 请求体上限：只发字段名与槽位目录，超量说明构造出了问题
@@ -344,7 +344,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     } else if (msg.type === 'nw:saveAiKey') {
       // Key 只进 session 或独立的 local.aiSecrets 桶；传空串就是"两个桶都清掉"
       const key = String(msg.key || '').trim();
-      if (!key) { await writeAiSession('', '', false); sendResponse({ ok: true, hasAiKey: false }); return; }
+      if (!key) {
+        // "清除"要清得干净：Key 两个位置都删，端点确认也一起作废。
+        // 否则设置里会留着一条"已确认发往 https://…"的空壳，重录 Key 后直接就发出去了。
+        await writeAiSession('', '', false);
+        const st = (await chrome.storage.local.get('settings')).settings || {};
+        if (st.aiConsentOrigin) await chrome.storage.local.set({ settings: { ...st, aiConsentOrigin: '' } });
+        sendResponse({ ok: true, hasAiKey: false, consentOrigin: '' });
+        return;
+      }
       const shape = sanityCheckKey(key);
       if (!shape.ok) { sendResponse({ ok: false, error: shape.error }); return; }
       const target = normalizeBaseUrl(msg.baseUrl);
@@ -365,14 +373,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const { clean, dropped } = sanitizeSettings(msg.settings);
       const prev = (await chrome.storage.local.get('settings')).settings || {};
       const next = { ...prev, ...clean };
-      // 端点一旦被改动，之前对旧端点的确认立即作废（必须重新勾选，Key 也要重录）
+      // 端点被改动后，之前对旧端点的确认要作废（必须重新勾选）——
+      // 但判据是"这条确认对新端点还成不成立"，不是"URL 字符串变没变"：
+      // 旧写法比 prev.aiBaseUrl 的 origin，会在"先勾确认、再保存同一个 URL"时把确认擦掉，
+      // 界面上勾还留着，点「问 AI」就得到一句 needs_consent（用户没做错任何事）。
+      if (clean.aiBaseUrl !== undefined || clean.aiConsentOrigin !== undefined) {
+        next.aiConsentOrigin = consentAfterSettingsPatch({ prev, patch: clean });
+      }
       if (clean.aiBaseUrl) {
         const t = normalizeBaseUrl(clean.aiBaseUrl);
         if (!t.ok) { sendResponse({ ok: false, error: `endpoint_${t.error}`, dropped }); return; }
-        if (normalizeBaseUrl(prev.aiBaseUrl || '').origin !== t.origin) next.aiConsentOrigin = '';
       }
       await chrome.storage.local.set({ settings: next });
-      sendResponse({ ok: true, dropped, consentCleared: Boolean(clean.aiBaseUrl) && next.aiConsentOrigin === '' });
+      // consentOrigin 回给界面：按钮能不能点要看**存下来的**确认，不是看勾有没有打上
+      sendResponse({ ok: true, dropped, consentOrigin: next.aiConsentOrigin || '' });
     } else if (msg.type === 'nw:scan' || msg.type === 'nw:undo' || msg.type === 'nw:ping' || msg.type === 'nw:clearMarks' || msg.type === 'nw:probe') {
       let payload = msg;
       if (msg.type === 'nw:scan' && tabId) {

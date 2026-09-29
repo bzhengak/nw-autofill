@@ -173,3 +173,18 @@ test('后台的按次确认闸是真的：没有 confirm 一律不发，也不�
   assert.ok(!/assertNoProfileValues\(built\.text/.test(sw), '导入侧本来就允许发简历原文，套用填写侧的取值自检会永远拦死');
   assert.match(sw, /EXTRACT_MAX_BYTES/, '片段总量还得有一道字节上限兜底');
 });
+
+test('闸门错误在两条 AI 链路里说同一句话（needs_consent 不能一边说人话一边说 token）', async () => {
+  for (const err of ['needs_consent', 'origin_changed', 'origin_mismatch', 'no_endpoint', 'no_key']) {
+    const { doc } = bootExtract(m => (m.type === 'nw:extractRun' ? { ok: false, error: err } : { ...PREVIEW_RES }));
+    doc.defaultView.confirm = () => true;
+    await load();
+    doc.getElementById('mdText').value = MD;
+    await click(doc, 'btnImportMd');
+    await click(doc, 'btnExtractPreview');
+    await click(doc, 'btnExtractRun');
+    const status = doc.getElementById('extractStatus').textContent;
+    assert.ok(!/^调用失败：(needs_consent|origin_changed|origin_mismatch|no_endpoint|no_key)$/.test(status), `${err} 还在直接印 token：${status}`);
+    assert.match(status, /勾|重录|Base URL|没保存/, `${err} 的提示没给出下一步：${status}`);
+  }
+});

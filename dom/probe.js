@@ -312,7 +312,12 @@ export function probePageStructure(doc, locationHref = '', win = doc.defaultView
       radios: fields.filter(f => f.type === 'radio').length,
       checkboxes: fields.filter(f => f.type === 'checkbox').length,
       fileInputs: fields.filter(f => f.type === 'file').length,
-      customWidgets: fields.filter(f => f.tag !== 'input' && f.tag !== 'textarea' && f.tag !== 'select').length,
+      // 自定义控件的计数不能只看标签名：AntD v5 / 国聘把 role=combobox 挂在 <input> 上，
+      // 按"非 input/textarea/select"数就会数出 0（一份真实导出里明明有 5 个），
+      // 而面板上"N 个自定义控件"是用户判断"这页要不要我手动点"的依据。
+      customWidgets: fields.filter(f => (f.tag !== 'input' && f.tag !== 'textarea' && f.tag !== 'select')
+        || /^(combobox|listbox|spinbutton|menu|menuitemradio)$/.test(f.role || '')
+        || (f.hasPopup && String(f.hasPopup).toLowerCase() !== 'false')).length,
       iframes: doc.querySelectorAll('iframe').length,
       shadowHosts,
     },

@@ -194,3 +194,17 @@ test('只读日历控件即使有标签也带素描（下一步要不要替用�
   assert.match(d.sketch, /ant-picker/);
   assert.equal(n.sketch, undefined, '普通有标签字段不该带素描');
 });
+
+test('自定义控件计数要认出挂在 <input> 上的 role=combobox（AntD v5 / 国聘形态）', () => {
+  const html = `<!doctype html><html><body><form>
+    <input type="search" role="combobox" aria-haspopup="listbox" id="a">
+    <input type="text" role="combobox" id="b">
+    <div role="combobox" id="c"></div>
+    <input type="text" id="d" placeholder="普通框">
+    <select id="e"><option>1</option></select>
+  </form></body></html>`;
+  const dom = new JSDOM(html, { url: 'https://x.test/' });
+  const out = probePageStructure(dom.window.document, 'https://x.test/', dom.window);
+  assert.equal(out.totals.customWidgets, 3, `数到 ${out.totals.customWidgets} 个，用户会以为这页没有需要点开的控件`);
+  assert.equal(out.totals.selects, 1);
+});

@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, redact, SETTING_KEYS, SECRETS_BUCKET, findLeaksInExport, consentAfterSettingsPatch } from '../core/ai-security.js';
+import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, redact, SETTING_KEYS, SECRETS_BUCKET, findLeaksInExport, consentAfterSettingsPatch, clampTimeoutSec, effectiveTimeoutSec, AI_TIMEOUT_DEFAULT_SEC } from '../core/ai-security.js';
 
 test('持久化 Key 只能进独立桶：SECRETS_BUCKET 不在 settings 白名单里', () => {
   assert.equal(SECRETS_BUCKET, 'aiSecrets');
@@ -124,4 +124,18 @@ test('取消确认就立刻清空；还没填端点时确认留着（另有 no_e
   assert.equal(consentAfterSettingsPatch({ prev: {}, patch: { aiConsentOrigin: 'https://api.a.test', aiBaseUrl: 'not a url' } }), 'https://api.a.test');
   assert.equal(maySendKey({ keyOrigin: '', targetOrigin: 'https://api.a.test', consentOrigin: 'https://api.a.test' }).error, 'no_key',
     '确认留着也不构成放行：没 Key 照样发不出去');
+});
+
+// 用户实测：模型答得慢，20 秒的旧默认值必然超时，而超时看起来就是"插件没反应"。
+test('等待上限：默认 180 秒，可配 15–900，非法值退回默认而不是设成 0', () => {
+  assert.equal(AI_TIMEOUT_DEFAULT_SEC, 180, '默认值不能再回到 20 秒这种"模型还没答完就掐"的量级');
+  assert.equal(clampTimeoutSec('300').seconds, 300);
+  assert.equal(clampTimeoutSec('').error, 'timeout_invalid');       // 清空 = 回默认，由调用方处理
+  assert.equal(clampTimeoutSec('abc').error, 'timeout_invalid');
+  assert.equal(clampTimeoutSec('5').error, 'timeout_too_small');
+  assert.equal(clampTimeoutSec('9999').error, 'timeout_too_large');
+  assert.equal(effectiveTimeoutSec({ aiTimeoutSec: 600 }), 600);
+  assert.equal(effectiveTimeoutSec({ aiTimeoutSec: '乱填' }), AI_TIMEOUT_DEFAULT_SEC, '手滑填错不该把请求锁死');
+  assert.equal(effectiveTimeoutSec(undefined), AI_TIMEOUT_DEFAULT_SEC);
+  assert.ok(SETTING_KEYS.includes('aiTimeoutSec'), '不在白名单里就存不进 settings，改了等于没改');
 });

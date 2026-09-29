@@ -5,7 +5,7 @@ import { gapReasonLabel } from '../core/matcher.js';
 // 端点/Key 的判定规则与 service worker 用同一份代码：这里只用于即时反馈，
 // 真正的把关在 background（哪怕这个文件被改成永远不校验，请求也发不出去）。
 import { applyExtracted } from '../core/ai-extract.js';
-import { normalizeBaseUrl, sanityCheckKey, findLeaksInExport } from '../core/ai-security.js';
+import { normalizeBaseUrl, sanityCheckKey, findLeaksInExport, clampTimeoutSec, effectiveTimeoutSec, AI_TIMEOUT_DEFAULT_SEC } from '../core/ai-security.js';
 
 const $ = id => document.getElementById(id);
 let tabId = null;
@@ -42,6 +42,8 @@ async function refresh() {
   // Key 不回显（也不该回显）：只告诉用户本次会话里有没有、绑在哪个 origin
   if (state?.settings?.aiBaseUrl) $('aiBaseUrl').value = state.settings.aiBaseUrl;
   if (state?.settings?.aiModel) $('aiModel').value = state.settings.aiModel;
+  $('aiTimeoutSec').value = state?.settings?.aiTimeoutSec || '';
+  $('aiTimeoutState').textContent = `当前生效：${effectiveTimeoutSec(state?.settings || {})} 秒`;
   aiKeyPresent = Boolean(state?.hasAiKey);
   aiKeyBoundOrigin = state?.aiKeyOrigin || '';
   $('aiPersist').checked = Boolean(state?.aiKeyPersisted);
@@ -279,7 +281,45 @@ const AI_ERROR_ZH = {
 };
 
 function aiErrorText(res) {
-  return AI_ERROR_ZH[res?.error] || ('调用失败：' + (res?.error || '未知错误'));
+  const base = AI_ERROR_ZH[res?.error] || ('调用失败：' + (res?.error || '未知错误'));
+  // 超时最容易被误读成"插件坏了"：把实际等了多久和怎么调都说出来
+  if (res?.error === 'timeout') {
+    const sec = res.waitedSec || aiTimeoutSecNow();
+    return `等了 ${sec} 秒模型还没答完（不是出错了）。想多等就在「等待上限」里改大（当前 ${sec} 秒，最多 900），或者少问几栏`;
+  }
+  return res?.detail ? `${base}\n${res.detail}` : base;
+}
+
+/** 设置里生效的等待上限（秒）。与后台用同一个 clamp 规则，避免两边算出两个数。 */
+function aiTimeoutSecNow() {
+  const got = clampTimeoutSec($('aiTimeoutSec').value);
+  return got.ok ? got.seconds : AI_TIMEOUT_DEFAULT_SEC;
+}
+
+/**
+ * 请求在飞的时候：状态栏每秒报已等待时长，并定期给后台发心跳。
+ * 心跳不是装饰 —— MV3 的 service worker 空闲约 30 秒会被回收，
+ * 它一被回收，那个还在等的 fetch 的 sendResponse 就永远不会回来，
+ * 用户看到的正好是"点了没反应"。
+ */
+function startAiWait(statusEl, label) {
+  const limit = aiTimeoutSecNow();
+  const t0 = Date.now();
+  const paint = () => {
+    const sec = Math.round((Date.now() - t0) / 1000);
+    statusEl.textContent = `${label}（已等待 ${sec} 秒 / 上限 ${limit} 秒）`;
+  };
+  paint();
+  const tick = setInterval(paint, 1000);
+  const beat = () => {
+    // 心跳本身失败不该打扰用户：最坏情况就是回到"没心跳"的老行为
+    Promise.resolve(chrome.runtime.sendMessage({ type: 'nw:keepAlive' })).catch(() => {});
+  };
+  // 第一次立刻发：worker 是在"没事干 30 秒"后被回收的，
+  // 等 15 秒才拍第一下手，正好可能落在它已经被杀了之后
+  beat();
+  const timer2 = setInterval(beat, 15000);
+  return () => { clearInterval(tick); clearInterval(timer2); };
 }
 
 function aiUiSync() {
@@ -315,6 +355,28 @@ $('aiBaseUrl').onchange = async e => {
 $('aiModel').onchange = async e => {
   await chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { aiModel: e.target.value.trim() } });
   aiUiSync();
+};
+$('aiTimeoutSec').onchange = async e => {
+  const raw = e.target.value.trim();
+  if (!raw) {   // 清空 = 回到默认，而不是把超时设成 0
+    await chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { aiTimeoutSec: '' } });
+    $('aiTimeoutState').textContent = `当前生效：${AI_TIMEOUT_DEFAULT_SEC} 秒（默认）`;
+    return;
+  }
+  const got = clampTimeoutSec(raw);
+  if (!got.ok) {
+    const why = {
+      timeout_invalid: '等待上限要填数字（秒）',
+      timeout_too_small: `最少 15 秒；太小的话模型还没来得及答就被掐了`,
+      timeout_too_large: '最多 900 秒（15 分钟）；真要这么久，不如把缺口分批问',
+    }[got.error];
+    $('aiTimeoutState').textContent = `${why}（保持 ${effectiveTimeoutSec({ aiTimeoutSec: '' })} 秒不变）`;
+    e.target.value = '';
+    return;
+  }
+  await chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { aiTimeoutSec: got.seconds } });
+  e.target.value = String(got.seconds);
+  $('aiTimeoutState').textContent = `当前生效：${got.seconds} 秒`;
 };
 $('aiConsent').onchange = async e => {
   const base = normalizeBaseUrl($('aiBaseUrl').value);
@@ -391,31 +453,33 @@ $('btnAiPreview').onclick = async () => {
 };
 $('btnAiAsk').onclick = async () => {
   if (!await aiNeedsScan()) return;
-  $('aiStatus').textContent = '正在请求…（只发字段名）';
-  const profile = JSON.parse($('profileText').value || '{}');
-  const res = await chrome.runtime.sendMessage({ type: 'nw:aiAsk', profile, gaps: lastScan.gaps, fields: lastScan.aiFields });
-  if (!res?.ok) {
-    const why = aiErrorText(res);
-    $('aiStatus').textContent = why;
-    const box = $('aiPreviewText');
-    box.hidden = false;
-    box.textContent = [why, res.detail, res.finishReason ? `finish_reason=${res.finishReason}` : '', res.reasoningChars ? `思考过程 ${res.reasoningChars} 字` : '']
-      .filter(Boolean).join('\n');
-    return;
-  }
-  if (!res.candidates.length) {
-    const box = $('aiPreviewText');
-    box.hidden = false;
-    box.textContent = `AI 回了 ${res.rawChars} 字，但没有一条能落进白名单（丢弃 ${res.dropped.length} 条：`
-      + [...new Set(res.dropped.map(d => d.reason))].join('、') + '）'
-      + (res.finishReason ? `\nfinish_reason=${res.finishReason}` : '')
-      + `\n它原样回的前 200 字：\n${res.snippet || '（空）'}`;
-    $('aiStatus').textContent = `AI 没有给出可用建议（丢弃 ${res.dropped.length} 条）—— 下面有原始回显`;
-    return;
-  }
-  await run('preview', { aiCandidates: res.candidates });
-  $('aiStatus').textContent = `AI 补齐 ${res.candidates.length} 栏（全部黄字待你核对）；已用「只预演」应用，确认后点「扫描并填写」写入`
-    + (res.finishReason === 'length' ? ' —— 注意：这次回答被长度上限截断了，可能还有缺口没给出，再点一次问剩下的' : '');
+  const stopWait = startAiWait($('aiStatus'), '正在请求（只发字段名，等模型答完）');
+  try {
+    const profile = JSON.parse($('profileText').value || '{}');
+    const res = await chrome.runtime.sendMessage({ type: 'nw:aiAsk', profile, gaps: lastScan.gaps, fields: lastScan.aiFields });
+    if (!res?.ok) {
+      const why = aiErrorText(res);
+      $('aiStatus').textContent = why;
+      const box = $('aiPreviewText');
+      box.hidden = false;
+      box.textContent = [why, res.detail, res.finishReason ? `finish_reason=${res.finishReason}` : '', res.reasoningChars ? `思考过程 ${res.reasoningChars} 字` : '']
+        .filter(Boolean).join('\n');
+      return;
+    }
+    if (!res.candidates.length) {
+      const box = $('aiPreviewText');
+      box.hidden = false;
+      box.textContent = `AI 回了 ${res.rawChars} 字，但没有一条能落进白名单（丢弃 ${res.dropped.length} 条：`
+        + [...new Set(res.dropped.map(d => d.reason))].join('、') + '）'
+        + (res.finishReason ? `\nfinish_reason=${res.finishReason}` : '')
+        + `\n它原样回的前 200 字：\n${res.snippet || '（空）'}`;
+      $('aiStatus').textContent = `AI 没有给出可用建议（丢弃 ${res.dropped.length} 条）—— 下面有原始回显`;
+      return;
+    }
+    await run('preview', { aiCandidates: res.candidates });
+    $('aiStatus').textContent = `AI 补齐 ${res.candidates.length} 栏（全部黄字待你核对）；已用「只预演」应用，确认后点「扫描并填写」写入`
+      + (res.finishReason === 'length' ? ' —— 注意：这次回答被长度上限截断了，可能还有缺口没给出，再点一次问剩下的' : '');
+  } finally { stopWait(); }   // 任何一条出口都得停掉计时与心跳，不能让它在后台一直跳
 };
 $('btnUndo').onclick = async () => { await chrome.runtime.sendMessage({ type: 'nw:undo', tabId }); render({ stats: {}, results: [], gaps: [] }); };
 $('btnClear').onclick = () => chrome.runtime.sendMessage({ type: 'nw:clearMarks', tabId });
@@ -516,28 +580,30 @@ $('btnExtractRun').onclick = async () => {
     return;                                     // 保留 ready：预览过的事实不该被一次取消冲掉
   }
   extractReset();                               // 发一次就清空，再发要重新预览
-  $('extractStatus').textContent = '正在请求…（只发本地判不动的片段）';
-  const profile = JSON.parse($('profileText').value || '{}');
-  const res = await chrome.runtime.sendMessage({ type: 'nw:extractRun', profile, report: lastImportReport, confirm: true });
-  if (!res?.ok) {
-    const why = aiErrorText(res);
-    $('extractStatus').textContent = why;
-    const box = $('extractPreviewText');
-    box.hidden = false;
-    box.textContent = [why, res.detail, res.finishReason ? `finish_reason=${res.finishReason}` : ''].filter(Boolean).join('\n');
-    return;
-  }
-  if (!res.accepted?.length) {
-    const why = [...new Set((res.rejected || []).map(r => r.reason))].join('、');
-    const box = $('extractPreviewText');
-    box.hidden = false;
-    box.textContent = `AI 回了 ${res.rawChars || 0} 字，但一条都没通过逐字/白名单校验（丢弃 ${(res.rejected || []).length} 条${why ? `：${why}` : ''}）`
-      + (res.finishReason ? `\nfinish_reason=${res.finishReason}` : '')
-      + `\n它原样回的前 200 字：\n${res.snippet || '（空）'}`;
-    $('extractStatus').textContent = '没有逐字命中的结果 —— 下面有原始回显';
-    return;
-  }
-  renderExtractResults(res);
+  const stopWait = startAiWait($('extractStatus'), '正在请求（只发本地判不动的片段，等模型答完）');
+  try {
+    const profile = JSON.parse($('profileText').value || '{}');
+    const res = await chrome.runtime.sendMessage({ type: 'nw:extractRun', profile, report: lastImportReport, confirm: true });
+    if (!res?.ok) {
+      const why = aiErrorText(res);
+      $('extractStatus').textContent = why;
+      const box = $('extractPreviewText');
+      box.hidden = false;
+      box.textContent = [why, res.detail, res.finishReason ? `finish_reason=${res.finishReason}` : ''].filter(Boolean).join('\n');
+      return;
+    }
+    if (!res.accepted?.length) {
+      const why = [...new Set((res.rejected || []).map(r => r.reason))].join('、');
+      const box = $('extractPreviewText');
+      box.hidden = false;
+      box.textContent = `AI 回了 ${res.rawChars || 0} 字，但一条都没通过逐字/白名单校验（丢弃 ${(res.rejected || []).length} 条${why ? `：${why}` : ''}）`
+        + (res.finishReason ? `\nfinish_reason=${res.finishReason}` : '')
+        + `\n它原样回的前 200 字：\n${res.snippet || '（空）'}`;
+      $('extractStatus').textContent = '没有逐字命中的结果 —— 下面有原始回显';
+      return;
+    }
+    renderExtractResults(res);
+  } finally { stopWait(); }
 };
 
 function renderExtractResults(res) {

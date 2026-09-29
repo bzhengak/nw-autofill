@@ -188,3 +188,48 @@ test('闸门错误在两条 AI 链路里说同一句话（needs_consent 不能�
     assert.match(status, /勾|重录|Base URL|没保存/, `${err} 的提示没给出下一步：${status}`);
   }
 });
+
+// 模型答得慢不是错误：等待期间要看得见"已经等了多久 / 上限多少"，
+// 超时的提示必须说清"是多等一会儿还是少问几栏"，而不是"请求超时（20s）"这种没下文的句子。
+test('等待中有计时与上限；超时提示给出下一步；「等待上限」输入框能存进设置', async () => {
+  let release;
+  const gate = new Promise(r => { release = r; });
+  const { doc, sent } = bootExtract(async m => {
+    if (m.type === 'nw:extractRun') { await gate; return { ok: false, error: 'timeout', waitedSec: 300, detail: '等待 300 秒后中止' }; }
+    if (m.type === 'nw:extractPreview') return { ...PREVIEW_RES };
+    return { ok: true, profile: {}, settings: { aiTimeoutSec: 300 }, tabId: 1, hasAiKey: true, aiKeyOrigin: 'https://api.example.test', aiKeyLength: 24, aiKeyPersisted: false };
+  });
+  doc.defaultView.confirm = () => true;
+  await load();
+  doc.getElementById('mdText').value = MD;
+  await click(doc, 'btnImportMd');
+  await click(doc, 'btnExtractPreview');
+  // gate 必须在 finally 里放行：断言一失败就把后台回包挂着，整轮 node --test 会卡死而不是报错
+  try {
+    doc.getElementById('btnExtractRun').click();
+    await new Promise(r => setTimeout(r, 1200));            // 让它至少跳一次秒
+    const during = doc.getElementById('extractStatus').textContent;
+    assert.match(during, /已等待 \d+ 秒/, '等待中没有任何进度，用户只能猜是卡住了还是在算');
+    assert.match(during, /上限 300 秒/, '没把当前上限说出来');
+    assert.ok(sent.some(m => m.type === 'nw:keepAlive'), '没发心跳：MV3 的 worker 会被回收，回包永远不来');
+  } finally {
+    release();
+  }
+  await new Promise(r => setTimeout(r, 200));
+  const after = doc.getElementById('extractStatus').textContent;
+  assert.match(after, /等了 300 秒模型还没答完/, `超时提示没讲清：${after}`);
+  assert.match(after, /等待上限/, '没告诉用户下一步是改上限');
+  assert.ok(!/已等待/.test(after), '请求已经结束，计时还在跑');
+
+  // 上限输入框：改动要落到设置，非法值要保住原状并说明
+  const t = doc.getElementById('aiTimeoutSec');
+  t.value = '600';
+  t.dispatchEvent(new doc.defaultView.Event('change', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 60));
+  const saved = sent.filter(m => m.type === 'nw:saveSettings').pop();
+  assert.equal(saved?.settings?.aiTimeoutSec, 600);
+  t.value = '5';
+  t.dispatchEvent(new doc.defaultView.Event('change', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 60));
+  assert.match(doc.getElementById('aiTimeoutState').textContent, /最少 15 秒/);
+});

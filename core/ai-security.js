@@ -4,7 +4,8 @@
 // 而不是等有人在浏览器里试。
 
 /** 可以持久化的设置白名单。Key 不在里面 —— 它只配活在 chrome.storage.session。 */
-export const SETTING_KEYS = ['mode', 'fillSensitive', 'autoSubmitNever', 'allowCustomSelect', 'aiEnabled', 'aiBaseUrl', 'aiModel', 'aiMaxGaps', 'aiConsentOrigin'];
+export const SETTING_KEYS = ['mode', 'fillSensitive', 'autoSubmitNever', 'allowCustomSelect', 'aiEnabled',
+  'aiBaseUrl', 'aiModel', 'aiMaxGaps', 'aiConsentOrigin', 'aiTimeoutSec'];
 
 const SECRETISH = /(key|token|secret|password|credential|auth)/i;
 
@@ -69,6 +70,36 @@ export function sanityCheckKey(key) {
  *  - origin_changed：勾过但地址已经不是当初那个 origin。
  *  - origin_mismatch：Key 是在 A 域录的，现在要发去 B 域 —— 老 Key 绝不跟着走。
  */
+/**
+ * AI 请求的等待上限（秒）。
+ * 默认 180 秒：reasoning 模型 + 几十个缺口的 JSON 回答，20 秒这个旧默认值几乎必然超时，
+ * 而且超时是最难归因的失败（用户看到的是"没反应"，其实是还没答完）。
+ * 上限给到 900 秒，但界面与后台都会在此期间持续告诉用户"已等待多少秒"，
+ * 不是在黑箱里干等。
+ */
+export const AI_TIMEOUT_DEFAULT_SEC = 180;
+export const AI_TIMEOUT_MIN_SEC = 15;
+export const AI_TIMEOUT_MAX_SEC = 900;
+
+export function clampTimeoutSec(v) {
+  const raw = String(v ?? '').trim();
+  // 空值当"没填"处理（invalid），不当成 0：调用方据此退回默认，
+  // 而 Number('') === 0 会被下面判成"太小"，语义上把"留空"和"填了个 0"混为一谈。
+  if (!raw) return { ok: false, error: 'timeout_invalid', seconds: AI_TIMEOUT_DEFAULT_SEC };
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return { ok: false, error: 'timeout_invalid', seconds: AI_TIMEOUT_DEFAULT_SEC };
+  const s = Math.round(n);
+  if (s < AI_TIMEOUT_MIN_SEC) return { ok: false, error: 'timeout_too_small', seconds: AI_TIMEOUT_MIN_SEC };
+  if (s > AI_TIMEOUT_MAX_SEC) return { ok: false, error: 'timeout_too_large', seconds: AI_TIMEOUT_MAX_SEC };
+  return { ok: true, seconds: s };
+}
+
+/** 从 settings 里取实际生效的超时（非法值一律退回默认，不让一次手滑把请求锁死） */
+export function effectiveTimeoutSec(settings) {
+  const got = clampTimeoutSec(settings?.aiTimeoutSec);
+  return got.ok ? got.seconds : AI_TIMEOUT_DEFAULT_SEC;
+}
+
 export function maySendKey({ keyOrigin, targetOrigin, consentOrigin }) {
   if (!targetOrigin) return { ok: false, error: 'no_endpoint' };
   if (!keyOrigin) return { ok: false, error: 'no_key' };

@@ -157,6 +157,15 @@
       <input id="aiModel" placeholder="模型名，如 gpt-4o-mini">
     </div>
     <div class="row">
+      <input id="aiTimeoutSec" type="number" min="15" max="900" step="15" placeholder="等待上限（秒），默认 180" style="max-width:220px">
+      <span id="aiTimeoutState" class="hint"></span>
+    </div>
+    <p class="hint">
+      等待上限：模型答得慢就多等，超时是最难归因的失败（看起来像"没反应"，其实是还没答完）。
+      默认 <b>180 秒</b>，可填 15–900；reasoning 模型回答几十个缺口时建议 300 秒起。
+      等待期间状态栏会每秒报"已等待多少秒"，不是在黑箱里干等。
+    </p>
+    <div class="row">
       <input id="aiKey" type="password" placeholder="API Key（只存本次会话，重启即失效）" autocomplete="off" spellcheck="false">
       <button id="btnSaveKey">保存 Key</button>
       <button id="btnClearKey">清除</button>

@@ -11,9 +11,12 @@
 import { compileAdapters } from '../core/adapters.js';
 import { buildAiRequest, assertNoProfileValues, parseAiResponse, aiSlotCatalog, interpretAiReply } from '../core/ai.js';
 import { extractFragments, buildExtractRequest, parseExtractResponse } from '../core/ai-extract.js';
-import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, redact, findLeaksInExport, SECRETS_BUCKET, consentAfterSettingsPatch } from '../core/ai-security.js';
+import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, redact, findLeaksInExport, SECRETS_BUCKET, consentAfterSettingsPatch, effectiveTimeoutSec, AI_TIMEOUT_DEFAULT_SEC } from '../core/ai-security.js';
 
-const AI_TIMEOUT_MS = 20000;
+// 默认等 180 秒：reasoning 模型 + 几十个缺口的 JSON 回答，旧的 20 秒几乎必然超时，
+// 而超时是最难归因的失败——用户只看到"没反应"，其实是模型还没答完。
+// 具体值由设置里的 aiTimeoutSec 决定（effectiveTimeoutSec），非法值退回默认。
+const AI_TIMEOUT_MS = AI_TIMEOUT_DEFAULT_SEC * 1000;
 const AI_MAX_BYTES = 12000;        // 请求体上限：只发字段名与槽位目录，超量说明构造出了问题
 const AI_MAX_OUT = 30;             // 一次最多问 30 个缺口，避免把整页字段都送出去
 // 导入侧要带简历片段，上限比填写侧宽；片段本身在 core/ai-extract.js 里有 6000 字的硬预算，
@@ -49,12 +52,14 @@ async function buildAiCall(profile, plan, pageFields) {
   return { ok: true, req };
 }
 
-async function callAiEndpoint({ baseUrl, model, key, text }) {
+async function callAiEndpoint({ baseUrl, model, key, text, timeoutSec }) {
   const base = normalizeBaseUrl(baseUrl);
   if (!base.ok) return { ok: false, error: `endpoint_${base.error}` };
   const url = base.url + '/chat/completions';
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), AI_TIMEOUT_MS);
+  // 每次调用现取上限：用户在设置里改了"等待秒数"要立刻生效，而不是等扩展重载
+  const limitMs = Math.max(1000, (Number(timeoutSec) > 0 ? Number(timeoutSec) : AI_TIMEOUT_DEFAULT_SEC) * 1000);
+  const timer = setTimeout(() => ctrl.abort(), limitMs);
   try {
     const res = await fetch(url, {
       method: 'POST',
@@ -93,7 +98,8 @@ async function callAiEndpoint({ baseUrl, model, key, text }) {
   } catch (err) {
     const name = String(err?.name || '');
     // 错误文本可能带上请求 URL 甚至 Header，一律脱敏后再返回
-    return { ok: false, error: name === 'AbortError' ? 'timeout' : redact(String(err?.message || 'network_error'), key) };
+    if (name === 'AbortError') return { ok: false, error: 'timeout', detail: `等待 ${Math.round(limitMs / 1000)} 秒后中止`, waitedSec: Math.round(limitMs / 1000) };
+    return { ok: false, error: redact(String(err?.message || 'network_error'), key) };
   } finally { clearTimeout(timer); }
 }
 
@@ -277,7 +283,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // 而且用户没勾过"确认发往这个地址"时一律拒发。
       const gate = maySendKey({ keyOrigin: sess.keyOrigin, targetOrigin: target.origin, consentOrigin: settings.aiConsentOrigin });
       if (!gate.ok) { sendResponse({ ok: false, error: gate.error }); return; }
-      const call = await callAiEndpoint({ baseUrl: settings.aiBaseUrl, model: settings.aiModel, key: sess.key, text: built.req.text });
+      const call = await callAiEndpoint({ baseUrl: settings.aiBaseUrl, model: settings.aiModel, key: sess.key, text: built.req.text, timeoutSec: effectiveTimeoutSec(settings) });
       if (!call.ok) {
         // detail / finishReason 一并带回：用户报"空输出"时，这三个字段就能区分是
         // 上游 4xx、reasoning 模型没正文、还是答案被 max_tokens 截断
@@ -329,7 +335,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (!xSettings.aiModel || !xSess.key) { sendResponse({ ok: false, error: 'ai_not_configured' }); return; }
       const xGate = maySendKey({ keyOrigin: xSess.keyOrigin, targetOrigin: xTarget.origin, consentOrigin: xSettings.aiConsentOrigin });
       if (!xGate.ok) { sendResponse({ ok: false, error: xGate.error }); return; }
-      const call = await callAiEndpoint({ baseUrl: xSettings.aiBaseUrl, model: xSettings.aiModel, key: xSess.key, text: built.text });
+      const call = await callAiEndpoint({ baseUrl: xSettings.aiBaseUrl, model: xSettings.aiModel, key: xSess.key, text: built.text, timeoutSec: effectiveTimeoutSec(xSettings) });
       if (!call.ok) { sendResponse({ ok: false, error: call.error, detail: call.detail, finishReason: call.finishReason, reasoningChars: call.reasoningChars }); return; }
       const parsed = parseExtractResponse(call.content, { fragments: built.fragments, profile: msg.profile });
       sendResponse({
@@ -387,6 +393,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       await chrome.storage.local.set({ settings: next });
       // consentOrigin 回给界面：按钮能不能点要看**存下来的**确认，不是看勾有没有打上
       sendResponse({ ok: true, dropped, consentOrigin: next.aiConsentOrigin || '' });
+    } else if (msg.type === 'nw:keepAlive') {
+      // 长等待期间侧边栏每十几秒发一次心跳：MV3 的 service worker 空闲约 30 秒会被回收，
+      // 一旦它在 fetch 还没回来时被杀掉，sendResponse 就永远不会响应——
+      // 用户看到的正是"点了没反应"。心跳把它钉在活跃状态上。
+      sendResponse({ ok: true, at: Date.now() });
     } else if (msg.type === 'nw:scan' || msg.type === 'nw:undo' || msg.type === 'nw:ping' || msg.type === 'nw:clearMarks' || msg.type === 'nw:probe') {
       let payload = msg;
       if (msg.type === 'nw:scan' && tabId) {

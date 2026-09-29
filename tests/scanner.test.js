@@ -218,3 +218,14 @@ test('「Work Authorization」是合规块，不是工作经历块；「Work Exp
     '裸 "work" 命中章节词会把合规块当成工作经历块：「是否需要签证担保」被章节惩罚 ×0.75 后掉到候选线以下，整栏变成"我们没有这个词"');
   assert.equal(fields.find(f => f.el.id === 'co').sectionHint, 'work', '真正的 Work Experience 还得认出来，不能一刀切');
 });
+
+test('区号下拉的显示文本不能被当成手机号标签（zhiye 实测形态）', () => {
+  const dom = new JSDOM(`<form>
+    <div class="row"><span class="cc-select ant-select"><span class="ant-select-selection-item">中国大陆 +86</span></span>
+      <input data-nw-test="phone" placeholder="请输入11位手机号"></div>
+    <div class="row"><div class="label">家庭住址</div><input data-nw-test="addr" placeholder="请输入"></div>
+  </form>`, { url: 'https://x.test/' });
+  const f = Object.fromEntries(scanForm(dom.window.document).map(x => [x.el.getAttribute('data-nw-test'), x]));
+  assert.notEqual(f.phone.label, '中国大陆 +86', '自定义下拉的显示区不是标签，抓到它等于给手机号安了个别名');
+  assert.equal(f.addr.label, '家庭住址', '真标签还得照常拿得到');
+});

@@ -171,7 +171,7 @@ function labelFor(el, doc) {
     let sib = node.previousSibling, guard = 0;
     while (sib && guard++ < 6) {
       // 碰到兄弟里另一个字段块就收手：再往前是"别人的标签"，跨块取文本会把卡片题目当成标签
-      if (sib.nodeType === 1 && sib.querySelector?.(CONTROL_SELECTOR)) break;
+      if (sib.nodeType === 1 && (sib.querySelector?.(CONTROL_SELECTOR) || isFieldShell(sib))) break;
       push(sib, 'prev-sibling', hops);
       sib = sib.previousSibling;
     }
@@ -182,7 +182,8 @@ function labelFor(el, doc) {
     const kids = Array.from(holder.children || []).slice(0, 12);
     for (const k of kids) {
       if (k === node || (k.contains && k.contains(el))) break;
-      if (k.querySelector && k.querySelector(CONTROL_SELECTOR)) continue;
+      // 同 prev-sibling：自定义下拉的显示区不是标签，两条路径要用同一条判据
+      if ((k.querySelector && k.querySelector(CONTROL_SELECTOR)) || isFieldShell(k)) continue;
       const txt = textOf(k);
       if (txt && txt.length <= 24) cands.push({ text: txt, raw: normRaw(k.textContent), source: 'container-text', depth: hops + 2, heading: isBlockTitle(k) });
     }
@@ -237,7 +238,25 @@ export function normRaw(s) {
   return String(s || '').replace(/\s+/g, ' ').trim();
 }
 
-function nearbyLabels(el, doc) {
+/**
+ * 这个元素是不是"另一个字段的壳子"？
+ * 自定义下拉常常只渲染出一段显示文本（`.ant-select-selection-item` 里写着"中国大陆"、
+ * `.el-select__placeholder` 里写着"请选择"），里面没有任何 input —— 所以
+ * "兄弟里有没有控件"这条判据抓不住它。北京银行(zhiye) 实测：手机国际区号那个下拉的显示区
+ * 被当成了手机号字段的标签，导出里该栏 label 就成了"中国大陆"。
+ */
+function isFieldShell(n) {
+  if (!n || n.nodeType !== 1) return false;
+  try {
+    if (n.matches?.(SELECT_TRIGGER_SELECTOR) || n.querySelector?.(SELECT_TRIGGER_SELECTOR)) return true;
+    if (n.getAttribute?.('aria-haspopup')) return true;
+    if (n.querySelector?.('.ant-select-selection-item,.ant-select-selection-placeholder,.ant-picker-input,.el-select__wrapper,.el-cascader,.next-select')) return true;
+    const c = String(n.className || '');
+    return /(^|\s|-)(select|picker|cascader|dropdown|combobox|date-picker)/i.test(c) && !/label|title|caption/i.test(c);
+  } catch { return false; }
+}
+
+  function nearbyLabels(el, doc) {
   const out = [];
   const legend = el.closest?.('fieldset')?.querySelector?.('legend');
   if (legend) out.push(textOf(legend));

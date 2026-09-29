@@ -8,7 +8,7 @@ const CONTROL_SELECTOR = 'input, textarea, select, [contenteditable="true"], [ro
 const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
 // 导出物自带版本号：用户贴回来的 JSON 能直接证明"他浏览器里跑的是哪一版探针"，
 // 不用再靠"你是不是重载了扩展"这种对话去猜。
-const PROBE_BUILD = '2026-09-29-1';
+const PROBE_BUILD = '2026-09-29-2';
 
 function escapeId(id) {
   return (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(id) : String(id).replace(/([^\w-])/g, '\\$1');
@@ -27,6 +27,15 @@ function walkComposed(root, depth, via, out) {
 }
 
 function labelOf(el, doc) {
+  // 顺手记下"考虑过但没采纳"的候选：没有这行日志，"这个字段为什么拿到这个标签"
+  // 在维护者这边永远是黑盒（tupu 那 25 个无标签字段就是例子）。
+  const alts = [];
+  const note = (t, v) => { if (t && alts.length < 6) alts.push(`${v}:${t.slice(0, 24)}`); };
+  const out = rawLabelOf(el, doc, note);
+  return { ...out, alts };
+}
+
+function rawLabelOf(el, doc, note) {
   const id = el.getAttribute('id');
   if (id) {
     try {
@@ -47,17 +56,20 @@ function labelOf(el, doc) {
   let n = el.parentElement, hops = 0;
   while (n && hops < 6) {
     const lab = n.querySelector(':scope > label, :scope > [class*="label"], :scope > [class*="title"], :scope > dt, :scope > [class*="name"]');
-    if (lab) { const t = norm(lab.textContent); if (t && t.length <= 40) return { t, v: 'container' }; }
+    if (lab) { const t = norm(lab.textContent); if (t && t.length <= 40) { note(t, 'container'); return { t, v: 'container' }; } }
     let p = n.previousElementSibling, g = 0;
     while (p && g < 4) {
+      // 兄弟里那个"自定义下拉的显示区"不是标签：北京银行实测把区号下拉的
+      // "中国大陆"当成了手机号的标签。含控件或长得像选择壳子的，一律往前收手。
+      if (p.querySelector('input,textarea,select') || /(^|\s|-)(select|picker|cascader|dropdown|combobox)/i.test(String(p.className || ''))) break;
       const t = norm(p.textContent);
-      if (t && t.length <= 24 && !p.querySelector('input,textarea,select')) return { t, v: 'prev' };
+      if (t && t.length <= 24) { note(t, 'prev'); return { t, v: 'prev' }; }
       p = p.previousElementSibling; g++;
     }
     n = n.parentElement; hops++;
   }
   const ph = norm(el.getAttribute('placeholder'));
-  if (ph) return { t: ph.slice(0, 40), v: 'placeholder' };
+  if (ph) { note(ph, 'placeholder'); return { t: ph.slice(0, 40), v: 'placeholder' }; }
   return { t: '', v: '' };
 }
 
@@ -121,6 +133,13 @@ export function probePageStructure(doc, locationHref = '', win = doc.defaultView
     const tag = e.tagName.toLowerCase();
     const w = e.closest('[class*="form-item"],[class*="formily"],[class*="field"],[class*="formRow"],[class*="form-row"],[class*="item"]');
     const wrapCls = w ? String(w.className).slice(0, 80) : '';
+    // 祖先类名链 + 被否掉的候选标签：缺了这两样，"这个字段为什么没标签"只能靠猜。
+    // 都是站点自己的 DOM 元数据，不含用户填的任何内容。
+    const chain = [];
+    for (let n = e.parentElement; n && chain.length < 5; n = n.parentElement) {
+      const cls = norm(String(n.className || '')).slice(0, 60);
+      if (cls) chain.push(`${n.tagName.toLowerCase()}.${cls}`);
+    }
     const req = e.required === true || e.getAttribute('aria-required') === 'true' || /required|必填/.test(wrapCls);
     const opts = tag === 'select' ? Array.from(e.options).slice(0, 14).map(o => norm(o.textContent).slice(0, 24)) : null;
     return {
@@ -131,6 +150,8 @@ export function probePageStructure(doc, locationHref = '', win = doc.defaultView
       role: e.getAttribute('role') || undefined,
       label: L.t || undefined,
       labelVia: L.v || undefined,
+      labelAlts: (L.alts || []).slice(0, 3),
+      chain: chain.length ? chain : undefined,
       ph: e.getAttribute('placeholder') || undefined,
       required: req || undefined,
       readonly: e.readOnly || undefined,

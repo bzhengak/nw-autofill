@@ -54,11 +54,11 @@ if (!window.__nwSubmitListener) {
   });
 }
 
-async function handleScan({ profile, mode = 'full', dryRun = false, adapter = null, fillSensitive = false, allowCustomSelect = false, aiCandidates = null }) {
+async function handleScan({ profile, mode = 'full', dryRun = false, adapter = null, fillSensitive = false, allowCustomSelect = false, aiCandidates = null, enMissingMode = 'strict' }) {
   const { scanner, filler, matcher, safety, schema } = await loadModules();
   safety.armSubmitGuard(window, auditLog);
   const fields = scanner.scanForm(document);
-  const plan = matcher.planFill(fields, profile, { mode, adapter, fillSensitive, allowCustomSelect });
+  const plan = matcher.planFill(fields, profile, { mode, adapter, fillSensitive, allowCustomSelect, enMissingMode });
   // AI 候选在这里落地：路径白名单与"空槽/敏感槽"的判断都交给 core/ai.js，
   // 内容脚本只负责把结果并进 plan，再走同一条 applyPlan（写入与回读口径不另开一套）。
   let aiApplied = 0;
@@ -124,6 +124,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           adapter: msg.adapter || null, fillSensitive: settings ? settings.fillSensitive === true : false,
           allowCustomSelect: settings ? settings.allowCustomSelect === true : false,
           aiCandidates: msg.aiCandidates || null,
+          // 缺英文值时的处理口径来自设置，不在这里改写：面板勾选与真实填写必须是同一个值
+          enMissingMode: settings ? settings.enMissingMode : 'strict',
         }) });
       } else if (msg?.type === 'nw:undo') {
         const r = await window.__nwLast?.applied?.undo?.();

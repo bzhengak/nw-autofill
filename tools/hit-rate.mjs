@@ -22,7 +22,8 @@ function profileForJudging() {
   if (!file) return sampleProfile();
   return importMarkdown(fs.readFileSync(file, 'utf8')).profile;
 }
-import { getValueByPath, equivalentsOf } from '../core/profile-schema.js';
+import { getValueByPath, equivalentsOf, readLang, buildFields } from '../core/profile-schema.js';
+import { detectPageLanguage, pageRequestsChinese } from '../core/matcher.js';
 import { normalize, core, boolLike, AMBIGUOUS_SECTIONS } from '../core/matching.js';
 import { matchAdapter } from '../core/adapters.js';
 
@@ -79,6 +80,14 @@ for (const file of forms) {
   const fields = scanForm(doc);
   const profile = profileForJudging();
   const plan = planFill(fields, profile, { mode: 'full', adapter, fillSensitive: true, allowCustomSelect: customSelect });
+  // 判分的标准答案必须与填写用同一份语言取值：英文页面对照 profile.en.<路径>，
+  // 否则页面写的是 Nanjing University、判分拿「南京大学」比，会把对的判成错的。
+  const pageLang = detectPageLanguage(fields);
+  const fieldByPath = new Map(buildFields().map(f => [f.path, f]));
+  // 判分与填写共用同一套判据：页面语言、"这栏自己就要中文"、中性栏位，一处定义两次使用。
+  const truthOf = (p, pf) => (pageLang !== 'en' || pageRequestsChinese(pf)
+    ? String(getValueByPath(profile, p) ?? '')
+    : readLang(profile, p, 'en', { field: fieldByPath.get(p) || { path: p } }));
   const { results } = await applyPlan(fields, plan.assignments, { allowCustomSelect: customSelect });
 
   const byName = new Map();
@@ -99,7 +108,7 @@ for (const file of forms) {
     // 只要落到任一合理路径且被标为待复核就算对（不许假装我们能分辨）
     const wantPaths = Array.isArray(wantPath) ? wantPath : [wantPath];
     const truthPath = got && wantPaths.includes(got.path) ? got.path : wantPaths[0];
-    const truth = String(getValueByPath(profile, truthPath) || '');
+    const truth = String(truthOf(truthPath, fields[got?.index]) || '');
     const el = doc.querySelector(`[data-nw-test="${name}"],[name="${name}"]`);
     const shownForSelect = got?.kind === 'select'
       ? (got.shown || Array.from(el?.selectedOptions || []).map(o => o.textContent).join(''))

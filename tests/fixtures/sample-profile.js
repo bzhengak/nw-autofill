@@ -201,5 +201,32 @@ export function sampleProfile() {
     'others.hobbies': '长跑、摄影',
   };
   for (const [k, v] of Object.entries(data)) set(k, v);
+
+  // 英文取值（profile.en.<同路径>）：英文表单（SF / Workday / KPMG 这类）要的就是这一份。
+  // 只列"中文值里含汉字、英文表单不能照抄"的槽位 —— 姓名拼音、China、数字、日期这些
+  // 两种语言同一个值，不重复存（matcher 里 hasCjk 那条判据保证不会重复要求用户填）。
+  const enData = {
+    'basics.ethnicity': 'Han',
+    'contact.city': 'Nanjing',
+    'contact.address': 'No.22 Hankou Rd, Gulou Dist., Nanjing',
+    'education.0.school': 'Nanjing University',
+    'education.0.major': 'Computer Science and Technology',
+    'education.1.school': 'Nanjing University of Science and Technology',
+    'education.1.major': 'Optical Engineering',
+    'intent.cities': 'Nanjing / Shanghai / Hangzhou',
+    'languages.0.language': 'English',
+    'work.0.company': 'Example Technology Group Co., Ltd.',
+    'work.0.title': 'Software Engineer',
+    'work.0.summary': 'Owned API development and online stability for the retrieval/recall pipeline; cut P99 latency from 420ms to 180ms.',
+    'internship.0.company': 'Example Internet Co., Ltd.',
+    'internship.0.title': 'Backend Developer Intern',
+    'projects.0.name': 'Campus Second-hand Marketplace',
+    'projects.0.role': 'Backend Lead',
+    'projects.0.description': 'Designed data models and built the listing search API for a campus second-hand trading platform.',
+    'awards.0.title': 'National Encouragement Scholarship',
+    'others.hobbies': 'Long-distance running, photography',
+    'others.selfIntro': 'Backend engineer focused on search infrastructure; comfortable owning a service end to end.',
+  };
+  for (const [k, v] of Object.entries(enData)) set(`en.${k}`, v);
   return p;
 }

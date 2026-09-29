@@ -435,6 +435,10 @@ export function createEmptyProfile() {  const profile = {};
         return obj;
       })();
   }
+  // 英文取值放这个稀疏子树里（en.education.0.school）。
+  // 为什么不给 537 个槽位各加一个 *En 字段：那会把 schema 翻倍，而绝大多数栏位根本不需要英文
+  // （日期、数字、邮箱、链接、性别这类"选一项"的控件），它们两种语言下就是同一个值。
+  profile.en = {};
   return profile;
 }
 
@@ -461,6 +465,91 @@ export function setValueByPath(obj, path, value) {
 
 export function sectionOf(key) {
   return SECTIONS.find(s => s.k === key) || null;
+}
+
+/**
+ * ── 中英两份取值 ───────────────────────────────────────────────────────
+ * 中文档法与英文写法都存在同一份 profile 里：中文在原路径，英文在 `en.<原路径>`。
+ * 只有"真的要按语言写两种文字"的栏位需要英文值；下面这些类型两种语言是同一个值，
+ * 不复制、也不该要求用户填两遍。
+ */
+export const EN_BUCKET = 'en';
+export const LANG_NEUTRAL_TYPES = new Set(['date', 'year', 'month', 'num', 'number', 'tel', 'email', 'url', 'file', 'enum', 'bool']);
+
+/** 这一栏是否"两种语言同一个值"（日期/数字/邮箱/下拉选项…，以及本来就要求中文的栏位） */
+export function isLangNeutral(field) {
+  const type = String(field?.type || '').toLowerCase();
+  if (LANG_NEUTRAL_TYPES.has(type)) return true;
+  // 「中文姓 / 中文名 / 中文专业名」这类栏位就是给中文用的，再要一份英文值是折磨用户
+  if (/中文|汉语/.test(String(field?.zh || '')) || /Zh$/.test(String(field?.path || '').split('.').pop() || '')) return true;
+  return false;
+}
+
+const enPath = path => `${EN_BUCKET}.${path}`;
+
+/**
+ * 读某一语言栏位的值。
+ * 英文模式下若该栏没英文值，返回 ''（不自动回退成中文）——
+ * 回不退是策略决定，交给调用方：静默把中文写进英文表单是最难发现的错填。
+ */
+export function readLang(profile, path, lang = 'zh', { neutral = false, field = null } = {}) {
+  const base = String(getValueByPath(profile, path) ?? '');
+  if (lang !== 'en' || neutral || isLangNeutral(field || { path })) return base;
+  const en = String(getValueByPath(profile, enPath(path)) ?? '');
+  if (en) return en;
+  // 值里本来就没有中日韩字符（拼音姓名 Zhang/Wei、China、数字）——英文表单要的就是它，
+  // 不该在编辑区显示成"空着等你补英文"。
+  return valueNeedsEnglish(base) ? '' : base;
+}
+
+export function writeLang(profile, path, lang = 'zh', value = '') {
+  const target = lang === 'en' && !String(path).startsWith(`${EN_BUCKET}.`) ? enPath(path) : path;
+  setValueByPath(profile, target, value);
+  return profile;
+}
+
+const CJK_RE = /[\u3400-\u9fff]/;
+
+/** 这个中文值在英文表单上是否本来就能用（没中日韩字符 → 能用：拼音姓名、China、数字…） */
+export function valueNeedsEnglish(zhValue) {
+  return CJK_RE.test(String(zhValue || ''));
+}
+
+/** 该栏在英文模式下是否"必须有英文值但还没有" */
+export function lacksEnglishValue(profile, field) {
+  if (isLangNeutral(field)) return false;
+  const zh = String(getValueByPath(profile, field.path) ?? '').trim();
+  if (!zh || !valueNeedsEnglish(zh)) return false;   // 没填、或本来就没中文 → 不算缺英文
+  return !String(getValueByPath(profile, enPath(field.path)) ?? '').trim();
+}
+
+/** 英文取值完成度（编辑器顶部提示用：还有几栏需要补英文写法） */
+export function englishCoverage(profile, fields = buildFields()) {
+  const need = fields.filter(f => !isLangNeutral(f)
+    && valueNeedsEnglish(String(getValueByPath(profile, f.path) ?? '')));
+  const done = need.filter(f => String(getValueByPath(profile, enPath(f.path)) ?? '').trim());
+  return { need: need.length, done: done.length, missing: need.filter(f => !String(getValueByPath(profile, enPath(f.path)) ?? '').trim()) };
+}
+
+const LATIN_LABEL = /^[A-Za-z][A-Za-z0-9 ()/'.\-]*$/;
+
+/** 栏位的英文显示名：取匹配词典里第一个纯拉丁别名，标题式大写。词典本来就是中英混排的。 */
+export function englishNameFor(field) {
+  const al = (field?.labels || []).map(s => String(s).trim()).filter(s => LATIN_LABEL.test(s) && s.length > 1);
+  const base = al[0] || String(field?.zh || '');
+  return base.replace(/\b[a-z]/g, c => c.toUpperCase());
+}
+
+/** 选项文案的英文版（性别/学历/是-否…）：找不到对应拉丁项就原样返回 */
+export function englishOption(value) {
+  const v = String(value || '').trim().toLowerCase();
+  if (!v) return String(value || '');
+  for (const group of VALUE_EQUIVALENTS) {
+    if (!group.some(x => String(x).toLowerCase() === v)) continue;
+    const latin = group.find(x => LATIN_LABEL.test(String(x).trim()));
+    if (latin) return String(latin);
+  }
+  return String(value || '');
 }
 
 /**

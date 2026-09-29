@@ -1,4 +1,4 @@
-import { createEmptyProfile, SECTIONS, buildFields, setValueByPath, getValueByPath, countFilled } from '../core/profile-schema.js';
+import { createEmptyProfile, SECTIONS, buildFields, setValueByPath, getValueByPath, countFilled, writeLang } from '../core/profile-schema.js';
 import { importMarkdown } from '../core/importers/markdown.js';
 import { auditProfile, editorModel, advice } from '../core/coverage.js';
 import { gapReasonLabel } from '../core/matcher.js';
@@ -10,6 +10,9 @@ import { normalizeBaseUrl, sanityCheckKey, findLeaksInExport, clampTimeoutSec, e
 const $ = id => document.getElementById(id);
 let tabId = null;
 let lastState = null;
+// 表单编辑区当前看的是哪一份取值（zh / en）。只影响编辑区，不影响填写与体检的读法：
+// 填写时用哪一份由页面语言决定，不取决于这个开关 —— 否则切个标签就把中文写进英文表单。
+let editorLang = 'zh';
 let HIGH = null;
 let aiKeyPresent = false;      // 只记"有没有"，不记内容
 let aiKeyBoundOrigin = '';     // Key 录入时绑定的 origin；Base URL 换了就得重录
@@ -39,6 +42,11 @@ async function refresh() {
   const profile = state?.profile;
   $('fillSensitive').checked = Boolean(state?.settings?.fillSensitive);
   $('allowCustomSelect').checked = Boolean(state?.settings?.allowCustomSelect);
+  $('enZhFallback').checked = state?.settings?.enMissingMode === 'zh_yellow';
+  // 编辑区语言跟着设置走（刷新面板不该跳回中文，用户正在补英文补到一半）
+  editorLang = state?.settings?.editorLang === 'en' ? 'en' : 'zh';
+  $('langZh').classList.toggle('on', editorLang === 'zh');
+  $('langEn').classList.toggle('on', editorLang === 'en');
   // Key 不回显（也不该回显）：只告诉用户本次会话里有没有、绑在哪个 origin
   if (state?.settings?.aiBaseUrl) $('aiBaseUrl').value = state.settings.aiBaseUrl;
   if (state?.settings?.aiModel) $('aiModel').value = state.settings.aiModel;
@@ -105,23 +113,31 @@ function focusSlot(path) {
 function renderForm(profile) {
   const body = $('formBody');
   body.textContent = '';
-  const model = editorModel(profile, { onlyEmpty: $('onlyEmpty').checked });
+  const lang = editorLang;
+  const en = lang === 'en';
+  $('langHint').hidden = !en;
+  const model = editorModel(profile, { onlyEmpty: $('onlyEmpty').checked, lang });
   let inputs = 0;
+  let needsEn = 0;
   for (const sec of model) {
     const h = document.createElement('h3');
     // 用 textContent + 子节点，不要把 <span> 当字符串塞进 textContent（那会原样显示标签）
-    h.append(sec.zh + ' ');
-    const en = document.createElement('span');
-    en.className = 'note';
-    en.textContent = sec.en || '';
-    h.appendChild(en);
+    const main = document.createElement('span');
+    main.textContent = (en ? (sec.en || sec.zh) : sec.zh) + ' ';
+    h.appendChild(main);
+    const other = document.createElement('span');
+    other.className = 'note';
+    other.textContent = en ? (sec.zh || '') : (sec.en || '');
+    h.appendChild(other);
     h.style.cssText = 'font-size:12px;margin:12px 0 4px;color:var(--muted)';
     body.appendChild(h);
     for (const row of sec.rows) {
       const wrap = document.createElement('label');
-      wrap.className = 'frow';
+      wrap.className = 'frow' + (row.needsEnglish ? ' needsEn' : '');
       const name = document.createElement('span');
-      name.textContent = row.label + (row.sensitive ? '（敏感）' : '');
+      name.textContent = row.label + (row.sensitive ? (en ? ' (sensitive)' : '（敏感）') : '')
+        + (row.needsEnglish ? (en ? ' *' : '（缺英文）') : '');
+      name.title = row.labelZh + (row.needsEnglish ? `　|　中文值：${row.altValue}` : '');
       let ctrl;
       if (row.type === 'textarea') ctrl = document.createElement('textarea');
       else if (row.type === 'enum' && row.options.length) {
@@ -130,28 +146,47 @@ function renderForm(profile) {
         const blank = document.createElement('option');
         blank.value = ''; blank.textContent = '';
         ctrl.appendChild(blank);
-        for (const o of row.options) {
+        row.options.forEach((shown, i) => {
           const opt = document.createElement('option');
-          opt.value = o; opt.textContent = o;
+          // 显示英文，存的是规范值（见 core/coverage.js 的 optionValues 注释）
+          opt.value = row.optionValues?.[i] ?? shown;
+          opt.textContent = shown;
           ctrl.appendChild(opt);
-        }
-        if (row.value && !row.options.includes(row.value)) {
+        });
+        if (row.value && !row.options.includes(row.value) && !(row.optionValues || []).includes(row.value)) {
           const opt = document.createElement('option');
-          opt.value = row.value; opt.textContent = row.value + '（现值不在候选）';
+          opt.value = row.value; opt.textContent = row.value + (en ? ' (current)' : '（现值不在候选）');
           ctrl.appendChild(opt);
         }
       } else ctrl = document.createElement('input');
       if (ctrl.tagName === 'INPUT') ctrl.type = row.type === 'date' ? 'date' : 'text';
       ctrl.value = row.value;
       ctrl.dataset.path = row.path;
+      ctrl.dataset.lang = lang;
+      // 灰提示 = 这一栏的中文值：EN 模式下照着它写英文，不用来回切语言
+      if (en && !row.neutral && !row.value && row.altValue) ctrl.placeholder = `中文：${String(row.altValue).slice(0, 40)}`;
       wrap.appendChild(name);
       wrap.appendChild(ctrl);
       body.appendChild(wrap);
       inputs++;
+      if (row.needsEnglish) needsEn++;
     }
   }
   $('formMeta').textContent = `${inputs} 个字段（列表分组只展开在用的段落 + 一个空段）`;
+  $('langMeta').textContent = en
+    ? (needsEn ? `${needsEn} 栏只有中文值，补完才会在英文表单上写入` : '该补的英文写法都齐了')
+    : '中文取值（日期/邮箱/选项等两种语言同一个值）';
 }
+
+function setEditorLang(lang) {
+  editorLang = lang === 'en' ? 'en' : 'zh';
+  $('langZh').classList.toggle('on', editorLang === 'zh');
+  $('langEn').classList.toggle('on', editorLang === 'en');
+  chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { editorLang } });
+  renderForm(lastState?.profile || createEmptyProfile());
+}
+$('langZh').onclick = () => setEditorLang('zh');
+$('langEn').onclick = () => setEditorLang('en');
 
 $('btnForm').onclick = () => {  const open = $('formEditor').style.display !== 'none';
   $('formEditor').style.display = open ? 'none' : 'block';
@@ -161,7 +196,11 @@ $('btnFormCancel').onclick = () => { $('formEditor').style.display = 'none'; };
 $('onlyEmpty').onchange = () => renderForm(lastState?.profile || createEmptyProfile());
 $('btnFormSave').onclick = async () => {
   const next = JSON.parse(JSON.stringify(lastState?.profile || createEmptyProfile()));
-  for (const el of $('formBody').querySelectorAll('[data-path]')) setValueByPath(next, el.dataset.path, el.value);
+  // 每个输入框带着自己是中文还是英文（data-lang）：EN 模式的值写进 profile.en.<路径>，
+  // 中文模式的写进原路径。混成一处写就会把英文校名覆盖掉中文校名 —— 那是数据丢失，不是显示问题。
+  for (const el of $('formBody').querySelectorAll('[data-path]')) {
+    writeLang(next, el.dataset.path, el.dataset.lang || 'zh', el.value);
+  }
   await chrome.runtime.sendMessage({ type: 'nw:saveProfile', profile: next });
   $('formMeta').textContent = '已保存。';
   await refresh();
@@ -181,15 +220,29 @@ $('allowCustomSelect').onchange = async e => {
     ? '已授权点开自定义下拉：这类栏位会被真实点击并选中，结果一律标黄由你核对。提交仍然不会代做。'
     : '已收回授权：自定义下拉恢复为「交给你手动点」，不再被点击。'}</div>` + ($('stats').innerHTML || '');
 };
+// 英文表单缺英文值时怎么办：默认**不写**（列进"需要你处理"），勾选后才允许写中文并标黄。
+// 这个勾必须真的落到 settings.enMissingMode，否则 matcher 读不到 = 界面上骗人。
+$('enZhFallback').onchange = async e => {
+  const mode = e.target.checked ? 'zh_yellow' : 'strict';
+  await chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { enMissingMode: mode } });
+  lastState = { ...(lastState || {}), settings: { ...(lastState?.settings || {}), enMissingMode: mode } };
+};
 
 function render(data, meta = {}) {
   const s = data?.stats || {};
   const withheld = (data?.gaps || []).filter(g => g.reason === 'sensitive_withheld');
+  const noEn = (data?.gaps || []).filter(g => g.reason === 'missing_english_value');
   const banners = [];
   if (s.profileFilled === 0) {
     banners.push('<div class="banner">简历资料是空的（0 项有值）：所以现在一个字段都填不了。先去「导入简历 Markdown」或「分类编辑」把资料灌进来，再来扫描。</div>');
   } else if (withheld.length) {
     banners.push(`<div class="banner">${withheld.length} 个敏感字段（证件号/手机号等）按你的设置没有写入。要自动填就在下方勾选「允许填写敏感字段」。</div>`);
+  }
+  // 英文页面上"中文有值、英文没值"的槽位：我们宁可留空也不把中文写进英文名栏，
+  // 所以必须说清是哪几栏、以及两条出路（补英文值 / 开那个降级开关）。
+  if (noEn.length) {
+    banners.push(`<div class="banner">这一页是英文表单，${noEn.length} 个槽位只有中文写法，已故意留空（把「南京大学」写进 English name 就是这种事故）。`
+      + '去「分类编辑」切到 English 表单补齐；赶时间可勾「缺英文时写中文并标黄」。</div>');
   }
   const ai = meta.adapterInfo;
   if (!meta.adapterId && ai && !ai.loaded) {

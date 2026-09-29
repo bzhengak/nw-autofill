@@ -95,3 +95,27 @@ test('主世界提交闸门作为 MAIN-world content script 注册', () => {
   assert.equal(entry.run_at, 'document_start', '晚于 document_start 就来不及包住原生 submit');
   assert.ok(fs.existsSync(root('../dom/submit-guard.js')));
 });
+
+/**
+ * 设置项穿线：面板有勾、matcher 会读，中间的 content.js 忘了传就是"界面上骗人"。
+ * 这类断链在 jsdom 里测不到（内容脚本要真浏览器），所以在源码层面钉死：
+ * handleScan 的每个入参都必须 ① 自己用掉 ② 由 nw:scan 监听传进来。
+ */
+test('handleScan 的每个入参都要真的被用掉，也要真的由 nw:scan 传进来', () => {
+  const src = read('../dom/content.js');
+  const sig = src.match(/async function handleScan\(\{([^}]*)\}\)/);
+  assert.ok(sig, '没抓到 handleScan 的解构签名');
+  const params = sig[1].split(',').map(s => s.trim().split(/[\s:=]/)[0]).filter(Boolean);
+  assert.ok(params.length >= 6, `只抓到 ${params.length} 个入参，正则八成没匹配上`);
+  const body = src.slice((sig.index || 0) + sig[0].length).split('chrome.runtime.onMessage')[0];
+  assert.ok(body.includes('matcher.planFill'), '函数体没截到 planFill 调用');
+  for (const p of params) {
+    assert.ok(new RegExp(`\\b${p}\\b`).test(body), `${p} 传进 handleScan 却没人读它：这个设置等于没生效`);
+  }
+  const listener = src.split("msg?.type === 'nw:scan'")[1]?.split("'} else if")[0]
+    || src.split("msg?.type === 'nw:scan'")[1]?.split('else if')[0];
+  assert.ok(listener, "没抓到 nw:scan 监听体");
+  for (const p of params) {
+    assert.ok(new RegExp(`\\b${p}\\s*:`).test(listener), `${p} 从没被 nw:scan 传过：handleScan 永远只能拿到默认值`);
+  }
+});

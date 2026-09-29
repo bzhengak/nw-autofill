@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { createEmptyProfile, buildFields, getValueByPath, setValueByPath, SECTIONS } from '../core/profile-schema.js';
 import { normalize, simplify, core, signals, sniffType, assignMaxWeight, inferDateFormat, formatDate, boolLike, scorePair, typeCompatible } from '../core/matching.js';
-import { planFill, resolveOption } from '../core/matcher.js';
+import { planFill, resolveOption, detectPageLanguage } from '../core/matcher.js';
 import { SUBMIT_TEXT_RE, classifyClick } from '../dom/safety.js';
 
 const profileField = (o) => ({ path: o.path, key: o.key || o.path.split('.').pop(), section: o.section || 'basics', itemIndex: o.itemIndex ?? null, zh: o.zh, labels: [o.zh, ...(o.al || [])].map(s => s.toLowerCase()), type: o.type || 'text', options: o.options || [], sensitive: Boolean(o.sensitive) });
@@ -489,4 +489,70 @@ test("只读框分两种：日历控件提示你去点选，站点自己算的�
   assert.equal(plan.gaps.find(g => g.index === 0)?.reason, "date_picker", "日历控件要说清\"要点开选\"");
   assert.equal(plan.gaps.find(g => g.index === 1)?.reason, "readonly_control", "身份证推导出来的只读框不该提示用户去点日历");
   assert.equal(plan.assignments.length, 0, "两种都不该产生写入");
+});
+
+// ── 中英两份取值：英文表单不能收到中文 ──────────────────────────────────
+test('英文页面上只有中文值的槽位不写入，缺口说清"缺的是英文写法"', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'education.0.school', '南京大学');
+  const fields = [pageField({ label: 'School / University' })];
+  const plan = planFill(fields, p, { mode: 'full', lang: 'en' });
+  assert.equal(plan.assignments.length, 0, '把「南京大学」写进英文表单的 School 栏就是错填');
+  const gap = plan.gaps.find(g => g.index === 0);
+  assert.equal(gap.reason, 'missing_english_value');
+  assert.match(gap.note, /「学校」/, '缺口没指出该补哪一槽的英文写法');
+  assert.equal(gap.slotPath, 'education.0.school');
+});
+
+test('补了英文值就写英文；日期/邮箱/拼音姓名不用补第二遍', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'education.0.school', '南京大学');
+  setValueByPath(p, 'en.education.0.school', 'Nanjing University');
+  setValueByPath(p, 'basics.birthDate', '2001-03-15');
+  setValueByPath(p, 'basics.lastName', 'Zhang');
+  const fields = [
+    pageField({ label: 'School / University' }),
+    pageField({ label: 'Date of Birth' }),
+    pageField({ label: 'Last Name (Surname)' }),
+  ];
+  // 出生日期与姓氏都算敏感栏，不勾「允许填写敏感字段」本来就不自动写 —— 这正是默认行为，测试要显式打开才量到语言层
+  const plan = planFill(fields, p, { mode: 'full', fillSensitive: true });
+  const by = i => plan.assignments.find(a => a.index === i);
+  assert.equal(by(0)?.value, 'Nanjing University');
+  assert.equal(by(1)?.value, '2001-03-15', '日期两种语言同一个值，不该被要求补英文');
+  assert.equal(by(2)?.value, 'Zhang', '拼音姓名不该被催着填第二遍');
+  assert.ok(!plan.gaps.some(g => g.reason === 'missing_english_value'), `不该再报缺英文：${JSON.stringify(plan.gaps)}`);
+});
+
+test('页面自己就要中文（Chinese name）时写中文，拼音反而是错', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'basics.name', '张伟');
+  const fields = [pageField({ label: 'Chinese name' }), pageField({ label: 'Name in English' })];
+  const plan = planFill(fields, p, { mode: 'full', lang: 'en', fillSensitive: true });
+  assert.equal(plan.assignments.find(a => a.index === 0)?.value, '张伟');
+  // 第二栏要的是英文名：没填英文 → 不写
+  assert.ok(!plan.assignments.some(a => a.index === 1 && /[\u3400-\u9fff]/.test(a.value)), '中文姓名被写进英文名栏');
+});
+
+test('缺英文值时写中文兜底必须降级为黄字并说明写的是中文（用户显式开这个模式才有）', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'education.0.school', '南京大学');
+  const fields = [pageField({ label: 'School / University' })];
+  const strict = planFill(fields, p, { mode: 'full', lang: 'en' });
+  assert.equal(strict.assignments.length, 0, '默认必须严格');
+  const soft = planFill(fields, p, { mode: 'full', lang: 'en', enMissingMode: 'zh_yellow' });
+  const a = soft.assignments.find(x => x.index === 0);
+  assert.equal(a?.value, '南京大学');
+  assert.equal(a?.tier, 'review', '拿中文顶英文栏绝不能给绿字');
+  assert.match(a?.note, /中文值/);
+});
+
+test('页面语言判定只用页面自己的标签：双语标签算中文页，三个以下标签不猜', () => {
+  assert.equal(detectPageLanguage([
+    pageField({ label: 'Full Name' }), pageField({ label: 'Date of Birth' }), pageField({ label: 'Current City' }),
+  ]), 'en');
+  assert.equal(detectPageLanguage([
+    pageField({ label: '姓名 Name' }), pageField({ label: '出生日期 DOB' }), pageField({ label: '性别' }),
+  ]), 'zh', '中英并排的页面本来就接受中文写法');
+  assert.equal(detectPageLanguage([pageField({ label: 'Name' })]), 'zh', '一个孤立英文标签不该把整页判成英文，否则一屏栏位会集体变成缺英文');
 });

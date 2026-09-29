@@ -1,7 +1,7 @@
 // 匹配流水线：页面字段描述 × profile → 分配方案（含置信分层与缺口归因）。
 // 纯函数，输入是 dom/scanner.js 产出的字段描述对象，不接触 DOM。
 
-import { buildFields, getValueByPath, equivalentsOf } from './profile-schema.js';
+import { buildFields, getValueByPath, equivalentsOf, isLangNeutral } from './profile-schema.js';
 import { planFromAdapter, dateFormatOverride } from './adapters.js';
 import { assignMaxWeight, scorePair, normalize, core, inferDateFormat, boolLike, signals, negationMismatch, AMBIGUOUS_SECTIONS, dateParts, isQuestionLabel } from './matching.js';
 
@@ -91,6 +91,7 @@ export const GAP_REASON_ZH = {
   site_search: '这是站点自己的搜索框（"请输入职位或企业名称"），不是简历字段，故意不填',
   readonly_control: '站点只读或由它自己推导，不需要填',
   date_picker: '这是站点的日期/时间日历控件：打字进不去，需要你点开选（插件不代点日历，避免把日期写错还显示成成功）',
+  missing_english_value: '这一页是英文表单，而你这一槽只填了中文写法 —— 已故意不写入：切到「English 表单」补一条英文值再扫（不想补就在设置里开"缺英文时写中文并标黄"）',
   consent_declaration: '同意/授权/声明类必须你本人表态，插件不代勾选',
   declaration: '声明类文本由你本人签，插件不代写',
   conditional_other: '条件题：要先答完前面那一题，这一栏才有意义',
@@ -201,9 +202,72 @@ function os_tokens(text) {
  * @param {Object} profile    createEmptyProfile() 形状的数据
  * @param {Object} opts       { mode: 'full'|'incremental'|'selection', allowAiCandidates:false }
  */
+/**
+ * 这一页是英文表单还是中文表单。
+ * 判据只用"页面自己的标签文字"，不看域名也不看站点 id（自建门户什么域名都有）：
+ *  · 任何一栏标签里出现中日韩字符 → 中文页（中英并排的"姓名 Name"本来就接受中文写法）；
+ *  · 否则有 ≥2 栏纯拉丁标签 → 英文页。
+ * 门槛定在 2 而不是 1：一个孤立英文标签（中文门户上"Name / Email"混着放）就把整页判成英文，
+ * 会让一屏栏位集体变成"缺英文值"，那种误伤比漏判更烦人。
+ * 向导式站点每步栏位很少，所以 2 栏足够触发 —— 分步填写正是英文站的常态。
+ * @returns {'en'|'zh'}
+ */
+export function detectPageLanguage(pageFields = []) {
+  const CJK = /[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/;
+  let latin = 0;
+  for (const pf of pageFields) {
+    const t = String(pf?.label || '').trim();
+    if (!t) continue;
+    if (CJK.test(t)) return 'zh';
+    if (/[A-Za-z]{2,}/.test(t)) latin++;
+  }
+  return latin >= 2 ? 'en' : 'zh';
+}
+
+/**
+ * 页面这一栏自己就要中文（KPMG/Moka 的 "Chinese name"、"中文姓名"）。
+ * 这时"英文页面上不写中文"是错的直觉 —— 它问的就是中文，写拼音才是填错。
+ * 判分工具与填写用同一个函数，避免两边各判一次判出两个结果。
+ */
+export function pageRequestsChinese(pf) {
+  return /中文|汉语|chinese/i.test(`${pf?.labelRaw || ''} ${pf?.label || ''} ${pf?.placeholder || ''}`);
+}
+
+/** 取值里还留着中日韩字符（日期/数字/纯拉丁不算） */
+export function hasCjk(value) {
+  return /[\u3400-\u9fff]/.test(String(value || ''));
+}
+
 export function planFill(pageFields, profile, opts = {}) {
   const mode = opts.mode || 'full';
   const schemaFields = buildFields();
+  // ── 中英两份取值：这一页要的是哪一份 ────────────────────────────────
+  // 英文页面（SF / Workday / 港企自建）拿 profile.en.<路径>；中文页面拿原路径。
+  // 缺英文值时默认**不写**（用户明确要求"不写，列入待你处理"）：
+  // 把「南京大学」写进英文名栏位是看起来填好了、实际全错的典型事故。
+  // enMissingMode='zh_yellow' 才允许退回中文值，且强制黄字。
+  const pageLang = opts.lang || detectPageLanguage(pageFields);
+  const zhFallback = String(opts.enMissingMode || '') === 'zh_yellow';
+  const fieldByPath = new Map(schemaFields.map(f => [f.path, f]));
+  const missingEnglish = new Set();     // 中文有值、英文没值
+  const viaZhFallback = new Set();      // 本轮真的用了中文兜底的槽位
+  const valueOf = (path, pf) => {
+    const base = String(getValueByPath(profile, path) ?? '').trim();
+    if (pageLang !== 'en' || isLangNeutral(fieldByPath.get(path) || { path })) return base;
+    if (pageRequestsChinese(pf)) return base;
+    // 值里本来就没有中日韩字符（拼音姓名 Zhang/Wei、China、178、GPA…）：
+    // 英文表单要的就是它，不需要用户再抄一遍。要求"每栏填两遍"是把功能做成负担。
+    if (base && !hasCjk(base)) return base;
+    const en = String(getValueByPath(profile, `en.${path}`) ?? '').trim();
+    if (en) return en;
+    if (!base) return '';
+    missingEnglish.add(path);
+    if (zhFallback) {
+      viaZhFallback.add(path);
+      return base;
+    }
+    return '';
+  };
   const { pins, skip, slotPins } = planFromAdapter(pageFields, opts.adapter);
   const pinned = [];
   const assignments = [];
@@ -337,12 +401,22 @@ export function planFill(pageFields, profile, opts = {}) {
     const scoring = asDate ? { ...pf, compositeDate: undefined, placeholder: '', label: dateGroupLabel(pf.label, group) } : pf;
     const dateish = sf => sf.type === 'date' || sf.type === 'month' || sf.type === 'year';
     const candidates = [];
+    const nearMissEn = [];
     const questionish = isQuestionLabel(pf.labelRaw || pf.label);
     for (let c = 0; c < schemaFields.length; c++) {
       const sf = schemaFields[c];
       if (asDate && !dateish(sf)) continue;        // 年框+月框问的就是一个日期，别让它去抢文本栏
-      const value = String(getValueByPath(profile, sf.path) ?? '').trim();
-      if (!value) continue;
+      const value = valueOf(sf.path, scoring);
+      if (!value) {
+        // 英文页面上"这一槽只有中文值"不能算"我们没有这个词"：
+        // 先记下按标签本来能匹配到（near miss），缺口就报成 missing_english_value，
+        // 用户看到的下一步是"去 EN 表单补这一栏的英文写法"，而不是"去补别名"。
+        if (pageLang === 'en' && missingEnglish.has(sf.path)) {
+          const s0 = scorePair(scoring, sf);
+          if (s0 >= REVIEW_THRESHOLD) nearMissEn.push({ sf, s: s0 });
+        }
+        continue;
+      }
       const s = scorePair(scoring, sf);
       // 问句式标签：港企/SF 里"Do you require sponsorship?"这类是合规判断题（bool/enum），该填；
       // 而"which functions interest you?"这类动机题靠词元重合能蹭到"兴趣爱好"，必须挡住。
@@ -360,8 +434,14 @@ export function planFill(pageFields, profile, opts = {}) {
         const sf = schemaFields[c];
         if (asDate && !dateish(sf)) continue;
         if (sf.section !== pf.sectionHint && !AMBIGUOUS_SECTIONS.has(sf.section)) continue;
-        const value = String(getValueByPath(profile, sf.path) ?? '').trim();
-        if (!value) continue;
+        const value = valueOf(sf.path, scoring);
+        if (!value) {
+          if (pageLang === 'en' && missingEnglish.has(sf.path)) {
+            const s0 = scorePair(relaxed, sf);
+            if (s0 >= REVIEW_THRESHOLD) nearMissEn.push({ sf, s: s0 * 0.95 });
+          }
+          continue;
+        }
         const s = scorePair(relaxed, sf);
         if (s >= REVIEW_THRESHOLD) candidates.push({ c, sf, value, s: s * 0.95, relaxedHint: true });
       }
@@ -380,7 +460,7 @@ export function planFill(pageFields, profile, opts = {}) {
       }
       return;
     }
-    considered.push({ index, top: candidates.slice(0, TOP_K) });
+    considered.push({ index, top: candidates.slice(0, TOP_K), nearMissEn: nearMissEn.sort((a, b) => b.s - a.s).slice(0, TOP_K) });
   });
 
   // 构造稀疏代价矩阵：行 = 有候选的页面字段，列 = 出现过的 profile 索引
@@ -388,6 +468,19 @@ export function planFill(pageFields, profile, opts = {}) {
   const colSet = new Map();
   for (const item of considered) {
     if (!item.top.length) {
+      const pf = pageFields[item.index];
+      const miss = (item.nearMissEn || [])[0];
+      if (miss) {
+        // 按标签本来能对上、只是这一槽没英文写法：把它说成"缺英文值"而不是"我们没有这个词"，
+        // 否则用户会去补别名，而真正该补的是 EN 表单里的这一栏
+        gaps.push({
+          index: item.index, label: pf.label || '(未命名字段)',
+          reason: 'missing_english_value', kind: pf.kind,
+          note: `这一栏按标签对应到「${miss.sf.zh}」，但你只填了中文值；英文表单需要英文写法 —— 在侧边栏切到 English 表单补齐。`,
+          slotPath: miss.sf.path,
+        });
+        continue;
+      }
       gaps.push({
         index: item.index,
         label: pageFields[item.index].label || '(未命名字段)',
@@ -437,6 +530,14 @@ export function planFill(pageFields, profile, opts = {}) {
       tier: chosen.score >= AUTO_THRESHOLD && !sf.sensitive ? 'auto' : 'review',
     };
     if (sf.sensitive && chosen.score >= AUTO_THRESHOLD) entry.reason = 'sensitive_requires_review';
+    // 英文页面上用中文值兜底（用户显式开了 enMissingMode）→ 一律黄字并说明写的是中文。
+    // 这种写法有风险（可能把中文塞进英文栏），所以绝不给绿字，哪怕分数很高。
+    if (pageLang === 'en' && viaZhFallback.has(sf.path)) {
+      entry.tier = 'review';
+      entry.note = entry.note
+        ? `${entry.note}；这一栏没有英文写法，写进去的是中文值，请核对`
+        : '这一栏没有英文写法，写进去的是中文值，请核对（或在 English 表单补英文值）';
+    }
     // 判断题（是/否、单选合规项）永远黄字：这类栏填下去是对雇主的一句话（"我不需要签证担保"），
     // 而资料里的值可能早就过时了 —— 打字的代价是一次改正，猜错的代价是一次不实陈述。
     if ((sf.type === 'bool' || pf.kind === 'radio' || pf.kind === 'checkbox') && entry.tier === 'auto') {
@@ -454,7 +555,10 @@ export function planFill(pageFields, profile, opts = {}) {
     const sectionEvidence = Boolean(pf.sectionHint) && pf.sectionHint === sf.section;
     if (sf.itemIndex != null && !domEvidence && !sectionEvidence) {
       entry.tier = 'review';
-      entry.note = `无法确定这是第 ${(sf.itemIndex ?? 0) + 1} 段「${sf.section}」经历，请核对`;
+      // 追加而不是覆盖：一栏可以同时有两个问题（既是"第几段说不清"，又是"写的是中文值"），
+      // 后面那条被前面那条顶掉过，用户就少知道一件事
+      const why = `无法确定这是第 ${(sf.itemIndex ?? 0) + 1} 段「${sf.section}」经历，请核对`;
+      entry.note = entry.note ? `${entry.note}；${why}` : why;
     }
     // 配对错位检测：页面这一栏是"某个标签的第 k 次出现"，却被派到资料里序号不等于 k 的条目上，
     // 说明同块内的字段来自不同条目（Klook 两个「公司名称」互相换位就是这么发生的）。

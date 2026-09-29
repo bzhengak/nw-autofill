@@ -51,6 +51,14 @@
   .frow > span { flex:0 0 38%; font-size:12px; color:var(--fg); }
   .frow input, .frow select, .frow textarea { flex:1; min-height:0; padding:4px 6px; font:inherit; background:var(--field-bg); color:var(--field-fg); border:1px solid var(--line); border-radius:4px; }
   .frow textarea { min-height:52px; }
+  /* 中英表单切换：分段控件，选中态要一眼看得出，因为它决定值写到哪一份 */
+  .seg { display:inline-flex; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+  .segBtn { border:0; border-radius:0; padding:4px 10px; font-size:12px; background:var(--btn-bg); color:var(--fg); cursor:pointer; }
+  .segBtn + .segBtn { border-left:1px solid var(--line); }
+  .segBtn.on { background:var(--accent, #2f6feb); color:#fff; }
+  /* 只有中文、缺英文写法的栏位：EN 模式下填英文表单会被拒写，必须当场看得见 */
+  .frow.needsEn > span { color:var(--warn-fg, #9a6700); font-weight:600; }
+  .frow.needsEn input, .frow.needsEn textarea { border-color:var(--warn-line, #d4a72c); border-style:dashed; }
   #auditMissing tr:hover td { background: var(--btn-bg); }
 </style>
 </head>
@@ -122,6 +130,18 @@
     <span class="note" id="formMeta"></span>
   </div>
   <div id="formEditor" style="display:none">
+    <div class="row" id="langRow">
+      <span class="seg" role="group" aria-label="表单编辑语言">
+        <button id="langZh" class="segBtn on" type="button">中文表单</button>
+        <button id="langEn" class="segBtn" type="button">English form</button>
+      </span>
+      <span class="note" id="langMeta"></span>
+    </div>
+    <p class="hint" id="langHint" hidden>
+      这一栏开始，字段名与取值都是<b>英文版</b>：写在这里的是填英文表单（SF / Workday / 港企）时用的写法，
+      中文值仍留在中文表单里，互不覆盖。日期、数字、邮箱、下拉选项这类两种语言同一个值的栏位不单独存。
+      输入框的灰色提示是它的中文值，照着写就行。<b>只有中文、没补英文的栏位，填英文表单时会被拒绝写入并列入"需要你处理"</b>。
+    </p>
     <div id="formBody"></div>
     <div class="row">
       <button class="primary" id="btnFormSave">保存修改</button>
@@ -142,6 +162,7 @@
       <button id="btnCancel">取消</button>
       <label class="chk"><input type="checkbox" id="fillSensitive">允许填写证件号等敏感字段</label>
       <label class="chk"><input type="checkbox" id="allowCustomSelect">允许点开自定义下拉并选中（会真的点击页面控件）</label>
+      <label class="chk"><input type="checkbox" id="enZhFallback">英文表单遇到只有中文写法的栏位：写中文并标黄（默认不写，列入"需要你处理"）</label>
     </div>
   </div>
 

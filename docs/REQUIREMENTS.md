@@ -65,7 +65,15 @@
 ## 3. 功能需求（关键细节，请重点看 3.5 / 3.7 两处否决点）
 
 ### 3.1 Profile 与导入
-- 单一 profile JSON，字段带：`path`（如 `education[0].school`）、`zh_labels`、`en_labels`、`abbrev`、`type`、`sensitive` 标记、`updated_at`。
+- 单一 profile JSON，字段元数据在 `core/profile-schema.js` 的字段表里：`path`（如 `education.0.school`）、中文标签、英文标签、`type`、`sensitive` 标记。
+  （2026-09-30 校正：原计划里的 `abbrev`、逐字段 `updated_at` 都没有实现， profile 实例里也不存它们 —— 别照着这句写代码。）
+- **中英两份值（2026-09-30 落定）**：中文存在 `path`，英文存在同结构的 `en.<path>` 子树；
+  「分类编辑」顶部的中/EN 开关（`settings.editorLang`）只决定编辑区显示与写入哪一份，保存永远只写当前语言的桶。
+  填写时读哪一份由**页面标签语言**决定（`detectPageLanguage` + `pageRequestsChinese`），与编辑区开关无关。
+  语言中性栏位（日期/数字/邮箱/电话/文件）与"值里本就无汉字"的（拼音姓名、GPA）共用一份，不要求抄两遍；
+  枚举在英文模式显示 `Male` 但存规范值 `男`（显示文字与规范值分成两条，见 `editorModel` 的 `options` / `optionValues`）。
+  缺英文值**默认不写**，报 `missing_english_value` 并进「待你处理」；`settings.enMissingMode='zh_yellow'` 才允许写中文并强制黄字。
+  `updated_at` 仍在待办（下面这条没做完）。
 - 导入通道：① **Markdown 简历**（规则解析标题层级分段，零网络）；② **带文字层 PDF**（扩展内打包 pdf.js，本地抽文字，再把文字按分段规则结构化）；③ 手填；④ 从 JSON 备份导入。
 - 扫描件 OCR：**v1 不做**（你未选择该格式）。
 - 导出 JSON 备份，换机可用。

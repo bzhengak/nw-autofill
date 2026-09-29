@@ -116,6 +116,19 @@ test('同端点只改路径（/v1 → /v1beta）不算换地址，确认继续�
   assert.equal(got, 'https://api.a.test');
 });
 
+// 语言开关与"缺英文写中文"都走同一条 nw:saveSettings。如果作废规则看的是"设置变没变"
+// 而不是"端点变没变"，用户切一下语言就又要重勾确认 —— 那就是 needs_consent 复发。
+test('切编辑语言 / 改缺英文策略：与端点无关，确认不能被擦掉，且这两个键要能存住', () => {
+  const prev = { aiBaseUrl: 'https://api.a.test/v1', aiConsentOrigin: 'https://api.a.test' };
+  for (const patch of [{ editorLang: 'en' }, { editorLang: 'zh' }, { enMissingMode: 'zh_yellow' }, { enMissingMode: 'strict' }]) {
+    assert.equal(consentAfterSettingsPatch({ prev, patch }), 'https://api.a.test', `${JSON.stringify(patch)} 擦掉了确认`);
+  }
+  const { clean, dropped } = sanitizeSettings({ editorLang: 'en', enMissingMode: 'zh_yellow', evil: 'x' });
+  assert.equal(clean.editorLang, 'en', 'editorLang 不在白名单里 → 存了就丢，切换记不住');
+  assert.equal(clean.enMissingMode, 'zh_yellow', 'enMissingMode 不在白名单里 → 那个勾等于没生效');
+  assert.deepEqual(dropped.map(d => d.k), ['evil'], '未知设置项要报出来，不能静默吞掉');
+});
+
 test('取消确认就立刻清空；还没填端点时确认留着（另有 no_endpoint 闸拦发送）', () => {
   assert.equal(consentAfterSettingsPatch({ prev: { aiConsentOrigin: 'https://api.a.test' }, patch: { aiConsentOrigin: '' } }), '');
   assert.equal(consentAfterSettingsPatch({ prev: {}, patch: { aiConsentOrigin: 'https://api.a.test' } }), 'https://api.a.test',

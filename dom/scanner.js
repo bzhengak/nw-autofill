@@ -8,6 +8,8 @@ import { SELECT_TRIGGER_SELECTOR } from './safety.js';
 
 const IGNORE_INPUT_TYPES = new Set(['hidden', 'submit', 'button', 'image', 'reset']);
 const CONTROL_SELECTOR = 'input, textarea, select, [contenteditable="true"], [role="combobox"], [role="listbox"]';
+// "这是一个表单条目"级别的容器：只有类名自己这么写的，才允许往"控件之后的那一支"找标签。
+const ITEM_ROW_SELECTOR = '[class*="form-item"],[class*="formItem"],[class*="form-row"],[class*="formRow"],[class*="form-group"],[class*="formGroup"]';
 
 const SECTION_HINTS = [
   { re: /(教育|学历|学校|院校|专业|graduate|education|academic|school)/i, key: 'education' },
@@ -126,8 +128,11 @@ function isBlockTitle(node) {
  * 标签解析：收集多个候选再打分选优。
  * 单一策略在真实站点必错——招行的日期框"标签"全是 placeholder「请选择时间」，
  * 拼多多有「毕业学院」这种笔误叫法，携程的 SVG 会把 "Created with Sketch." 当文本吐出来。
+ *
+ * 导出给 dom/probe.js：探针必须报告"填充路径实际看到的标签"，
+ * 否则我在导出里读到的失败可能是探针自己的简化实现，而不是用户界面上的真问题。
  */
-function labelFor(el, doc) {
+export function labelFor(el, doc) {
   const cands = [];
   const push = (node, source, depth) => {
     if (!node) return;
@@ -136,6 +141,9 @@ function labelFor(el, doc) {
       if (txt) cands.push({ text: txt, raw: normRaw(node.nodeValue), source, depth: depth || 0 });
       return;
     }
+    // 注释不是标签。真实页面会留模板注释（SF/CMS 的 <!-- ... -->、构建工具的水印），
+    // 而 Comment.textContent 就是注释正文——它曾经把一整句中文注释当成"期望行业"的标签。
+    if (node.nodeType === 8) return;
     // 含表单控件的兄弟节点是"上一个字段"，不是这个字段的标签
     if (node.querySelector && node.querySelector(CONTROL_SELECTOR)) return;
     if (node.contains && node.contains(el) && node !== el) return;
@@ -189,6 +197,22 @@ function labelFor(el, doc) {
     }
     if (kids.length && kids[0] === node && hops >= 2) break;
     node = holder;
+  }
+
+  // 栅格条目（AntD 的 ant-col 布局）会把"标签那一列"排在"控件那一列"之后，
+  // 而且控件外面常套一串单子元素（picker > children > control > wrapper），
+  // 主循环里"单子链就走够了"的优化会提前收手，所以这里单独沿祖先找 form-item 级容器，
+  // 只取它"不含控件的直接子分支"里的 label/title 节点。判据窄是刻意的：
+  // 越过条目边界去前面捞文本，代价是把隔壁字段的标签当成自己的（宁可没有也不假绿）。
+  for (let n = el.parentElement, up = 0; n && up < 7; n = n.parentElement, up++) {
+    if (n.tagName === 'FORM' || n.tagName === 'BODY') break;
+    if (!n.matches?.(ITEM_ROW_SELECTOR)) continue;
+    for (const k of Array.from(n.children || [])) {
+      if (!k || (k.contains && k.contains(el))) continue;
+      if (k.querySelector && k.querySelector(CONTROL_SELECTOR)) continue;
+      if (isFieldShell(k)) continue;
+      push(k.querySelector(':scope > label, :scope > [class*="label"], :scope > [class*="title"], :scope > dt, :scope > th'), 'item-label', up + 3);
+    }
   }
 
   const ph = clean(el.getAttribute('placeholder'));

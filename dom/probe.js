@@ -3,12 +3,13 @@
 // 与 core/matching.js 一样是纯 DOM 函数，可在 jsdom 下单测。
 
 import { core, normalize } from '../core/matching.js';
+import { labelFor } from './scanner.js';
 
 const CONTROL_SELECTOR = 'input, textarea, select, [contenteditable="true"], [role="combobox"], [role="spinbutton"], [role="listbox"]';
 const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
 // 导出物自带版本号：用户贴回来的 JSON 能直接证明"他浏览器里跑的是哪一版探针"，
 // 不用再靠"你是不是重载了扩展"这种对话去猜。
-const PROBE_BUILD = '2026-09-29-2';
+const PROBE_BUILD = '2026-09-29-4';
 
 function escapeId(id) {
   return (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(id) : String(id).replace(/([^\w-])/g, '\\$1');
@@ -54,27 +55,89 @@ function rawLabelOf(el, doc, note) {
   if (wrap && norm(wrap.textContent)) return { t: norm(wrap.textContent).slice(0, 40), v: 'wrapped' };
 
   let n = el.parentElement, hops = 0;
+  const trace = [];
   while (n && hops < 6) {
     const lab = n.querySelector(':scope > label, :scope > [class*="label"], :scope > [class*="title"], :scope > dt, :scope > [class*="name"]');
-    if (lab) { const t = norm(lab.textContent); if (t && t.length <= 40) { note(t, 'container'); return { t, v: 'container' }; } }
+    if (lab) {
+      const t = norm(lab.textContent);
+      if (t && t.length <= 40) { note(t, 'container'); return { t, v: 'container', trace }; }
+      trace.push(`container-label 被拒（长度 ${t.length}）`);
+    }
     let p = n.previousElementSibling, g = 0;
     while (p && g < 4) {
+      const cls = norm(String(p.className || '')).slice(0, 40);
+      const t = norm(p.textContent);
       // 兄弟里那个"自定义下拉的显示区"不是标签：北京银行实测把区号下拉的
       // "中国大陆"当成了手机号的标签。含控件或长得像选择壳子的，一律往前收手。
-      if (p.querySelector('input,textarea,select') || /(^|\s|-)(select|picker|cascader|dropdown|combobox)/i.test(String(p.className || ''))) break;
-      const t = norm(p.textContent);
-      if (t && t.length <= 24) { note(t, 'prev'); return { t, v: 'prev' }; }
+      if (p.querySelector('input,textarea,select')) { trace.push(`hop${hops} 停在含控件的 .${p.tagName.toLowerCase()}.${cls}`); break; }
+      if (/(^|\s|-)(select|picker|cascader|dropdown|combobox)/i.test(cls)) { trace.push(`hop${hops} 停在字段壳子 .${cls}`); break; }
+      if (t && t.length <= 24) { note(t, 'prev'); return { t, v: 'prev', trace }; }
+      if (t) trace.push(`hop${hops} 跳过 .${p.tagName.toLowerCase()}.${cls}（文本 ${t.length} 字）`);
       p = p.previousElementSibling; g++;
     }
+    if (!p && hops >= 3) trace.push(`hop${hops} 到头没有可用兄弟`);
     n = n.parentElement; hops++;
   }
   const ph = norm(el.getAttribute('placeholder'));
-  if (ph) { note(ph, 'placeholder'); return { t: ph.slice(0, 40), v: 'placeholder' }; }
-  return { t: '', v: '' };
+  if (ph) { note(ph, 'placeholder'); return { t: ph.slice(0, 40), v: 'placeholder', trace }; }
+  return { t: '', v: '', trace };
+}
+
+/**
+ * 无标签字段的结构素描：把最近一层的"表单条目"容器克隆下来，只保留
+ * 标签名 + 少数结构性属性，长文本一律换成字数。
+ * 为什么需要它：tupu 真实导出里 chain 只记祖先、且截到 5 层，
+ * "标签到底在 DOM 哪儿"（在控件之前还是之后、隔几层）看不出来，
+ * 于是修一次就要用户重导一次。素描能把这个问题一次性说清。
+ * 隐私：不复制 value；文本超过 12 字（大概是要填/已填的内容）只留字数；
+ *      脚本样式整个删掉；每条上限 600 字。
+ */
+const SKETCH_KEEP = new Set(['class', 'type', 'role', 'placeholder', 'id', 'name', 'for', 'aria-label', 'data-nw-here']);
+function structureSketch(el) {
+  // 取"最外面那一层的条目容器"，不是 closest() 的第一个命中：
+  // AntD 里 .ant-form-item-children 也带 form-item 字样，用 closest() 素描出来的
+  // 那一小块只有控件本身，标签在容器之外，等于什么都没记。
+  const ROWISH = '[class*="form-item"],[class*="form-row"],[class*="formRow"],[class*="field"],[class*="form-group"],li,tr,dd,dt';
+  let host = null;
+  for (let n = el.parentElement; n; n = n.parentElement) {
+    if (n.tagName === 'FORM' || n.tagName === 'BODY') break;
+    if (n.matches?.(ROWISH) && (n.querySelectorAll('*').length || 0) <= 40) host = n;
+  }
+  host = host || el.closest(ROWISH) || el.parentElement?.parentElement || el.parentElement;
+  if (!host) return undefined;
+  // 先把"这个控件自己在容器里的位置"记下来（克隆之后就找不到了），
+  // 然后把控件本体换成一个标记：省下的字数正好用来把容器里"标签那一支"完整带出来。
+  const path = [];
+  for (let n = el; n && n !== host; n = n.parentElement) {
+    const kids = n.parentElement ? Array.from(n.parentElement.children) : [];
+    path.unshift(kids.indexOf(n));
+  }
+  let clone;
+  try { clone = host.cloneNode(true); } catch { return undefined; }
+  let at = clone;
+  for (const i of path) { at = at && at.children && at.children[i]; }
+  if (at && at !== clone) {
+    at.textContent = '';
+    at.setAttribute('data-nw-here', at.tagName.toLowerCase());
+  }
+  const nodes = [clone, ...Array.from(clone.querySelectorAll('*'))];
+  for (const n of nodes) {
+    if (n.nodeType !== 1) continue;
+    const tag = n.tagName.toUpperCase();
+    if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'SVG' || tag === 'IMG') { n.remove(); continue; }
+    for (const a of Array.from(n.attributes || [])) if (!SKETCH_KEEP.has(a.name)) n.removeAttribute(a.name);
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') { try { n.value = ''; } catch { /* 忽略 */ } }
+  }
+  const texts = [];
+  const collect = node => { for (const c of node.childNodes || []) { if (c.nodeType === 3) texts.push(c); else if (c.nodeType === 1) collect(c); } };
+  collect(clone);
+  for (const t of texts) { const s = norm(t.nodeValue); t.nodeValue = s.length > 12 ? ` [${s.length}字] ` : (s ? ` ${s} ` : ''); }
+  return norm(clone.outerHTML).slice(0, 600);
 }
 
 function componentLibs(doc) {
   // SuccessFactors 这类页面有 40+ 张样式表、上百个 JS，全量拼字符串会拖到超时
+
   // （太古、汇丰两页导出失败最可能的原因）。这里做硬性上限，并在结果里如实标 partial。
   let css = '';
   let sheets = 0;
@@ -128,6 +191,8 @@ export function probePageStructure(doc, locationHref = '', win = doc.defaultView
   const found = [];
   walkComposed(doc, 0, '', found);
 
+  // 结构素描比字段清单大得多，一页最多给 10 条：够看清"标签到底在哪"，又不会把导出撑爆。
+  let sketchBudget = 10;
   const fields = found.map(({ e, via }) => {
     const L = labelOf(e, doc);
     const tag = e.tagName.toLowerCase();
@@ -136,10 +201,16 @@ export function probePageStructure(doc, locationHref = '', win = doc.defaultView
     // 祖先类名链 + 被否掉的候选标签：缺了这两样，"这个字段为什么没标签"只能靠猜。
     // 都是站点自己的 DOM 元数据，不含用户填的任何内容。
     const chain = [];
-    for (let n = e.parentElement; n && chain.length < 5; n = n.parentElement) {
+    for (let n = e.parentElement; n && chain.length < 7; n = n.parentElement) {
       const cls = norm(String(n.className || '')).slice(0, 60);
       if (cls) chain.push(`${n.tagName.toLowerCase()}.${cls}`);
     }
+    const sketch = (!L.t && sketchBudget > 0) ? structureSketch(e) : undefined;
+    if (sketch) sketchBudget--;
+    // 填充路径（scanner.labelFor）看到的标签，和探针自己的简化实现并列导出。
+    // 没有这一列，"某字段没标签"到底是页面的问题还是探针抄漏了规则，分不开。
+    let S = null;
+    try { S = labelFor(e, doc); } catch { /* 探针不能因为取标签失败而整页失败 */ }
     const req = e.required === true || e.getAttribute('aria-required') === 'true' || /required|必填/.test(wrapCls);
     const opts = tag === 'select' ? Array.from(e.options).slice(0, 14).map(o => norm(o.textContent).slice(0, 24)) : null;
     return {
@@ -151,6 +222,10 @@ export function probePageStructure(doc, locationHref = '', win = doc.defaultView
       label: L.t || undefined,
       labelVia: L.v || undefined,
       labelAlts: (L.alts || []).slice(0, 3),
+      labelTrace: (L.alts?.length || L.t) ? undefined : (L.trace || []).slice(0, 5),
+      scanLabel: S?.text ? norm(S.text).slice(0, 40) : undefined,
+      scanVia: S?.text ? (S.source || undefined) : undefined,
+      sketch: sketch || undefined,
       chain: chain.length ? chain : undefined,
       ph: e.getAttribute('placeholder') || undefined,
       required: req || undefined,

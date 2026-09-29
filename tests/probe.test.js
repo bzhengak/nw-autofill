@@ -109,3 +109,62 @@ test('有控件时不产生误导性的空态诊断', () => {
   assert.ok(out.totals.controls >= 1);
   assert.deepEqual(out.emptyHints.gateButtons, [], '提交按钮不该被当成"先点这里出现表单"的提示');
 });
+
+// 探针是"给适配器看的眼睛"。它报"这个字段没标签"却说不清标签在 DOM 哪儿，
+// 每修一次就要用户重导一次真实站点 —— tupu 那 25 栏就是这么卡住的。
+const GRID_HTML = `<!doctype html><html><body><form class="ant-form">
+  <div class="ant-row ant-form-item">
+    <div class="ant-col ant-col-16"><div class="ant-form-item-control-wrapper"><div class="ant-form-item-control">
+      <span class="ant-form-item-children"><span class="ant-calendar-picker">
+        <input readonly name="grad" value="SECRET_日期_2026年6月">
+      </span></span>
+    </div></div></div>
+    <div class="ant-col ant-col-8"><div class="ant-form-item-label"><label>毕业时间</label></div></div>
+  </div>
+</form></body></html>`;
+
+const probeOf = (html, url = 'https://careersite.tupu360.test/cummins/resume/applicationView') => {
+  const dom = new JSDOM(html, { url });
+  return probePageStructure(dom.window.document, url, dom.window);
+};
+
+test('无标签字段要带结构素描：标签那一支的类名看得见，控件本体压成标记', () => {
+  const out = probeOf(GRID_HTML);
+  const f = out.fields.find(x => x.name === 'grad');
+  assert.ok(f, '探针没扫到这个字段');
+  assert.ok(f.sketch, '没标签又没有素描，等于让我继续猜');
+  assert.match(f.sketch, /ant-form-item-label/);
+  assert.match(f.sketch, /毕业时间/);
+  assert.match(f.sketch, /data-nw-here/);
+});
+
+test('素描不带用户填进去的任何值（value 属性、已选文本都算）', () => {
+  const out = probeOf(GRID_HTML);
+  const json = JSON.stringify(out);
+  for (const secret of ['SECRET_日期', '2026年6月']) {
+    assert.ok(!json.includes(secret), `导出里出现了用户内容：${secret}`);
+  }
+});
+
+test('素描只给缺标签的字段，且一页最多 10 条（导出不能变成几十 KB）', () => {
+  const rows = Array.from({ length: 14 }, (_, i) => `
+    <div class="ant-row ant-form-item"><span class="ant-form-item-children">
+      <input name="x${i}">
+    </span></div>`).join('');
+  const out = probeOf(`<!doctype html><html><body><form>${rows}
+    <div class="ant-row ant-form-item"><div class="ant-form-item-label"><label>姓名</label></div>
+      <span class="ant-form-item-children"><input name="named"></span></div>
+  </form></body></html>`);
+  const sketched = out.fields.filter(f => f.sketch);
+  assert.ok(sketched.length <= 10, `素描 ${sketched.length} 条，超预算`);
+  assert.equal(out.fields.find(f => f.name === 'named')?.sketch, undefined, '有标签的字段不该带素描');
+});
+
+test('探针要同时报"填充路径看到的标签"，不然分不清是页面问题还是探针抄漏规则', () => {
+  const out = probeOf(GRID_HTML);
+  const f = out.fields.find(x => x.name === 'grad');
+  // 探针自己的简化实现走不到（标签在控件之后），scanner 的倒找规则走到了
+  assert.ok(!f.label, '这条测试的前提是探针自己拿不到标签');
+  assert.equal(f.scanLabel, '毕业时间');
+  assert.equal(f.scanVia, 'item-label');
+});

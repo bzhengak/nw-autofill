@@ -229,3 +229,58 @@ test('区号下拉的显示文本不能被当成手机号标签（zhiye 实测�
   assert.notEqual(f.phone.label, '中国大陆 +86', '自定义下拉的显示区不是标签，抓到它等于给手机号安了个别名');
   assert.equal(f.addr.label, '家庭住址', '真标签还得照常拿得到');
 });
+
+test('栅格条目：标签那一支排在控件之后也要认（AntD ant-col 形状）', () => {
+  const fields = scan(`
+    <div class="ant-row ant-form-item">
+      <div class="ant-col ant-col-16"><div class="ant-form-item-control-wrapper"><div class="ant-form-item-control">
+        <span class="ant-form-item-children"><span class="ant-calendar-picker"><input readonly data-nw-test="d1"></span></span>
+      </div></div></div>
+      <div class="ant-col ant-col-8"><div class="ant-form-item-label"><label>毕业时间</label></div></div>
+    </div>`);
+  const f = byKey(fields, 'd1');
+  assert.equal(f.label, '毕业时间');
+  assert.equal(f.labelSource, 'item-label');
+});
+
+test('倒找的标签只认"这一条目里不含控件的 label 支"：校验文案与隔壁条目都不算', () => {
+  const fields = scan(`
+    <form>
+      <div class="ant-row ant-form-item">
+        <div class="ant-col ant-col-16"><span class="ant-form-item-children"><input name="nm" data-nw-test="nm"></span></div>
+        <div class="ant-col ant-col-8"><div class="ant-form-explain">SECRET_这里是不该当标签的校验提示</div></div>
+      </div>
+      <div class="ant-row ant-form-item">
+        <div class="ant-col ant-col-16"><span class="ant-form-item-children"><input name="xx" data-nw-test="xx"></span></div>
+      </div>
+      <div class="other-block"><div class="label">邻区块文字</div></div>
+    </form>`);
+  // .ant-form-explain 不带 label/title 类名，也没有 <label>，所以不会被倒找规则捞走
+  assert.ok(!/SECRET_/.test(byKey(fields, 'nm').label || ''), '校验文案被当成标签了');
+  assert.ok(!/邻区块/.test(byKey(fields, 'xx').label || ''), '隔壁区块的文字被当成标签了');
+});
+
+test('HTML 注释不是标签（真实页面会留模板注释和构建水印）', () => {
+  // ① 页面上没有别的候选时，注释正文绝不能顶上来当标签
+  const alone = scan(`
+    <div class="ant-row ant-form-item">
+      <div class="ant-form-item-control-wrapper"><span class="ant-form-item-children">
+        <!-- 这里是一段模板注释，不是字段名 -->
+        <input name="solo" data-nw-test="solo">
+      </span></div>
+    </div>`);
+  assert.equal(byKey(alone, 'solo').label, '', '注释正文被当成了字段标签');
+
+  // ② 有真标签时也不许把注释混进原始文本里
+  const withLabel = scan(`
+    <div class="ant-row ant-form-item">
+      <div class="ant-form-item-label"><label>期望行业</label></div>
+      <div class="ant-form-item-control-wrapper"><span class="ant-form-item-children">
+        <!-- 搜索型下拉壳子里有内层 input 这是边界情况 -->
+        <div role="combobox" aria-haspopup="listbox" data-nw-test="ind"></div>
+      </span></div>
+    </div>`);
+  const f = byKey(withLabel, 'ind');
+  assert.equal(f.label, '期望行业');
+  assert.ok(!/边界情况/.test(f.labelRaw || ''), '注释正文被当成了标签或原始标签');
+});

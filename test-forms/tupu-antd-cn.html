@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><title>途普 tupu360 / AntD v3 布局（按真实导出复刻）</title></head>
+<body>
+  <!--
+    依据 2026-09-29 的真实导出（careersite.tupu360.com/cummins/...）复刻的 DOM 形状：
+      div.ant-row.ant-form-item
+        ├─ div.ant-form-item-label > label            ← 标签在这个旁支里，不跟控件同层
+        └─ div.ant-form-item-control-wrapper
+             └─ div.ant-form-item-control
+                  └─ span.ant-form-item-children → input / div.ant-select / span.ant-calendar-picker
+    导出里三类字段的差别就是问题本身：
+      · 普通 input        → label 拿得到（via=prev）
+      · div.ant-select[role=combobox] → 完全没候选（labelAlts 为空）
+      · span.ant-calendar-picker 里的 input → 也没候选
+    这里三种各放几个，配合"搜索型下拉里有内层 input"这一特征，用来定位遍历在哪一步断掉。
+    仿真是必要的：不能拿用户真实页面的 URL 去跑 CI。
+
+    【实测结论：这一版没能复现】探针跑在这个文件上，三类字段全部拿到标签（via=prev），
+    说明"导出里 chain 记到的那些 class"本身不足以解释真实页面上的失败：
+    当时 chain 截到 5 层、兄弟分支里有什么一概不导出，缺的正是定位所需的信息。
+    这个文件因此留下两个用途 ——
+      1) 记录一次失败的复现，避免后人把"标签在前 + form-item-label 是 row 直接子节点"当成已知病因；
+      2) 文件末尾补的第二种形状（栅格里标签列排在控件列之后）确实会让 scanner 取不到标签，
+         现在由 item-label 倒找规则兜住，tests/scanner.test.js 与 tests/probe.test.js 各锁一条。
+    真实途普页面属于哪一种，等下一份带 sketch / 7 层 chain 的导出说话。
+  -->
+  <form class="ant-form ant-form-horizontal">
+    <div class="ant-row ant-form-item">
+      <div class="ant-form-item-label"><label class="ant-form-item-required">姓名</label></div>
+      <div class="ant-form-item-control-wrapper">
+        <div class="ant-form-item-control"><span class="ant-form-item-children">
+          <input type="text" data-nw-test="name">
+        </span></div>
+      </div>
+    </div>
+
+    <div class="ant-row ant-form-item">
+      <div class="ant-form-item-label"><label>性别</label></div>
+      <div class="ant-form-item-control-wrapper">
+        <div class="ant-form-item-control"><span class="ant-form-item-children">
+          <div class="searchStyle ant-select ant-select-enabled" role="combobox" aria-haspopup="listbox" data-nw-test="gender">
+            <span class="ant-select-selection-selected-value">请选择</span>
+          </div>
+        </span></div>
+      </div>
+    </div>
+
+    <div class="ant-row ant-form-item">
+      <div class="ant-form-item-label"><label>期望行业</label></div>
+      <div class="ant-form-item-control-wrapper">
+        <div class="ant-form-item-control"><span class="ant-form-item-children">
+          <!-- 搜索型下拉：壳子里有内层 input，这是"兄弟里有控件就收手"那条判据的边界情况 -->
+          <div class="searchStyle ant-select ant-select-enabled" role="combobox" aria-haspopup="listbox" data-nw-test="industry">
+            <div class="ant-select-search"><input type="text" class="ant-select-search__field" placeholder="搜索"></div>
+          </div>
+        </span></div>
+      </div>
+    </div>
+
+    <div class="ant-row ant-form-item">
+      <div class="ant-form-item-label"><label>毕业时间</label></div>
+      <div class="ant-form-item-control-wrapper">
+        <div class="ant-form-item-control"><span class="ant-form-item-children">
+          <span class="ant-calendar-picker" data-nw-test="grad_date">
+            <span class="ant-calendar-picker-input-wrap"><input type="text" class="ant-calendar-picker-input" placeholder="请选择日期"></span>
+          </span>
+        </span></div>
+      </div>
+    </div>
+
+    <div class="ant-row ant-form-item">
+      <div class="ant-form-item-label"><label>学校名称</label></div>
+      <div class="ant-form-item-control-wrapper">
+        <div class="ant-form-item-control"><span class="ant-form-item-children">
+          <input type="text" data-nw-test="school">
+          <span class="ant-form-item-split"></span>
+          <input type="text" data-nw-test="major" placeholder="专业">
+        </span></div>
+      </div>
+    </div>
+  </form>
+
+  <!-- 第二种形状：栅格里"标签那一列"写在"控件那一列"之后，外面还多套 ant-col。
+       真实途普导出里那批无标签字段一定属于"标签不在控件的前一个兄弟/容器直接子节点上"这一类，
+       但具体是不是这个形状，要等下一份带 sketch 的导出确认；这里先把已知的失败形状钉住。
+       关掉 scanner 里的 item-label 倒找规则，下面三个字段就都是空标签。 -->
+  <form class="ant-form ant-form-horizontal">
+    <div class="ant-row ant-form-item">
+      <div class="ant-col ant-col-16"><div class="ant-form-item-control-wrapper"><div class="ant-form-item-control">
+        <span class="ant-form-item-children"><span class="ant-calendar-picker">
+          <input type="text" readonly data-nw-test="grad_date2">
+        </span></span>
+      </div></div></div>
+      <div class="ant-col ant-col-8"><div class="ant-form-item-label"><label>毕业时间</label></div></div>
+    </div>
+
+    <div class="ant-row ant-form-item">
+      <div class="ant-col ant-col-16"><div class="ant-form-item-control-wrapper"><div class="ant-form-item-control">
+        <span class="ant-form-item-children"><div class="searchStyle ant-select ant-select-enabled">
+          <div class="ant-select-selection ant-select-selection--single" role="combobox" aria-haspopup="listbox" data-nw-test="hukou2">
+            <span class="ant-select-selection__rendered"><span class="ant-select-selection__placeholder">请选择</span></span>
+          </div>
+        </div></span>
+      </div></div></div>
+      <div class="ant-col ant-col-8"><div class="ant-form-item-label"><label>户口所在地</label></div></div>
+    </div>
+
+    <div class="ant-row ant-form-item">
+      <div class="ant-col ant-col-16"><div class="ant-form-item-control-wrapper"><div class="ant-form-item-control">
+        <span class="ant-form-item-children"><input type="text" data-nw-test="major2"></span>
+      </div></div></div>
+      <div class="ant-col ant-col-8"><div class="ant-form-explain">必填，请照毕业证填写</div></div>
+    </div>
+  </form>
+</body></html>

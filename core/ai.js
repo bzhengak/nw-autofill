@@ -94,36 +94,111 @@ export function assertNoProfileValues(text, profile, { exempt = [] } = {}) {
   return leaks;
 }
 
+/**
+ * 把上游 JSON 拆成"正文 + 诊断"。放在 core 里是因为这是最容易出错的一段，
+ * 必须能在 Node 里跑：真实浏览器里它只表现为"点了没反应"。
+ * 覆盖三种兼容层：chat.completions、老 completion、Responses API(output_text)。
+ */
+export function interpretAiReply(json) {
+  if (!json || typeof json !== 'object') return { ok: false, error: 'not_json' };
+  if (json.error) {
+    return {
+      ok: false,
+      error: 'upstream_' + String(json.error.code || json.error.type || 'error'),
+      detail: String(json.error.message || '').slice(0, 300),
+    };
+  }
+  const choice = Array.isArray(json.choices) ? json.choices[0] : null;
+  const content = choice?.message?.content ?? choice?.text
+    ?? (typeof json.output_text === 'string' ? json.output_text : '');
+  const reasoning = String(choice?.message?.reasoning_content || choice?.message?.reasoning
+    || choice?.reasoning_content || '');
+  const finish = String(choice?.finish_reason || '');
+  if (!String(content || '').trim()) {
+    // "空输出"必须自证是哪一种空：这三种成因的修法完全不同
+    return {
+      ok: false,
+      error: reasoning ? 'reasoning_only' : (finish === 'length' ? 'truncated' : 'empty_content'),
+      detail: reasoning
+        ? `模型只输出了思考过程（${reasoning.length} 字），正文为空 —— 换非 reasoning 模型，或在请求里关掉思考`
+        : `正文为空（finish_reason=${finish || '无'}）`,
+      finishReason: finish,
+      reasoningChars: reasoning.length,
+    };
+  }
+  return {
+    ok: true,
+    content: String(content),
+    finishReason: finish,
+    rawChars: String(content).length,
+    // 一条都没解析出来时，原样前 200 字是唯一线索（填写侧请求里没有取值，回显也不会有）
+    snippet: String(content).replace(/\s+/g, ' ').trim().slice(0, 200),
+  };
+}
+
 const JSON_FENCE = /```(?:json)?\s*([\s\S]*?)```/i;
+
+/**
+ * 把模型给的各种"信封"拆平成数组。只认结构不改语义，路径白名单在后面照样逐条判。
+ * 为什么必须容错：不同兼容层/模型给的形状不一样 —— 有的直接回数组，
+ * 有的回 {"result":[...]}，有的把 index/path 写成 i/p/slot。
+ * 以前只认 {"matches":[...]}，形状不对就整批 unparsable，界面显示成"AI 没给建议"，
+ * 看起来就像"空输出"，其实是解析器太窄。
+ */
+function coerceList(obj) {
+  if (Array.isArray(obj)) return obj;
+  if (!obj || typeof obj !== 'object') return null;
+  for (const key of ['matches', 'result', 'results', 'fields', 'items', 'data', 'output']) {
+    const v = obj[key];
+    if (Array.isArray(v)) return v;
+    if (v && typeof v === 'object') { const inner = coerceList(v); if (inner) return inner; }
+  }
+  // 只答了一条时常见的是裸对象 {"index":0,"path":"..."}
+  if ('index' in obj || 'i' in obj) return [obj];
+  return null;
+}
+
+const IDX_KEYS = ['index', 'i', 'field', 'gap', 'fieldIndex'];
+const PATH_KEYS = ['path', 'slot', 'p', 'profilePath', 'slotPath'];
+const WHY_KEYS = ['reason', 'why', 'note'];
 
 /** 解析响应：只接受白名单 path、只接受本次问过的 index；其余全部丢弃并说明原因 */
 export function parseAiResponse(raw, { allowedPaths, askedIndexes }) {
   const out = { candidates: [], dropped: [] };
-  let obj = null;
+  let parsed = null;
   if (typeof raw === 'string') {
     const fenced = raw.match(JSON_FENCE);
     const body = fenced ? fenced[1] : raw;
-    const start = body.indexOf('{');
-    const end = body.lastIndexOf('}');
-    if (start >= 0 && end > start) { try { obj = JSON.parse(body.slice(start, end + 1)); } catch { obj = null; } }
-  } else if (raw && typeof raw === 'object') obj = raw;
-  if (!obj || !Array.isArray(obj.matches)) {
-    out.dropped.push({ reason: 'unparsable', detail: '响应里没有可解析的 {"matches":[...]} JSON' });
+    for (const [open, close] of [['{', '}'], ['[', ']']]) {
+      const start = body.indexOf(open);
+      const end = body.lastIndexOf(close);
+      if (start < 0 || end <= start) continue;
+      try { parsed = JSON.parse(body.slice(start, end + 1)); break; } catch { /* 试下一种 */ }
+    }
+  } else if (raw && typeof raw === 'object') parsed = raw;
+
+  const list = coerceList(parsed);
+  if (!Array.isArray(list)) {
+    out.dropped.push({ reason: 'unparsable', detail: '响应里没有可解析的 JSON 数组或 {"matches":[...]}' });
     return out;
   }
-  for (const m of obj.matches) {
-    const index = Number(m?.index);
-    const path = typeof m?.path === 'string' ? m.path.trim() : null;
+  for (const m of list) {
+    const pick = keys => { for (const k of keys) if (m?.[k] !== undefined) return m[k]; return undefined; };
+    const index = Number(pick(IDX_KEYS));
+    const rawPath = pick(PATH_KEYS);
+    const path = typeof rawPath === 'string' ? rawPath.trim() : null;
     if (!Number.isInteger(index) || !askedIndexes.has(index)) {
-      out.dropped.push({ index, reason: 'unknown_index', detail: '返回的 index 不在本次问过的缺口里' });
+      out.dropped.push({ index: Number.isInteger(index) ? index : null, reason: 'unknown_index', detail: '返回的 index 不在本次问过的缺口里' });
       continue;
     }
-    if (path === null || path === 'null' || path === '') continue;         // AI 明确说"不知道"，正常
+    if (path === null || path === 'null' || path === '' || path === 'none' || path === '不确定') {
+      continue;                                        // AI 明确说"不知道"，正常
+    }
     if (!allowedPaths.has(path)) {
       out.dropped.push({ index, path, reason: 'unknown_path', detail: '这个 path 不在我们的槽位白名单里' });
       continue;
     }
-    out.candidates.push({ index, path, reason: String(m.reason || '').slice(0, 60) });
+    out.candidates.push({ index, path, reason: String(pick(WHY_KEYS) || '').slice(0, 60) });
   }
   return out;
 }

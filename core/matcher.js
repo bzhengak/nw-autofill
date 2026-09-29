@@ -74,6 +74,38 @@ function dateGroupLabel(label, group) {
   return member.roleSource === 'label' ? `${label} ${canonical}`.trim() : canonical;
 }
 
+/**
+ * 缺口原因的中文说明。界面直接印内部 token（`custom_control`、`no_candidate`）时，
+ * 用户只知道"这栏没填上"，不知道下一步该做什么 —— 每条都写成"是什么 + 下一步"。
+ * 原始 token 由界面放在 title 里，报障时两边都对得上。
+ */
+export const GAP_REASON_ZH = {
+  file: '附件得你自己上传 —— 插件不碰文件',
+  custom_control: '这是站点自己的下拉/日期面板，打字不会选中；需要你点开手填（已授权的会自动尝试选，选不中还是你来）',
+  composite_date: '这一栏是"年 + 月"两个框拼起来的，站点要你自己选；整组交人工',
+  credential: '账号/密码类由你本人填，插件不代填',
+  captcha: '验证码必须由人点，插件不碰',
+  no_candidate: '本地词典没有这个说法；可以在资料里补一个别名，或用「AI 兜底」问一次',
+  required_no_candidate: '必填，但本地词典没有这个说法；同上，补别名或问 AI',
+  conflict_unresolved: '几个候选势均力敌，不敢替你选；在表格里点一下自己定',
+  site_search: '这是站点自己的搜索框（"请输入职位或企业名称"），不是简历字段，故意不填',
+  readonly_control: '站点只读或由它自己推导，不需要填',
+  date_picker: '这是站点的日期/时间日历控件：打字进不去，需要你点开选（插件不代点日历，避免把日期写错还显示成成功）',
+  consent_declaration: '同意/授权/声明类必须你本人表态，插件不代勾选',
+  declaration: '声明类文本由你本人签，插件不代写',
+  conditional_other: '条件题：要先答完前面那一题，这一栏才有意义',
+  optional_link: '链接类（个人主页等），资料里没有就不填',
+  subjective: '主观题（自我评价、职业规划等）由你写，插件不代生成',
+  sensitive_withheld: '敏感字段（证件号等）默认不自动写，勾选「允许填写敏感字段」后才会写',
+  ai_empty_slot: 'AI 指认的槽位在你资料里是空的 —— 去资料里补上再扫',
+  choice_required: '选项列表里没有和资料对得上的项，需要你人工选一个',
+};
+
+export function gapReasonLabel(reason) {
+  const key = String(reason || '');
+  return GAP_REASON_ZH[key] || key || '未知原因';
+}
+
 function blockReason(pageField) {
   // 附件按控件类型拒，不看标签：Sea 的 label 是 "Resume"/"Transcript"、Workday 是「简历履历」，
   // 用关键词名单永远漏一批，漏进来的会被报成"我们没有这个词"（no_candidate），
@@ -86,7 +118,22 @@ function blockReason(pageField) {
   // 自定义下拉的首选判据是扫描器给的结构化标记（在框架 wrapper 里）；
   // placeholder 文案那条只作为兜底 —— AntD 搜索型占位符写的是"搜索城市"，靠文案会漏。
   if (pageField.customSelect) return 'custom_control';
+  // 日期/日历控件要单独一条原因：它和下拉同属"打字进不去"，但下一步动作不一样 ——
+  // 下拉是「点开选一项」，日历是「点开选年月」，混在一起用户照着提示找不到北。
+  // 判据看 placeholder + 类名（"请选择开始时间"、.ant-picker），不看标签字面，
+  // 免得 Moka 那种「出生日期（年龄）」由身份证推导的只读框也被提示去点日历。
+  const dateTimeish = /(时间|日期|年月|date|time|birthday)/i.test(`${pageField.label || ''} ${ph} ${pageField.id || ''} ${pageField.className || ''}`);
+  if (dateTimeish && (/^(请选择|请选取|选择|pick|select)/i.test(ph) || /(picker|calendar)/i.test(String(pageField.className || '')))) return 'date_picker';
   if (pageField.kind === 'text' && /^(please\s+select|no\s+selection|请选择|选择|pick\s+an?|请选取|select\s+an?)/i.test(ph)) return 'custom_control';
+  // 站点自己的搜索框（简历页顶部几乎必有）。判据两条形之一：
+  //  · placeholder 是搜索语气（"请输入职位或企业名称"、"搜索城市"），且这一栏没有真标签；
+  //  · name/id 里带 search|query|keyword，且这一栏没有真标签。
+  // 为什么必须先看"有没有真标签"：带标签的输入框是表单字段，哪怕它的 placeholder 也写着"请输入"。
+  // 国聘真实导出里「请输入职位或企业名称」被当成槽位，抢走了 intent.position，
+  // 于是页面里真正的「期望岗位」只能去抢 internship.0.title —— 一个搜索框打乱了整条分配链。
+  const searchish = /(搜索|查找|search|keyword|关键词)/i.test(ph) || /^请(输入|填写).{0,20}(或|\/|、).{0,20}$/.test(ph);
+  const searchMeta = /(search|query|keyword)/i.test(`${pageField.name || ''} ${pageField.id || ''}`);
+  if ((pageField.kind === 'text' || pageField.kind === 'search') && !core(pageField.label) && (searchish || searchMeta)) return 'site_search';
   // 真身是自定义控件（<a role=combobox>、AntD 的 div[role=combobox]）：打字不会选中任何值。
   // 在计划阶段就拒，而不是等 filler 写失败——用户看到的应该是橙色"需人工"，不是红色"填错了"。
   if (pageField.kind === 'combobox' || pageField.kind === 'listbox') return 'custom_control';
@@ -217,7 +264,20 @@ export function planFill(pageFields, profile, opts = {}) {
     // 例外：Element/AntD 的下拉内层 input 天生 readonly —— 那是"不让你打字"，
     // 不是"站点算好了不让你改"，混在一起会把整个下拉误判成只读控件。
     if (pf.readOnly && pf.kind !== 'contenteditable' && !pf.customSelect) {
-      gaps.push({ index, label: pf.label || pf.name || pf.id || '(未命名字段)', reason: 'readonly_control', kind: pf.kind, note: '站点只读/自动推导，无需填写' });
+      // 只读框要分两种，因为下一步动作完全不同：
+      //  · 日期/时间控件：真的要填，但要你点开日历面板选（打字进不去）；
+      //  · 站点自己算出来的（身份证推出生日期、账号带出姓名）：本来就不该填。
+      // 判据不能只看标签里有"日期"两字 —— Moka 的「出生日期（年龄）」也是只读，
+      // 但它是身份证推出来的，提示用户"去点开选"就是误导。日历控件的特征在 placeholder 与类名上。
+      const picker = /^(请选择|请选取|选择|pick|select)/i.test(String(pf.placeholder || '').trim())
+        || /(picker|calendar|date-|_date|时间|日期)/i.test(`${pf.className || ''} ${pf.id || ''} ${pf.name || ''}`);
+      gaps.push({
+        index,
+        label: pf.label || pf.name || pf.id || '(未命名字段)',
+        reason: picker ? 'date_picker' : 'readonly_control',
+        kind: pf.kind,
+        note: picker ? '' : '站点只读/自动推导，无需填写',
+      });
       return;
     }
     if (skip.has(index)) {

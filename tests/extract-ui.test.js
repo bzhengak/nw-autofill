@@ -125,9 +125,15 @@ test('结果默认全勾、点「写入勾选项」才落库，取消勾选的�
   assert.ok(JSON.stringify(saved?.profile || '').includes('校学生会宣传部'), '勾了却没写入');
 });
 
-test('后台拒绝（未配 Key / 没有可发片段）时界面说清原因而不是转圈', async () => {
-  for (const err of ['ai_not_configured', 'no_fragments']) {
-    const { doc, sent } = bootExtract(m => (m.type === 'nw:extractRun' ? { ok: false, error: err } : { ...PREVIEW_RES }));
+test('后台拒绝（未配 Key / 没有可发片段 / 只输出思考）时界面说清原因而不是转圈', async () => {
+  const cases = [
+    ['ai_not_configured', /还没配好/],
+    ['no_fragments', /本地解析没有剩余片段/],
+    ['reasoning_only', /思考过程/],
+    ['not_json', /不是 JSON/],
+  ];
+  for (const [err, expect] of cases) {
+    const { doc } = bootExtract(m => (m.type === 'nw:extractRun' ? { ok: false, error: err } : { ...PREVIEW_RES }));
     doc.defaultView.confirm = () => true;
     await load();
     doc.getElementById('mdText').value = MD;
@@ -135,10 +141,26 @@ test('后台拒绝（未配 Key / 没有可发片段）时界面说清原因而�
     await click(doc, 'btnExtractPreview');
     await click(doc, 'btnExtractRun');
     const status = doc.getElementById('extractStatus').textContent;
-    assert.match(status, /调用失败|没有|未配|失败/, `${err} 的提示不像人话：${status}`);
+    assert.match(status, expect, `${err} 的提示不像人话：${status}`);
     assert.ok(!/正在请求/.test(status), `${err} 之后还停在"正在请求"`);
     assert.equal(doc.getElementById('extractResults').querySelectorAll('input').length, 0, '失败了却渲染了可写入的清单');
   }
+});
+
+test('AI 回了但一条都没逐字命中时，把原始回显摊出来（否则"空输出"永远查不下去）', async () => {
+  const { doc } = bootExtract(m => (m.type === 'nw:extractRun'
+    ? { ok: true, accepted: [], rejected: [{ i: 0, p: 'work.0.company', v: '字节', reason: 'not_verbatim' }], rawChars: 88, snippet: '[{"i":0,"p":"work.0.company","v":"字节跳动科技有限公司"}]', finishReason: 'stop' }
+    : { ...PREVIEW_RES }));
+  doc.defaultView.confirm = () => true;
+  await load();
+  doc.getElementById('mdText').value = MD;
+  await click(doc, 'btnImportMd');
+  await click(doc, 'btnExtractPreview');
+  await click(doc, 'btnExtractRun');
+  const box = doc.getElementById('extractPreviewText').textContent;
+  assert.match(box, /一条都没通过逐字/);
+  assert.match(box, /字节跳动科技有限公司/, '原始回显没摊出来');
+  assert.match(box, /not_verbatim/);
 });
 
 // 侧边栏的按钮状态只是"好不好用"，真正拦住了的是后台那道闸。

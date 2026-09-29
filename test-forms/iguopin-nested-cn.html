@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><title>国聘 iguopin / AntD v5 嵌套条目（按真实导出 sketch 复刻）</title></head>
+<body>
+  <!--
+    来源：2026-09-29 用户真实导出（c.iguopin.com/apply，build 2026-09-29-4）里
+    那 6 个无标签字段的 sketch。形状是**表单条目套表单条目**：
+
+      div.ant-form-item.resume-common-form-item.form-item-autocomplete-field.autocomplete-school_cn
+        └ div.ant-row.ant-form-item-row
+            ├ div.ant-col.ant-form-item-label > label.ant-form-item-required "学校名称"
+            └ div.ant-col.ant-form-item-control
+                └ ...control-input / control-input-content
+                    └ div
+                        └ div.ant-form-item          ← 内层条目，自己没有 label 支
+                            └ ... 又是三层 ...
+                                └ input[role=combobox] / input[type=text]
+
+    标签到控件之间隔了 9~10 层祖先，而倒找规则原来只走 7 层 —— 这就是"标签明明在，
+    但整片取不到"的真实原因。这一份是按导出结构复刻的最小形状，用来锁住深度与判据，
+    不是猜的：sketch 里每一层的类名都照抄。
+  -->
+  <form class="ant-form">
+    <div class="ant-form-item resume-common-form-item form-item-autocomplete-field autocomplete-school_cn flex-wrap ant-form-item-has-success">
+      <div class="ant-row ant-form-item-row">
+        <div class="ant-col ant-form-item-label">
+          <label class="ant-form-item-required">学校名称 <span class="tip">（最多 20 字，超出部分不显示）</span></label>
+        </div>
+        <div class="ant-col ant-form-item-control">
+          <div class="ant-form-item-control-input">
+            <div class="ant-form-item-control-input-content">
+              <div>
+                <div class="ant-form-item">
+                  <div class="ant-row ant-form-item-row">
+                    <div class="ant-col ant-form-item-control">
+                      <div class="ant-form-item-control-input">
+                        <div class="ant-form-item-control-input-content">
+                          <div class="ant-select ant-select-single ant-select-show-search">
+                            <div class="ant-select-selector">
+                              <span class="ant-select-selection-search">
+                                <input type="search" id="school-fe-1601-customization" role="combobox" aria-haspopup="listbox" data-nw-test="school">
+                              </span>
+                              <span class="ant-select-selection-item">南京大学</span>
+                            </div>
+                          </div>
+                          <input type="text" id="school" data-nw-test="school_hidden_a">
+                                <input type="text" id="school_cn" data-nw-test="school_cn">
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 同一个条目里的第二个输入框：标签仍是"学校名称"，必须不会捞到隔壁条目的标签 -->
+    <div class="ant-form-item resume-common-form-item form-item-autocomplete-field autocomplete-major_cn flex-wrap">
+      <div class="ant-row ant-form-item-row">
+        <div class="ant-col ant-form-item-label"><label class="ant-form-item-required">专业名称</label></div>
+        <div class="ant-col ant-form-item-control">
+          <div class="ant-form-item-control-input"><div class="ant-form-item-control-input-content"><div>
+            <div class="ant-form-item"><div class="ant-row ant-form-item-row"><div class="ant-col ant-form-item-control">
+              <div class="ant-form-item-control-input"><div class="ant-form-item-control-input-content">
+                <input type="text" id="major" data-nw-test="major">
+              </div></div>
+            </div></div></div>
+          </div></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 隔壁条目：姓名。它自己的 label 支在前面，必须不会被上面条目的文字污染 -->
+    <div class="ant-form-item">
+      <div class="ant-row ant-form-item-row">
+        <div class="ant-col ant-form-item-label"><label>姓名</label></div>
+        <div class="ant-col ant-form-item-control">
+          <div class="ant-form-item-control-input"><div class="ant-form-item-control-input-content">
+            <input type="text" data-nw-test="name">
+          </div></div>
+        </div>
+      </div>
+    </div>
+  </form>
+</body></html>

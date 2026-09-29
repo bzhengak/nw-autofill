@@ -9,7 +9,7 @@
 //  4. 响应只当"路径建议"；不写页面、不提交；超时 20s、禁跟跳转、体积上限。
 
 import { compileAdapters } from '../core/adapters.js';
-import { buildAiRequest, assertNoProfileValues, parseAiResponse, aiSlotCatalog } from '../core/ai.js';
+import { buildAiRequest, assertNoProfileValues, parseAiResponse, aiSlotCatalog, interpretAiReply } from '../core/ai.js';
 import { extractFragments, buildExtractRequest, parseExtractResponse } from '../core/ai-extract.js';
 import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, redact, findLeaksInExport, SECRETS_BUCKET } from '../core/ai-security.js';
 
@@ -62,19 +62,34 @@ async function callAiEndpoint({ baseUrl, model, key, text }) {
       // 不关掉这一条，"Key 只发给这个 origin"就有个现实的后门。
       redirect: 'error',
       headers: { 'content-type': 'application/json', authorization: 'Bearer ' + key },
+      signal: ctrl.signal,
       body: JSON.stringify({
         model,
         temperature: 0,
-        max_tokens: 800,
+        // 几十个缺口的 JSON 答案很容易超过 800 token：截断后解析不出来，
+        // 用户看到的就成了"AI 没给建议"，其实是回答被砍断了（本轮"空输出"的候选成因之一）。
+        max_tokens: 2000,
         messages: [{ role: 'user', content: text }],
       }),
-      signal: ctrl.signal,
     });
-    if (!res.ok) return { ok: false, error: `http_${res.status}` };
+    if (!res.ok) {
+      const bodyText = await res.text().catch(() => '');
+      // 上游错误体常带模型名/额度信息，对用户有用；也可能回显请求内容，一律先过 redact
+      return { ok: false, error: `http_${res.status}`, detail: redact(String(bodyText).slice(0, 300), key) };
+    }
     const json = await res.json().catch(() => null);
-    const content = json?.choices?.[0]?.message?.content;
-    if (!content) return { ok: false, error: 'empty_response' };
-    return { ok: true, content };
+    if (json?.error) return { ok: false, error: 'upstream_' + String(json.error.code || json.error.type || 'error'), detail: redact(String(json.error.message || '').slice(0, 300), key) };
+    // 正文/思考/截断的判定全在 core/ai.js 的纯函数里（那才是"空输出"最容易出事的环节，Node 里可测）
+    const got = interpretAiReply(json);
+    if (!got.ok) return { ok: false, error: got.error, detail: redact(got.detail || '', key), finishReason: got.finishReason, reasoningChars: got.reasoningChars };
+    return {
+      ok: true,
+      content: got.content,
+      finishReason: got.finishReason,
+      rawChars: got.rawChars,
+      // 回显兜底：上游要是把 Key 印进正文里（见过这种代理），也不能带进界面
+      snippet: redact(got.snippet, key),
+    };
   } catch (err) {
     const name = String(err?.name || '');
     // 错误文本可能带上请求 URL 甚至 Header，一律脱敏后再返回
@@ -263,7 +278,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const gate = maySendKey({ keyOrigin: sess.keyOrigin, targetOrigin: target.origin, consentOrigin: settings.aiConsentOrigin });
       if (!gate.ok) { sendResponse({ ok: false, error: gate.error }); return; }
       const call = await callAiEndpoint({ baseUrl: settings.aiBaseUrl, model: settings.aiModel, key: sess.key, text: built.req.text });
-      if (!call.ok) { sendResponse({ ok: false, error: call.error }); return; }
+      if (!call.ok) {
+        // detail / finishReason 一并带回：用户报"空输出"时，这三个字段就能区分是
+        // 上游 4xx、reasoning 模型没正文、还是答案被 max_tokens 截断
+        sendResponse({ ok: false, error: call.error, detail: call.detail, finishReason: call.finishReason, reasoningChars: call.reasoningChars });
+        return;
+      }
       const parsed = parseAiResponse(call.content, {
         allowedPaths: new Set(aiSlotCatalog(profile).map(s => s.path)),
         askedIndexes: new Set(built.req.gaps.map(g => g.index)),
@@ -276,6 +296,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         dropped: parsed.dropped,
         endpoint: target.url,
         rawChars: String(call.content || '').length,
+        // 一条都没解析出来时，原样前 200 字是唯一线索（请求里没有取值，回显也不会有）
+        snippet: parsed.candidates.length ? undefined : call.snippet,
+        finishReason: call.finishReason,
       });
     } else if (msg.type === 'nw:extractPreview' || msg.type === 'nw:extractRun') {
       // AI 辅助导入：发的是"本地解析判不动的简历片段"，与填写侧的"只发字段名"是两条边界。
@@ -307,7 +330,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const xGate = maySendKey({ keyOrigin: xSess.keyOrigin, targetOrigin: xTarget.origin, consentOrigin: xSettings.aiConsentOrigin });
       if (!xGate.ok) { sendResponse({ ok: false, error: xGate.error }); return; }
       const call = await callAiEndpoint({ baseUrl: xSettings.aiBaseUrl, model: xSettings.aiModel, key: xSess.key, text: built.text });
-      if (!call.ok) { sendResponse({ ok: false, error: call.error }); return; }
+      if (!call.ok) { sendResponse({ ok: false, error: call.error, detail: call.detail, finishReason: call.finishReason, reasoningChars: call.reasoningChars }); return; }
       const parsed = parseExtractResponse(call.content, { fragments: built.fragments, profile: msg.profile });
       sendResponse({
         ok: true,
@@ -315,6 +338,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         rejected: parsed.rejected,
         endpoint: xTarget.url,
         rawChars: String(call.content || '').length,
+        snippet: parsed.accepted.length ? undefined : call.snippet,
+        finishReason: call.finishReason,
       });
     } else if (msg.type === 'nw:saveAiKey') {
       // Key 只进 session 或独立的 local.aiSecrets 桶；传空串就是"两个桶都清掉"

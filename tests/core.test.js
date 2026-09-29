@@ -9,7 +9,7 @@ import { planFill, resolveOption } from '../core/matcher.js';
 import { SUBMIT_TEXT_RE, classifyClick } from '../dom/safety.js';
 
 const profileField = (o) => ({ path: o.path, key: o.key || o.path.split('.').pop(), section: o.section || 'basics', itemIndex: o.itemIndex ?? null, zh: o.zh, labels: [o.zh, ...(o.al || [])].map(s => s.toLowerCase()), type: o.type || 'text', options: o.options || [], sensitive: Boolean(o.sensitive) });
-const pageField = (o) => ({ kind: o.kind || 'text', label: o.label || '', name: o.name || '', id: o.id || '', placeholder: o.placeholder || '', currentValue: o.currentValue ?? '', options: o.options || [], required: Boolean(o.required), sectionHint: o.sectionHint || '', itemIndex: o.itemIndex ?? null, nearbyLabels: o.nearbyLabels || [], autocomplete: o.autocomplete || '', type: o.type || '', compositeDate: o.compositeDate, datePair: o.datePair, itemIndexSource: o.itemIndexSource, maxLength: o.maxLength });
+const pageField = (o) => ({ kind: o.kind || 'text', label: o.label || '', name: o.name || '', id: o.id || '', placeholder: o.placeholder || '', currentValue: o.currentValue ?? '', options: o.options || [], required: Boolean(o.required), sectionHint: o.sectionHint || '', itemIndex: o.itemIndex ?? null, nearbyLabels: o.nearbyLabels || [], autocomplete: o.autocomplete || '', type: o.type || '', compositeDate: o.compositeDate, datePair: o.datePair, itemIndexSource: o.itemIndexSource, maxLength: o.maxLength, readOnly: Boolean(o.readOnly), className: o.className || '' });
 
 // 扫描器对"年框+月框"的产物，测试里手搓一份，避免依赖 DOM
 const dp = (id, part, role, roleSource = 'label', ordinal = 0, size = 1) => ({ id, part, role, roleSource, ordinal, size });
@@ -456,4 +456,37 @@ test('同块配对错位要说出来：第 2 次出现的标签拿到了资料�
   assert.equal(a.path, 'work.0.summary');
   assert.match(String(a.note), /第 2 次出现/, '章节标题对得上但记录序号对不上，同样是一种错位，不能只报"无法确定"');
   assert.equal(a.tier, 'review');
+});
+
+test("站点搜索框不许抢槽位：它一抢，真正的「期望岗位」就被顶到别处", () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, "intent.position", "算法工程师");
+  setValueByPath(p, "intent.cities", "上海、杭州、南京");
+  setValueByPath(p, "internship.0.title", "算法实习生");
+  const fields = [
+    // 国聘真实形态：页面顶部的职位搜索框，没有 label，只有这种 placeholder
+    pageField({ id: "job-search", placeholder: "请输入职位或企业名称" }),
+    pageField({ label: "期望岗位" }),
+    pageField({ label: "期望城市" }),
+  ];
+  const plan = planFill(fields, p, { mode: "full", fillSensitive: true });
+  assert.ok(!plan.assignments.some(a => a.index === 0), "搜索框还是拿到了槽位");
+  const want = plan.assignments.find(a => a.index === 1);
+  assert.equal(want?.path, "intent.position", "「期望岗位」应落在求职意向，不该被当成某段经历的职位");
+  assert.equal(plan.assignments.find(a => a.index === 2)?.path, "intent.cities");
+  const gap = plan.gaps.find(g => g.index === 0);
+  assert.equal(gap?.reason, "site_search", "搜索框要作为\"故意不填\"出现在缺口清单里，而不是静默消失");
+});
+
+test("只读框分两种：日历控件提示你去点选，站点自己算的提示无需填写", () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, "basics.birthDate", "2001-03-15");
+  const fields = [
+    pageField({ label: "开始时间", placeholder: "请选择开始时间", readOnly: true }),
+    pageField({ label: "出生日期（年龄）", placeholder: "", readOnly: true, id: "birth-auto" }),
+  ];
+  const plan = planFill(fields, p, { mode: "full" });
+  assert.equal(plan.gaps.find(g => g.index === 0)?.reason, "date_picker", "日历控件要说清\"要点开选\"");
+  assert.equal(plan.gaps.find(g => g.index === 1)?.reason, "readonly_control", "身份证推导出来的只读框不该提示用户去点日历");
+  assert.equal(plan.assignments.length, 0, "两种都不该产生写入");
 });

@@ -9,7 +9,7 @@ const CONTROL_SELECTOR = 'input, textarea, select, [contenteditable="true"], [ro
 const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
 // 导出物自带版本号：用户贴回来的 JSON 能直接证明"他浏览器里跑的是哪一版探针"，
 // 不用再靠"你是不是重载了扩展"这种对话去猜。
-const PROBE_BUILD = '2026-09-29-4';
+const PROBE_BUILD = '2026-09-29-5';
 
 function escapeId(id) {
   return (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(id) : String(id).replace(/([^\w-])/g, '\\$1');
@@ -205,7 +205,14 @@ export function probePageStructure(doc, locationHref = '', win = doc.defaultView
       const cls = norm(String(n.className || '')).slice(0, 60);
       if (cls) chain.push(`${n.tagName.toLowerCase()}.${cls}`);
     }
-    const sketch = (!L.t && sketchBudget > 0) ? structureSketch(e) : undefined;
+    // 素描给两类字段：① 缺标签的（找标签）；② 只读的日历/时间控件（找面板长什么样）。
+    // 国聘一份导出里 12 栏是 readonly 的日期框，要不要、能不能替用户点开面板，得先看 DOM 证据；
+    // 判据与 core/matcher.js 的 date_picker 保持一致：看 placeholder 与类名，不看标签字面。
+    const phText = norm(e.getAttribute('placeholder') || '');
+    const picker = /^(请选择|请选取|选择|pick|select)/i.test(phText)
+      || /(picker|calendar|date-|_date|时间|日期)/i.test(`${norm(String(e.className || ''))} ${e.id || ''} ${e.name || ''}`);
+    const wantSketch = !L.t || (e.readOnly === true && picker);
+    const sketch = (wantSketch && sketchBudget > 0) ? structureSketch(e) : undefined;
     if (sketch) sketchBudget--;
     // 填充路径（scanner.labelFor）看到的标签，和探针自己的简化实现并列导出。
     // 没有这一列，"某字段没标签"到底是页面的问题还是探针抄漏了规则，分不开。

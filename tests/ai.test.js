@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildAiRequest, assertNoProfileValues, parseAiResponse, applyAiCandidates, aiSlotCatalog, aiEligibleGaps } from '../core/ai.js';
+import { buildAiRequest, assertNoProfileValues, parseAiResponse, applyAiCandidates, aiSlotCatalog, aiEligibleGaps, interpretAiReply } from '../core/ai.js';
 import { createEmptyProfile, setValueByPath, buildFields, getValueByPath } from '../core/profile-schema.js';
 import { sampleProfile } from './fixtures/sample-profile.js';
 import { planFill } from '../core/matcher.js';
@@ -168,4 +168,70 @@ test('真实样例资料同样不许泄漏：整份 plan 走一遍自检', () =>
   const plan = planFill(fields, p, { mode: 'full' });
   const req = buildAiRequest({ plan, profile: p, pageFields: fields });
   assert.deepEqual(assertNoProfileValues(req.text, p, { exempt: [req.slotSection] }), [], '样例资料的取值出现在了请求体里');
+});
+
+// ── "AI 点了没反应"这一类：必须先能自证是哪一种没反应 ─────────────────────
+const WL = new Set(['basics.name', 'education.0.school']);
+const IX = new Set([3, 7]);
+
+test('响应信封容错：裸数组 / result 键 / i-p 简写都收，但白名单一条不放松', () => {
+  const shapes = [
+    '{"matches":[{"index":3,"path":"basics.name"}]}',
+    '[{"index":3,"path":"basics.name"}]',
+    '{"result":[{"index":3,"path":"basics.name"}]}',
+    '{"data":{"matches":[{"index":3,"path":"basics.name"}]}}',
+    '[{"i":3,"p":"basics.name","why":"页面上写姓名"}]',
+    '{"index":3,"path":"basics.name"}',
+    '好的：\n```json\n[{"index":3,"path":"basics.name"}]\n```\n希望有帮助',
+  ];
+  for (const raw of shapes) {
+    const r = parseAiResponse(raw, { allowedPaths: WL, askedIndexes: IX });
+    assert.equal(r.candidates.length, 1, `这种形状没解析出来：${raw}`);
+    assert.equal(r.candidates[0].path, 'basics.name');
+  }
+  // 形状认了，路径不认：越界的照样丢
+  const bad = parseAiResponse('[{"index":3,"path":"basics.idNumber"},{"i":99,"p":"basics.name"}]', { allowedPaths: WL, askedIndexes: IX });
+  assert.equal(bad.candidates.length, 0);
+  assert.deepEqual(bad.dropped.map(d => d.reason), ['unknown_path', 'unknown_index']);
+});
+
+test('interpretAiReply：正文 / 只有思考 / 被截断 / 上游报错 / 不是 JSON，五种空各报各的', () => {
+  const ok = interpretAiReply({ choices: [{ message: { content: '[{"index":3,"path":"basics.name"}]' }, finish_reason: 'stop' }] });
+  assert.equal(ok.ok, true);
+  assert.match(ok.snippet, /basics\.name/);
+
+  const reasoning = interpretAiReply({ choices: [{ message: { content: '', reasoning_content: '让我先想想这个字段应该……' }, finish_reason: 'stop' }] });
+  assert.equal(reasoning.error, 'reasoning_only');
+  assert.ok(reasoning.reasoningChars > 0);
+
+  const truncated = interpretAiReply({ choices: [{ message: { content: '' }, finish_reason: 'length' }] });
+  assert.equal(truncated.error, 'truncated');
+
+  const empty = interpretAiReply({ choices: [{ message: { content: '   ' }, finish_reason: '' }] });
+  assert.equal(empty.error, 'empty_content');
+
+  const upstream = interpretAiReply({ error: { code: 'model_not_found', message: '未找到该模型' } });
+  assert.equal(upstream.error, 'upstream_model_not_found');
+  assert.match(upstream.detail, /未找到该模型/);
+
+  assert.equal(interpretAiReply(null).error, 'not_json');
+  // Responses API 的 output_text 也要能取到
+  const responses = interpretAiReply({ output_text: '[{"index":3,"path":"basics.name"}]' });
+  assert.equal(responses.ok, true);
+});
+
+test('答案被长度砍断时不能当成"模型没建议"：unparsable 与 truncated 是两回事', () => {
+  // 完全截断：一个都解析不出来，报 unparsable，但界面上必须说是"被截断"
+  const cut = interpretAiReply({ choices: [{ message: { content: '[{"index":3,"path":"' }, finish_reason: 'length' }] });
+  assert.equal(cut.ok, true);
+  assert.equal(cut.finishReason, 'length', '界面靠 finish_reason 才能说"是长度截断，少问几栏"');
+  const parsed = parseAiResponse(cut.content, { allowedPaths: WL, askedIndexes: IX });
+  assert.equal(parsed.candidates.length, 0);
+  assert.equal(parsed.dropped[0].reason, 'unparsable');
+
+  // 部分截断：前半段仍然可用 —— 不能因为尾部残缺就把能用的建议丢掉
+  const half = interpretAiReply({ choices: [{ message: { content: '[{"index":3,"path":"basics.name"},{"index":7,"path":"' }, finish_reason: 'length' }] });
+  const parsedHalf = parseAiResponse(half.content, { allowedPaths: WL, askedIndexes: IX });
+  assert.equal(parsedHalf.candidates.length, 1, '截断尾巴把已经答对的那条也拖没了');
+  assert.equal(parsedHalf.candidates[0].path, 'basics.name');
 });

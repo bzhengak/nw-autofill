@@ -168,3 +168,29 @@ test('探针要同时报"填充路径看到的标签"，不然分不清是页面
   assert.equal(f.scanLabel, '毕业时间');
   assert.equal(f.scanVia, 'item-label');
 });
+
+test('只读日历控件即使有标签也带素描（下一步要不要替用户点面板，得先看面板长什么样）', () => {
+  const html = `<!doctype html><html><body><form>
+    <div class="ant-form-item">
+      <div class="ant-col ant-form-item-label"><label>开始时间</label></div>
+      <div class="ant-col ant-form-item-control">
+        <span class="ant-picker ant-picker-outlined">
+          <input readonly placeholder="请选择开始时间" id="start_date" data-nw-test="d">
+          <span class="ant-picker-suffix"><span class="anticon anticon-calendar"></span></span>
+        </span>
+      </div>
+    </div>
+    <div class="ant-form-item">
+      <div class="ant-col ant-form-item-label"><label>备注</label></div>
+      <div class="ant-col ant-form-item-control"><input type="text" id="note_field" data-nw-test="n"></div>
+    </div>
+  </form></body></html>`;
+  const dom = new JSDOM(html, { url: 'https://c.iguopin.test/apply' });
+  const out = probePageStructure(dom.window.document, 'https://c.iguopin.test/apply', dom.window);
+  const d = out.fields.find(f => f.id === 'start_date');
+  const n = out.fields.find(f => f.id === 'note_field');
+  assert.ok(d.label, '这条测试的前提是它自己就有标签');
+  assert.ok(d.sketch, '只读日历控件没带素描，下一轮还是只能猜');
+  assert.match(d.sketch, /ant-picker/);
+  assert.equal(n.sketch, undefined, '普通有标签字段不该带素描');
+});

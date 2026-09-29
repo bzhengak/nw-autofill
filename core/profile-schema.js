@@ -475,7 +475,7 @@ export const EXTRA_ALIASES = {
   'basics.weightKg': ['体重 kg', '体重(kg)', '体重（公斤）'],
   'contact.emergencyPhone': ['紧急联系人电话', '紧急联系电话', '亲属电话'],
   'contact.address': ['通讯地址', '寄信地址', '现详细住址', '联系地址', '地址行 1', 'address line 1', '地址行1'],
-  'intent.position': ['应聘岗位', '申请职位', '志愿岗位', '应聘职位'],
+  'intent.position': ['应聘岗位', '申请职位', '志愿岗位', '应聘职位', '期望岗位', '期望职位', '意向职位', '目标岗位'],
   'intent.cities': ['期望工作地', '意向工作地', '期望工作地点', '工作地点偏好', 'expected city', 'desired city', 'expected work location', 'preferred work location'],
   'intent.acceptRelocation': ['是否服从调剂', '服从调剂', '愿意调剂', '接受工作地点调剂'],
   'intent.channel': ['信息来源', '获知渠道', '如何得知本公司', '招聘渠道来源', '从哪里知道', '从何种渠道了解', '获取招聘信息渠道', '您是通过什么方式知道我们的', '您通过何种渠道了解到这次', 'how did you hear about this position', 'how did you hear', 'how you heard about us', 'how did you hear about us', 'how did you know about this role', 'channel'],

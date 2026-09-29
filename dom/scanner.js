@@ -204,15 +204,25 @@ export function labelFor(el, doc) {
   // 主循环里"单子链就走够了"的优化会提前收手，所以这里单独沿祖先找 form-item 级容器，
   // 只取它"不含控件的直接子分支"里的 label/title 节点。判据窄是刻意的：
   // 越过条目边界去前面捞文本，代价是把隔壁字段的标签当成自己的（宁可没有也不假绿）。
-  for (let n = el.parentElement, up = 0; n && up < 7; n = n.parentElement, up++) {
-    if (n.tagName === 'FORM' || n.tagName === 'BODY') break;
+  //
+  // 深度上限要放宽：国聘(iguopin) 真实导出里"学校名称/专业名称"这类是**条目套条目**——
+  // 外层 ant-form-item 带 label 列，内层再套一层 ant-form-item 只放控件，
+  // 标签到控件隔了 9~13 层祖先，7 层根本够不着（chain 记满 7 层还没到顶）。
+  // 但"最近的那个条目说了算"：一旦某个条目里找到了合格分支就停，不再往上够第二个。
+  for (let n = el.parentElement, up = 0; n && up < 16; n = n.parentElement, up++) {
+    if (n.tagName === 'FORM' || n.tagName === 'BODY' || n.tagName === 'HTML') break;
     if (!n.matches?.(ITEM_ROW_SELECTOR)) continue;
+    let hit = false;
     for (const k of Array.from(n.children || [])) {
       if (!k || (k.contains && k.contains(el))) continue;
       if (k.querySelector && k.querySelector(CONTROL_SELECTOR)) continue;
       if (isFieldShell(k)) continue;
-      push(k.querySelector(':scope > label, :scope > [class*="label"], :scope > [class*="title"], :scope > dt, :scope > th'), 'item-label', up + 3);
+      const lab = k.querySelector(':scope > label, :scope > [class*="label"], :scope > [class*="title"], :scope > dt, :scope > th');
+      if (!lab) continue;
+      push(lab, 'item-label', up + 3);
+      hit = true;
     }
+    if (hit) break;
   }
 
   const ph = clean(el.getAttribute('placeholder'));

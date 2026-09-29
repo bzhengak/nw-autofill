@@ -284,3 +284,15 @@ test('HTML 注释不是标签（真实页面会留模板注释和构建水印）
   assert.equal(f.label, '期望行业');
   assert.ok(!/边界情况/.test(f.labelRaw || ''), '注释正文被当成了标签或原始标签');
 });
+
+test('条目套条目（国聘 iguopin 真实形状）：标签隔了 9~13 层也要够到，且不许捞隔壁条目的', () => {
+  const dom = new JSDOM(fs.readFileSync(path.join(root, 'test-forms/iguopin-nested-cn.html'), 'utf8'), { url: 'https://c.iguopin.test/apply' });
+  const fields = scanForm(dom.window.document);
+  const by = k => byKey(fields, k);
+  assert.equal(by('school')?.label, '学校名称', '嵌套条目里的下拉取不到标签 = 整片字段白屏');
+  assert.equal(by('school_hidden_a')?.label, '学校名称');
+  assert.equal(by('major')?.label, '专业名称');
+  assert.equal(by('name')?.label, '姓名', '隔壁条目的标签串过来了');
+  // 标签文字里那段"（最多 20 字，超出部分不显示）"不能进匹配用名
+  assert.ok(!/超出部分/.test(by('school').label), '提示文字混进了标签');
+});

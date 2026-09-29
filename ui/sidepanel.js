@@ -1,6 +1,7 @@
 import { createEmptyProfile, SECTIONS, buildFields, setValueByPath, getValueByPath, countFilled } from '../core/profile-schema.js';
 import { importMarkdown } from '../core/importers/markdown.js';
 import { auditProfile, editorModel, advice } from '../core/coverage.js';
+import { gapReasonLabel } from '../core/matcher.js';
 // 端点/Key 的判定规则与 service worker 用同一份代码：这里只用于即时反馈，
 // 真正的把关在 background（哪怕这个文件被改成永远不校验，请求也发不出去）。
 import { applyExtracted } from '../core/ai-extract.js';
@@ -205,7 +206,9 @@ function render(data, meta = {}) {
       <td>${escapeHtml(String(r.actual ?? '')).slice(0, 40)}</td></tr>`).join('');
 
   $('gaps').innerHTML = (data?.gaps || []).map(g =>
-    `<tr><td><span class="dot orange"></span></td><td>${escapeHtml(g.label)}</td><td class="note">${escapeHtml(g.reason)}</td></tr>`).join('')
+    `<tr><td><span class="dot orange"></span></td><td>${escapeHtml(g.label)}</td>`
+    // 表格里给中文说明，原始 token 留在 title：用户看得懂下一步，报障时我们也对得上号
+    + `<td class="note" title="${escapeHtml(g.reason || '')}">${escapeHtml(gapReasonLabel(g.reason))}${g.note ? '　·　' + escapeHtml(g.note) : ''}</td></tr>`).join('')
     || '<tr><td class="note">无</td></tr>';
 }
 
@@ -343,16 +346,36 @@ $('btnAiAsk').onclick = async () => {
     const why = {
       ai_not_configured: '还没配好 Base URL / 模型 / Key（Key 只存本次会话）',
       value_leak: '自检拦下了这次请求，已拒绝发送',
-      timeout: '请求超时（20s）',
+      timeout: '请求超时（20s）：模型太慢或网络不通，先少问几栏再试',
       network_error: '网络错误：检查 Base URL 与站点可达性',
       payload_too_large: '请求体超限，缺口太多，先分批处理',
+      no_fragments: '本地解析没有剩余片段，不需要 AI 辅助',
+      not_confirmed: '这次没点确认，没有发送任何内容',
+      reasoning_only: '模型只输出了"思考过程"，正文是空的 —— 换个非 reasoning 模型（或把它关掉）再来',
+      truncated: '模型答案被长度上限砍断，JSON 不完整 —— 先少问几栏',
+      empty_content: '上游回了 200 但正文是空的（多半是模型名或兼容层不对）',
+      not_json: '上游回的不是 JSON：Base URL 可能指到了网页而不是 API 根路径（应形如 https://…/v1）',
     }[res?.error] || ('调用失败：' + (res?.error || '未知错误'));
     $('aiStatus').textContent = why;
+    const box = $('aiPreviewText');
+    box.hidden = false;
+    box.textContent = [why, res.detail, res.finishReason ? `finish_reason=${res.finishReason}` : '', res.reasoningChars ? `思考过程 ${res.reasoningChars} 字` : '']
+      .filter(Boolean).join('\n');
     return;
   }
-  if (!res.candidates.length) { $('aiStatus').textContent = `AI 没有给出可用建议（丢弃 ${res.dropped.length} 条）`; return; }
+  if (!res.candidates.length) {
+    const box = $('aiPreviewText');
+    box.hidden = false;
+    box.textContent = `AI 回了 ${res.rawChars} 字，但没有一条能落进白名单（丢弃 ${res.dropped.length} 条：`
+      + [...new Set(res.dropped.map(d => d.reason))].join('、') + '）'
+      + (res.finishReason ? `\nfinish_reason=${res.finishReason}` : '')
+      + `\n它原样回的前 200 字：\n${res.snippet || '（空）'}`;
+    $('aiStatus').textContent = `AI 没有给出可用建议（丢弃 ${res.dropped.length} 条）—— 下面有原始回显`;
+    return;
+  }
   await run('preview', { aiCandidates: res.candidates });
-  $('aiStatus').textContent = `AI 补齐 ${res.candidates.length} 栏（全部黄字待你核对）；已用「只预演」应用，确认后点「扫描并填写」写入`;
+  $('aiStatus').textContent = `AI 补齐 ${res.candidates.length} 栏（全部黄字待你核对）；已用「只预演」应用，确认后点「扫描并填写」写入`
+    + (res.finishReason === 'length' ? ' —— 注意：这次回答被长度上限截断了，可能还有缺口没给出，再点一次问剩下的' : '');
 };
 $('btnUndo').onclick = async () => { await chrome.runtime.sendMessage({ type: 'nw:undo', tabId }); render({ stats: {}, results: [], gaps: [] }); };
 $('btnClear').onclick = () => chrome.runtime.sendMessage({ type: 'nw:clearMarks', tabId });
@@ -456,10 +479,31 @@ $('btnExtractRun').onclick = async () => {
   $('extractStatus').textContent = '正在请求…（只发本地判不动的片段）';
   const profile = JSON.parse($('profileText').value || '{}');
   const res = await chrome.runtime.sendMessage({ type: 'nw:extractRun', profile, report: lastImportReport, confirm: true });
-  if (!res?.ok) { $('extractStatus').textContent = '调用失败：' + (res?.error || '未知错误'); return; }
+  if (!res?.ok) {
+    const why = {
+      ai_not_configured: '还没配好 Base URL / 模型 / Key',
+      not_confirmed: '这次没点确认，没有发送任何内容',
+      no_fragments: '本地解析没有剩余片段需要帮忙',
+      reasoning_only: '模型只输出了"思考过程"，正文为空 —— 换非 reasoning 模型再来',
+      truncated: '答案被长度上限砍断，JSON 不完整 —— 少勾几段再来',
+      empty_content: '上游回了 200 但正文为空（模型名或兼容层多半不对）',
+      not_json: '上游回的不是 JSON：Base URL 应指到 API 根路径（形如 https://…/v1）',
+      payload_too_large: '请求体超限，先分批',
+    }[res?.error] || ('调用失败：' + (res?.error || '未知错误'));
+    $('extractStatus').textContent = why;
+    const box = $('extractPreviewText');
+    box.hidden = false;
+    box.textContent = [why, res.detail, res.finishReason ? `finish_reason=${res.finishReason}` : ''].filter(Boolean).join('\n');
+    return;
+  }
   if (!res.accepted?.length) {
     const why = [...new Set((res.rejected || []).map(r => r.reason))].join('、');
-    $('extractStatus').textContent = `没有逐字命中的结果（丢弃 ${(res.rejected || []).length} 条${why ? `：${why}` : ''}）`;
+    const box = $('extractPreviewText');
+    box.hidden = false;
+    box.textContent = `AI 回了 ${res.rawChars || 0} 字，但一条都没通过逐字/白名单校验（丢弃 ${(res.rejected || []).length} 条${why ? `：${why}` : ''}）`
+      + (res.finishReason ? `\nfinish_reason=${res.finishReason}` : '')
+      + `\n它原样回的前 200 字：\n${res.snippet || '（空）'}`;
+    $('extractStatus').textContent = '没有逐字命中的结果 —— 下面有原始回显';
     return;
   }
   renderExtractResults(res);

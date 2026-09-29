@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh">
+<head><meta charset="utf-8"><title>Element UI 风格网申页（仿真）</title></head>
+<body>
+  <!--
+    这份文件是对 Element UI el-select 行为的**仿真**，不是真的 Element UI 页面：
+    下面那段内联 JS 复刻了三件我们依赖的行为 ——
+      1. 点输入框不弹，点 .el-select 这个 wrapper 才弹（mousedown 触发）；
+      2. 选项是点击后渲染到 body 末端的 .el-select-dropdown，容器带 role=listbox；
+      3. 选中后把文本写回 .el-input__inner 的 value，并收起弹层。
+    另外复刻了两个"分类陷阱"，它们都是真实框架的固有形态：
+      - 内层 input 天生 readonly（意思是"别打字"，不是"站点算好了不许改"）；
+      - 占位符是"请输入城市"这种搜索提示，靠文案根本认不出这是下拉。
+    真实页面的实测仍需你在浏览器里做；这里保证"点开 → 匹配 → 选中 → 回读"这条链路不回归。
+  -->
+  <form id="f">
+    <div class="el-form-item">
+      <label class="el-form-item__label" for="degree_input">最高学历</label>
+      <div class="el-form-item__content">
+        <div class="el-select" data-nw-test="degree">
+          <div class="el-input"><input class="el-input__inner" id="degree_input" placeholder="请选择" readonly></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="el-form-item">
+      <label class="el-form-item__label" for="mode_input">学习形式</label>
+      <div class="el-form-item__content">
+        <div class="el-select" data-nw-test="training_mode">
+          <div class="el-input"><input class="el-input__inner" id="mode_input" placeholder="请选择" readonly></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="el-form-item">
+      <label class="el-form-item__label" for="avail_input">到岗时间</label>
+      <div class="el-form-item__content">
+        <div class="el-select" data-nw-test="start_available">
+          <div class="el-input"><input class="el-input__inner" id="avail_input" placeholder="请选择" readonly></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="el-form-item">
+      <label class="el-form-item__label" for="city_input">意向城市</label>
+      <div class="el-form-item__content">
+        <div class="el-select" data-nw-test="city">
+          <div class="el-input"><input class="el-input__inner" id="city_input" placeholder="请输入城市"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="el-form-item">
+      <label class="el-form-item__label" for="home_city_input">现居城市</label>
+      <div class="el-form-item__content">
+        <div class="el-select" data-nw-test="home_city">
+          <div class="el-input"><input class="el-input__inner" id="home_city_input" placeholder="请选择" readonly></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="el-form-item">
+      <label class="el-form-item__label" for="name_input">姓名</label>
+      <div class="el-form-item__content">
+        <div class="el-input"><input class="el-input__inner" id="name_input" data-nw-test="name" placeholder="请输入姓名"></div>
+      </div>
+    </div>
+
+    <!-- 危险元素：永远不该被点 -->
+    <button type="submit" data-nw-test="submit_btn">提交申请</button>
+    <button type="button" data-nw-test="next_step">下一步</button>
+  </form>
+
+  <script>
+    (function () {
+      const DATA = {
+        degree: ['高中/中专', '大专', '本科', '硕士', '博士'],
+        training_mode: ['非全日制', '全日制', '成人教育'],           // 故意把否定式放第一位
+        start_available: ['立即到岗', '一周内', '一个月内', '三个月内'],
+        city: ['北京', '上海', '广州', '深圳', '杭州', '南京', '成都', '武汉', '西安', '苏州'],
+        home_city: ['北京', '上海', '南京', '苏州', '杭州'],           // 单值资料（现居城市=南京市）能真正选上
+      };
+      let seq = 0;
+      document.querySelectorAll('.el-select').forEach(function (root) {
+        const key = root.getAttribute('data-nw-test');
+        const input = root.querySelector('.el-input__inner');
+        const popId = 'popper_' + (++seq);
+        let open = false;
+
+        function close() {
+          const p = document.getElementById(popId);
+          if (p) p.remove();
+          open = false;
+          root.classList.remove('is-open');
+        }
+        function paintSelection(text) {
+          input.value = text;
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        function expand() {
+          const pop = document.createElement('div');
+          pop.id = popId;
+          pop.className = 'el-select-dropdown el-popper';
+          pop.setAttribute('aria-hidden', 'false');
+          const ul = document.createElement('ul');
+          ul.className = 'el-select-dropdown__list';
+          ul.setAttribute('role', 'listbox');
+          (DATA[key] || []).forEach(function (label) {
+            const li = document.createElement('li');
+            li.className = 'el-select-dropdown__item';
+            li.setAttribute('role', 'option');
+            li.textContent = label;
+            li.addEventListener('click', function () { paintSelection(label); close(); });
+            ul.appendChild(li);
+          });
+          pop.appendChild(ul);
+          document.body.appendChild(pop);      // 真实实现就是挂到 body 末端
+          open = true;
+          root.classList.add('is-open');
+        }
+
+        // Element UI 听的是 wrapper 上的 mousedown/click，不是内部 input
+        root.addEventListener('mousedown', function () { if (!open) expand(); });
+        root.addEventListener('click', function (e) { e.stopPropagation(); if (!open) expand(); });
+        document.addEventListener('click', function (e) { if (!root.contains(e.target)) close(); });
+      });
+    })();
+  </script>
+</body>
+</html>

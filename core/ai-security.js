@@ -4,7 +4,7 @@
 // 而不是等有人在浏览器里试。
 
 /** 可以持久化的设置白名单。Key 不在里面 —— 它只配活在 chrome.storage.session。 */
-export const SETTING_KEYS = ['mode', 'fillSensitive', 'autoSubmitNever', 'aiEnabled', 'aiBaseUrl', 'aiModel', 'aiMaxGaps', 'aiConsentOrigin'];
+export const SETTING_KEYS = ['mode', 'fillSensitive', 'autoSubmitNever', 'allowCustomSelect', 'aiEnabled', 'aiBaseUrl', 'aiModel', 'aiMaxGaps', 'aiConsentOrigin'];
 
 const SECRETISH = /(key|token|secret|password|credential|auth)/i;
 

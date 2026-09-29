@@ -1,0 +1,9 @@
+{
+  "pageUrl": "https://antd-demo.test/apply/2",
+  "customSelect": true,
+  "expect": {
+    "gender": "basics.gender"
+  },
+  "mustNotTouch": ["submit_btn", "id_type", "city"],
+  "notes": "这份表单是对 Ant Design Select 行为的仿真（不是真实 AntD 页面），专门复刻四个会把「看起来成功」变成错的细节：事件挂在 .ant-select-selector 而不是外层壳；弹层收起只是加 .ant-select-dropdown-hidden 类、节点一直留在 DOM 里（可见性判断不认就会点到上一个下拉的残留选项）；选中值写在 .ant-select-selection-item，而搜索框里留着过滤残字（回读只看 input.value 就会把『搜索城市』当成已选值）；身份类型一栏没有内层 input，只有 wrapper 上的 role=combobox（最容易漏扫的一种）。id_type 与 city 放在 mustNotTouch：资料里的『应届毕业生』对不上『社会人士/校园招聘/实习生』，『上海、杭州』也没法在单选里表达 —— 我们说没有就是不选，不为命中率硬配一个语义近似项。"
+}

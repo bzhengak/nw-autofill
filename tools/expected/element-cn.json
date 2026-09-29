@@ -1,0 +1,12 @@
+{
+  "pageUrl": "https://element-demo.test/apply/1",
+  "customSelect": true,
+  "expect": {
+    "name": "basics.name",
+    "degree": "education.0.degree",
+    "training_mode": "education.0.trainingMode",
+    "home_city": "contact.city"
+  },
+  "mustNotTouch": ["submit_btn", "next_step", "city", "start_available"],
+  "notes": "这份表单是对 Element UI 行为的仿真（内联 JS 复刻 mousedown 展开、选项渲染到 body 末端、选中回写显示值），用来回归「点开 → 匹配 → 选中 → 回读」这条链路，不等于真实 Element 页面已实测。customSelect:true 表示这些栏位必须授权点开才有选项，跑判分时才带 allowCustomSelect —— 产品默认行为仍然是一个都不点。training_mode 的选项把「非全日制」放在第一位，专门盯否定式误选。city 与 start_available 放在 mustNotTouch 而不是 expect：意向城市在资料里是多值（上海、杭州），站点却是单选，硬配一个就是替用户做决定；到岗时间在资料里是日期 2026-07-01，站点选项是「立即到岗/一周内/一个月内」，对不上就是不填。这两个如果哪天变成 green，说明我们把猜测当成了事实。"
+}

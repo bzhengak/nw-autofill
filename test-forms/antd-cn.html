@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><title>Ant Design 风格网申页（仿真）</title></head>
+<body>
+  <!--
+    Ant Design Select 的行为仿真（不是真的 AntD 页面，内联 JS 复刻这几条我们依赖的行为）：
+      - 触发器是 .ant-select，真正听事件的是里面的 .ant-select-selector；
+      - 展开时把 .ant-select-dropdown 渲染到 body 末端，收起时加 .ant-select-dropdown-hidden
+        （"隐藏"靠 class 而不是 display:none —— 可见性判断必须认这个，否则会把收起的弹层当可选项）；
+      - 选项文本在 .ant-select-item-option-content 里；
+      - 选中后写入 .ant-select-selection-item，并**故意在搜索框里留下残字**：
+        回读必须看显示区，看 input.value 会读到脏东西。
+    身份类型那一栏是不可搜索的 AntD（没有内层 input，只有 wrapper 上的 role=combobox），
+    这是真实形态，也是最容易漏扫的一种。
+  -->
+  <form id="f">
+    <div class="ant-form-item">
+      <label for="city_input">意向城市</label>
+      <div class="ant-select ant-select-show-search" data-nw-test="city">
+        <div class="ant-select-selector">
+          <span class="ant-select-selection-search">
+            <input id="city_input" class="ant-select-selection-search-input" role="combobox" aria-haspopup="listbox" placeholder="搜索城市">
+          </span>
+          <span class="ant-select-selection-placeholder">请选择城市</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="ant-form-item">
+      <label for="id_type_select">身份类型</label>
+      <div class="ant-select" data-nw-test="id_type">
+        <div class="ant-select-selector" id="id_type_select" role="combobox" aria-haspopup="listbox" tabindex="0">
+          <span class="ant-select-selection-placeholder">请选择</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="ant-form-item">
+      <label for="gender_select">性别</label>
+      <div class="ant-select" data-nw-test="gender">
+        <div class="ant-select-selector" id="gender_select" role="combobox" aria-haspopup="listbox" tabindex="0">
+          <span class="ant-select-selection-placeholder">请选择</span>
+        </div>
+      </div>
+    </div>
+
+    <button type="submit" data-nw-test="submit_btn">Submit application</button>
+  </form>
+
+  <script>
+    (function () {
+      const DATA = {
+        city: ['北京', '上海', '广州', '深圳', '杭州'],
+        id_type: ['社会人士', '校园招聘', '实习生'],
+        gender: ['男', '女'],                 // 单值资料能真正选上，用来盯"选中且回读到"的正路
+      };
+      document.querySelectorAll('.ant-select').forEach(function (root) {
+        const key = root.getAttribute('data-nw-test');
+        const selector = root.querySelector('.ant-select-selector');
+        const search = root.querySelector('input');
+        const holder = root.querySelector('.ant-select-selection-placeholder');
+        const id = 'dd_' + key;
+        let open = false;
+
+        function close() {
+          const p = document.getElementById(id);
+          if (p) p.classList.add('ant-select-dropdown-hidden');
+          open = false;
+        }
+        function expand() {
+          let p = document.getElementById(id);
+          if (!p) {
+            p = document.createElement('div');
+            p.id = id;
+            p.className = 'ant-select-dropdown';
+            const list = document.createElement('div');
+            list.className = 'ant-select-item';
+            list.setAttribute('role', 'listbox');
+            (DATA[key] || []).forEach(function (label) {
+              const opt = document.createElement('div');
+              opt.className = 'ant-select-item ant-select-item-option';
+              opt.setAttribute('role', 'option');
+              const inner = document.createElement('div');
+              inner.className = 'ant-select-item-option-content';
+              inner.textContent = label;
+              opt.appendChild(inner);
+              opt.addEventListener('click', function () {
+                const span = document.createElement('span');
+                span.className = 'ant-select-selection-item';
+                span.textContent = label;
+                const prev = root.querySelector('.ant-select-selection-item');
+                if (prev) prev.remove();
+                selector.insertBefore(span, selector.firstChild);
+                if (holder) holder.style.display = 'none';
+                if (search) search.value = '搜索城市';     // 故意留残字
+                close();
+              });
+              list.appendChild(opt);
+            });
+            p.appendChild(list);
+            document.body.appendChild(p);
+          } else {
+            p.classList.remove('ant-select-dropdown-hidden');
+          }
+          open = true;
+        }
+        selector.addEventListener('mousedown', function () { if (!open) expand(); });
+        selector.addEventListener('click', function (e) { e.stopPropagation(); if (!open) expand(); });
+        document.addEventListener('click', function (e) { if (!root.contains(e.target)) close(); });
+      });
+    })();
+  </script>
+</body></html>

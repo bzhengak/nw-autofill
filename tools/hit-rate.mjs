@@ -64,22 +64,30 @@ for (const file of forms) {
   const html = fs.readFileSync(path.join(root, 'test-forms', file), 'utf8');
   const expectedPath = path.join(root, 'tools', 'expected', file.replace(/\.html$/, '.json'));
   if (!fs.existsSync(expectedPath)) { console.log(`跳过 ${file}（无判分标准）`); continue; }
-  const { expect, mustNotTouch = [], pageUrl = '' } = JSON.parse(fs.readFileSync(expectedPath, 'utf8'));
+  const { expect, mustNotTouch = [], pageUrl = '', customSelect = false } = JSON.parse(fs.readFileSync(expectedPath, 'utf8'));
   const adapter = pageUrl ? matchAdapter(pageUrl, ADAPTERS) : null;
 
-  const dom = new JSDOM(html, { url: 'https://example.test/apply', pretendToBeVisual: true });
+  // 只有判分标准里声明 customSelect 的表单才跑内联脚本（Element/AntD 的行为仿真）。
+  // 其它表单不执行脚本：多开一个执行面没有收益，只会让"判分环境"和"产品默认行为"悄悄分叉。
+  const dom = new JSDOM(html, {
+    url: pageUrl || 'https://example.test/apply', pretendToBeVisual: true,
+    ...(customSelect ? { runScripts: 'dangerously' } : {}),
+  });
   const { window } = dom;
   const doc = window.document;
 
   const fields = scanForm(doc);
   const profile = profileForJudging();
-  const plan = planFill(fields, profile, { mode: 'full', adapter, fillSensitive: true });
-  const { results } = await applyPlan(fields, plan.assignments, {});
+  const plan = planFill(fields, profile, { mode: 'full', adapter, fillSensitive: true, allowCustomSelect: customSelect });
+  const { results } = await applyPlan(fields, plan.assignments, { allowCustomSelect: customSelect });
 
   const byName = new Map();
   results.forEach((r) => {
     const f = fields[r.index];
-    const key = f?.el?.getAttribute?.('data-nw-test') || f?.el?.getAttribute?.('name') || f?.el?.getAttribute?.('id');
+    // data-nw-test 常常挂在外层壳上（自定义下拉的测试标记就在 .el-select 那一层），
+    // 只看 f.el 会让这些栏位在判分里"消失"——显示成未分配，其实是判分器找不到键。
+    const key = f?.el?.closest?.('[data-nw-test]')?.getAttribute('data-nw-test')
+      || f?.el?.getAttribute?.('data-nw-test') || f?.el?.getAttribute?.('name') || f?.el?.getAttribute?.('id');
     if (key) byName.set(key, { ...r, kind: f.kind });
   });
 

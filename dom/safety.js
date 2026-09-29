@@ -6,6 +6,23 @@ export const NAV_TEXT_RE = /(下一步|上一步|next|previous|保存并继续|s
 export const EXPAND_TEXT_RE = /(展开|查看更多|添加一条|增加一项|更多|expand|add\s*(another|more)|show\s*more)/i;
 
 // 允许点击的：自定义下拉/日期的触发器与其选项、展开按钮。其余拒绝。
+//
+// "什么算选择控件的触发器"只在这里定义一次，dom/select-opener.js 复用同一个常量 ——
+// 两处各写各的迟早漂移，最后变成"opener 认为能点、闸门认为不能点"或反过来。
+// 老版 Element UI 2.x 的 .el-select wrapper 上没有任何 ARIA（role=combobox 是新版才加的），
+// 所以只认 ARIA 会把一大批真实下拉判成"不许点"。
+export const SELECT_TRIGGER_SELECTOR = [
+  '[role="combobox"]', '[aria-haspopup="true"]', '[aria-haspopup="listbox"]',
+  '.el-select', '.el-cascader', '.ant-select', '.next-select', '.arco-select', '.van-picker',
+].join(',');
+
+/**
+ * 框架的"外层壳"：真正的事件监听与选中后的显示区都挂在这一层，
+ * 而内层那个 role=combobox 的 input 只是过滤器/搜索框。
+ * 找触发器和读回显值时必须先往上找它，否则会读到搜索框里的残字。
+ */
+export const SELECT_WRAPPER_SELECTOR = '.el-select, .el-cascader, .ant-select, .next-select, .arco-select, .van-picker';
+
 export function classifyClick(el) {
   if (!el) return { allowed: false, reason: 'no_element' };
   const text = String(el.textContent || el.value || el.getAttribute('aria-label') || '').trim();
@@ -19,7 +36,10 @@ export function classifyClick(el) {
   if (el.form && tag === 'button' && type === 'submit') return { allowed: false, reason: 'submit_button' };
   if (NAV_TEXT_RE.test(text)) return { allowed: false, reason: 'navigation' };
   if (role === 'option' || role === 'menuitem' || el.closest?.('[role="listbox"],[role="menu"]')) return { allowed: true, reason: 'option' };
-  if (role === 'combobox' || el.getAttribute?.('aria-haspopup')) return { allowed: true, reason: 'control_trigger' };
+  // 框架选择控件的 wrapper 本身：必须"就是"触发器（matches），不能只是"在触发器里面"，
+  // 否则 wrapper 内任何子元素（包括站点塞进去的链接）都算可点。
+  if (el.matches?.(SELECT_TRIGGER_SELECTOR)) return { allowed: true, reason: 'control_trigger' };
+  if (el.getAttribute?.('aria-haspopup')) return { allowed: true, reason: 'control_trigger' };
   if (EXPAND_TEXT_RE.test(text)) return { allowed: true, reason: 'expand' };
   if (el.dataset?.nwTrigger !== undefined) return { allowed: true, reason: 'declared_trigger' };
   return { allowed: false, reason: 'not_in_allowlist' };

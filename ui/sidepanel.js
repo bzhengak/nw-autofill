@@ -32,6 +32,7 @@ async function refresh() {
   lastState = state;
   const profile = state?.profile;
   $('fillSensitive').checked = Boolean(state?.settings?.fillSensitive);
+  $('allowCustomSelect').checked = Boolean(state?.settings?.allowCustomSelect);
   // Key 不回显（也不该回显）：只告诉用户本次会话里有没有、绑在哪个 origin
   if (state?.settings?.aiBaseUrl) $('aiBaseUrl').value = state.settings.aiBaseUrl;
   if (state?.settings?.aiModel) $('aiModel').value = state.settings.aiModel;
@@ -161,6 +162,15 @@ $('btnFormSave').onclick = async () => {
 $('fillSensitive').onchange = async e => {
   await chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { fillSensitive: e.target.checked } });
   lastState = { ...(lastState || {}), settings: { ...(lastState?.settings || {}), fillSensitive: e.target.checked } };
+};
+// 点开自定义下拉 = 扩展会真的点击页面上的控件，这是一次独立授权，默认关，
+// 与「允许填写敏感字段」分开勾：两者风险性质不同（改内容 vs 动页面）。
+$('allowCustomSelect').onchange = async e => {
+  await chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { allowCustomSelect: e.target.checked } });
+  lastState = { ...(lastState || {}), settings: { ...(lastState?.settings || {}), allowCustomSelect: e.target.checked } };
+  $('stats').innerHTML = `<div class="banner">${e.target.checked
+    ? '已授权点开自定义下拉：这类栏位会被真实点击并选中，结果一律标黄由你核对。提交仍然不会代做。'
+    : '已收回授权：自定义下拉恢复为「交给你手动点」，不再被点击。'}</div>` + ($('stats').innerHTML || '');
 };
 
 function render(data, meta = {}) {

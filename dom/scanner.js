@@ -2,6 +2,9 @@
 // 覆盖 open Shadow DOM、同源 iframe 内的控件、radio/checkbox 分组、重复经历区块。
 
 import { normalize, core, simplify, toHalfWidth, pickLabelCandidate } from '../core/matching.js';
+// "什么算选择控件触发器"只在 dom/safety.js 定义一次：扫描、点击闸门、opener 三处共用，
+// 各写各的迟早漂移（漂移的结果要么是"该点的点不了"，要么是"不该点的点了"）。
+import { SELECT_TRIGGER_SELECTOR } from './safety.js';
 
 const IGNORE_INPUT_TYPES = new Set(['hidden', 'submit', 'button', 'image', 'reset']);
 const CONTROL_SELECTOR = 'input, textarea, select, [contenteditable="true"], [role="combobox"], [role="listbox"]';
@@ -437,6 +440,12 @@ export function scanForm(root = document) {
     });
   }
   const out = fields.filter(f => f.label || f.name || f.id || f.placeholder || f.testId || f.autocomplete);
+  // 结构化判据：是不是"自定义下拉的内层控件"。靠 placeholder 文案（"请选择"）猜不可靠 ——
+  // AntD 搜索型的占位符是"搜索城市"，Element 的内层 input 还带 readonly
+  // （会被"站点只读框"规则误吞）。wrapper 在不在 SELECT_TRIGGER_SELECTOR 里才是事实。
+  for (const f of out) {
+    if (f.kind !== 'select' && f.el?.closest?.(SELECT_TRIGGER_SELECTOR)) f.customSelect = true;
+  }
   renumberItemIndexBySection(out, blockIndex);
   markCompositeDatePairs(out);
   markRecordOccurrences(out);

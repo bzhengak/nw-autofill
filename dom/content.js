@@ -54,11 +54,11 @@ if (!window.__nwSubmitListener) {
   });
 }
 
-async function handleScan({ profile, mode = 'full', dryRun = false, adapter = null, fillSensitive = false, aiCandidates = null }) {
+async function handleScan({ profile, mode = 'full', dryRun = false, adapter = null, fillSensitive = false, allowCustomSelect = false, aiCandidates = null }) {
   const { scanner, filler, matcher, safety, schema } = await loadModules();
   safety.armSubmitGuard(window, auditLog);
   const fields = scanner.scanForm(document);
-  const plan = matcher.planFill(fields, profile, { mode, adapter, fillSensitive });
+  const plan = matcher.planFill(fields, profile, { mode, adapter, fillSensitive, allowCustomSelect });
   // AI 候选在这里落地：路径白名单与"空槽/敏感槽"的判断都交给 core/ai.js，
   // 内容脚本只负责把结果并进 plan，再走同一条 applyPlan（写入与回读口径不另开一套）。
   let aiApplied = 0;
@@ -69,7 +69,7 @@ async function handleScan({ profile, mode = 'full', dryRun = false, adapter = nu
     plan.stats = merged.stats;
     aiApplied = merged.applied;
   }
-  const applied = await filler.applyPlan(fields, plan.assignments, { dryRun });
+  const applied = await filler.applyPlan(fields, plan.assignments, { dryRun, allowCustomSelect });
 
   clearMarks();
   for (const r of applied.results) {
@@ -122,6 +122,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         sendResponse({ ok: true, data: await handleScan({
           profile: profile || {}, mode: msg.mode, dryRun: msg.dryRun,
           adapter: msg.adapter || null, fillSensitive: settings ? settings.fillSensitive === true : false,
+          allowCustomSelect: settings ? settings.allowCustomSelect === true : false,
           aiCandidates: msg.aiCandidates || null,
         }) });
       } else if (msg?.type === 'nw:undo') {

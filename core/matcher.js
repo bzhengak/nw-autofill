@@ -83,6 +83,9 @@ function blockReason(pageField) {
   // 往里打字不会选中任何值，反而可能把站点自己的校验搞乱 → 一律标为待人工处理。
   const ph = String(pageField.placeholder || '').trim();
   if (pageField.compositeDate) return 'composite_date';
+  // 自定义下拉的首选判据是扫描器给的结构化标记（在框架 wrapper 里）；
+  // placeholder 文案那条只作为兜底 —— AntD 搜索型占位符写的是"搜索城市"，靠文案会漏。
+  if (pageField.customSelect) return 'custom_control';
   if (pageField.kind === 'text' && /^(please\s+select|no\s+selection|请选择|选择|pick\s+an?|请选取|select\s+an?)/i.test(ph)) return 'custom_control';
   // 真身是自定义控件（<a role=combobox>、AntD 的 div[role=combobox]）：打字不会选中任何值。
   // 在计划阶段就拒，而不是等 filler 写失败——用户看到的应该是橙色"需人工"，不是红色"填错了"。
@@ -194,6 +197,10 @@ export function planFill(pageFields, profile, opts = {}) {
   // 敏感字段（证件号/手机号等）默认不写入：设置项 fillSensitive 明确打开才写。
   // 这条以前只是界面上一个复选框，没人读它——等于承诺了但没做。
   const allowSensitive = opts.fillSensitive === true;
+  // 用户授权"可以点开自定义下拉"时，这类控件不再在计划阶段整栏拒掉；
+  // 但选项文本在计划时还不存在于 DOM（点了才渲染），所以匹配交给写入层现场做，
+  // 这里只负责把语义打分跑完、并给这一笔打上 customSelect 标记。
+  const allowCustomSelect = opts.allowCustomSelect === true;
   const withheld = field => Boolean(field && field.sensitive) && !allowSensitive;
 
   pageFields.forEach((pf, index) => {
@@ -201,13 +208,15 @@ export function planFill(pageFields, profile, opts = {}) {
     if (group && group.complete && index !== group.leader) return;   // 成员由组长代表，不单独出行
     const asDate = Boolean(group && group.complete);
     const blocked = blockReason(asDate ? { ...pf, compositeDate: undefined } : pf);
-    if (blocked) {
+    if (blocked && !(allowCustomSelect && blocked === 'custom_control')) {
       gaps.push({ index, label: pf.label || pf.name || pf.id || '(未命名字段)', reason: blocked, kind: pf.kind });
       return;
     }
     // 只读框是站点自己算出来的（Moka 的"出生日期 (年龄)"由身份证推导、账号带出的姓名手机等）：
-    // 计划里出现它就注定一条红，还会让人以为是我们填不动
-    if (pf.readOnly && pf.kind !== 'contenteditable') {
+    // 计划里出现它就注定一条红，还会让人以为是我们填不动。
+    // 例外：Element/AntD 的下拉内层 input 天生 readonly —— 那是"不让你打字"，
+    // 不是"站点算好了不让你改"，混在一起会把整个下拉误判成只读控件。
+    if (pf.readOnly && pf.kind !== 'contenteditable' && !pf.customSelect) {
       gaps.push({ index, label: pf.label || pf.name || pf.id || '(未命名字段)', reason: 'readonly_control', kind: pf.kind, note: '站点只读/自动推导，无需填写' });
       return;
     }
@@ -397,7 +406,14 @@ export function planFill(pageFields, profile, opts = {}) {
 
     if (entry.tier === 'review' && chosen.score < AUTO_THRESHOLD && !entry.note) entry.note = '置信度不足，请复核';
 
-    if (pf.kind === 'select' || pf.kind === 'radio' || pf.kind === 'checkbox' || sf.type === 'enum' || sf.type === 'bool') {
+    const isCustomChoice = Boolean(pf.customSelect) || pf.kind === 'combobox' || pf.kind === 'listbox';
+    if (isCustomChoice) {
+      // 选项要点了才渲染，计划阶段无从预解析：打上标记交给写入层现场匹配，
+      // 且一律黄字——"点开选中"是我们主动操作了页面，必须让你看见动了哪些栏。
+      entry.customSelect = true;
+      entry.tier = 'review';
+      entry.note = '这是自定义下拉，已按授权点开选中；请核对显示值';
+    } else if (pf.kind === 'select' || pf.kind === 'radio' || pf.kind === 'checkbox' || sf.type === 'enum' || sf.type === 'bool') {
       const pageOptions = pf.options || [];
       let option = null;
       if (sf.type === 'bool') {

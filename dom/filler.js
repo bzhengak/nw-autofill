@@ -2,6 +2,7 @@
 // setNativeValue 的思路与上游 shared/fill-runtime.js 的"回读匹配"一致，此处独立实现。见 NOTICE.md。
 
 import { normalize, formatDate } from '../core/matching.js';
+import { pickCustomSelect, isCustomSelect } from './select-opener.js';
 
 function dispatch(el, type, extra = {}) {
   const doc = el.ownerDocument;
@@ -90,13 +91,30 @@ async function writeText(el, value) {
 /**
  * @param {Object} field  scanner 产出的字段描述（含 el）
  * @param {Object} entry  matcher 产出的分配项
+ * @param {Object} opts   { allowCustomSelect } —— 点开自定义下拉需要用户显式授权，默认关
  */
-export async function fillField(field, entry) {
+export async function fillField(field, entry, opts = {}) {
   const el = field.el;
   if (!el) return { ok: false, reason: 'no_element' };
   const kind = field.kind;
 
   if (kind === 'file') return { ok: false, reason: 'file_manual', actual: '' };
+
+  // 自定义下拉：没有 <select>，选项是点击后渲染到 body 末端的弹层，打字不会选中任何值。
+  // 用户授权（allowCustomSelect）后才走"点开 → 匹配 → 选中 → 回读校验"，
+  // 任何一步不确定就交人工，绝不"点了就当成功"。
+  if (opts.allowCustomSelect && kind !== 'select' && isCustomSelect(field)) {
+    const want = entry.optionValue ?? entry.value ?? '';
+    const picked = await pickCustomSelect(field, want);
+    if (picked.ok) return { ok: true, actual: picked.shown, shown: picked.shown, viaCustomSelect: true, error: '' };
+    // 「站点选项里没有我们资料中的值」不是填写失败，是必须本人表态：
+    // 报红会把用户的注意力从真错上引开（与 needsChoice 同一口径）。
+    const manual = picked.reason === 'option_missing' || picked.reason === 'no_options_rendered';
+    return {
+      ok: false, reason: manual ? 'choice_required' : (picked.reason || 'custom_control'),
+      actual: '', shown: picked.shown || '', error: '', viaCustomSelect: true,
+    };
+  }
 
   if (kind === 'select') {
     const target = entry.optionValue ?? entry.value;
@@ -168,9 +186,13 @@ export async function fillField(field, entry) {
     return { ok: tolerant(el.textContent, entry.value), actual: String(el.textContent || '').trim() };
   }
 
-  if (kind === 'combobox') {
-    return { ok: false, reason: 'custom_control', actual: '' };
-  }
+/*
+ * 没被授权走点开选中的自定义控件，一律在这里拒掉，**不许回落到打字硬填**：
+ * 这类控件打字不会选中任何值，还可能把站点自己的校验搞乱（以前就是靠这条挡住的）。
+ */
+if (kind === 'combobox' || kind === 'listbox' || (!opts.allowCustomSelect && isCustomSelect(field))) {
+  return { ok: false, reason: 'custom_control', actual: '' };
+}
 
   let value = entry.value ?? '';
   if (entry.dateFormat) value = formatDate(value, entry.dateFormat);
@@ -206,7 +228,7 @@ export async function applyPlan(fields, assignments, opts = {}) {
       // 于是回滚只恢复了别人的选项、我加的那个永远撤不掉
       preChecks = field.__group.map(b => ({ el: b, was: b.checked }));
     }
-    const outcome = await fillField(field, entry);
+    const outcome = await fillField(field, entry, opts);
     // 没写进去就把原值还原：只读框、受控组件可能接受了赋值又被框架改回去，
     // 留半截错误内容比留空更糟（站点校验会把它当已填）。单选/多选保守不动。
     if (!outcome.ok && original) {

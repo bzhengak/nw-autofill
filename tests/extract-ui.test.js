@@ -1,0 +1,153 @@
+// AI 辅助导入的界面闭环测试：预览 → 每次确认 → 勾选 → 写入。
+// 这里守的是"没说出口就不能发"：没预览不给发、confirm 取消就不发、发一次就要重新预览。
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { JSDOM } from 'jsdom';
+
+const root = p => fileURLToPath(new URL(p, import.meta.url));
+const html = fs.readFileSync(root('../ui/sidepanel.html'), 'utf8');
+const high = JSON.parse(fs.readFileSync(root('../core/high-frequency.json'), 'utf8'));
+
+// 一段"本地解析判不动"的简历：标题「 Miscellaneous 」认不出来，正文只能整段留下
+const MD = '# 基本信息\n\n张三\n\n# Miscellaneous\n\n校学生会宣传部 副部长 2022.09-2023.06\n';
+
+function bootExtract(handler) {
+  const dom = new JSDOM(html, { url: 'chrome-extension://nwtest/ui/sidepanel.html', pretendToBeVisual: true });
+  dom.window.CSS = dom.window.CSS || {};
+  if (!dom.window.CSS.escape) dom.window.CSS.escape = s => String(s).replace(/([^\w-])/g, '\\$1');
+  const sent = [];
+  dom.window.chrome = {
+    runtime: {
+      getURL: p => 'chrome-extension://nwtest/' + p,
+      sendMessage: async msg => { sent.push(msg); return handler(msg, sent) || { ok: true, profile: {}, settings: {}, tabId: 1 }; },
+      onMessage: { addListener() {} },
+    },
+    tabs: { query: async () => [{ id: 1 }] },
+    storage: { local: { get: (k, cb) => cb && cb({}), set: () => {} } },
+  };
+  dom.window.fetch = async () => ({ json: async () => high });
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.navigator = dom.window.navigator;
+  globalThis.CSS = dom.window.CSS;
+  globalThis.fetch = dom.window.fetch;
+  globalThis.chrome = dom.window.chrome;
+  return { dom, doc: dom.window.document, sent };
+}
+
+async function load() {
+  await import('../ui/sidepanel.js?run=' + Math.random().toString(36).slice(2));
+  await new Promise(r => setTimeout(r, 40));
+}
+
+const click = async (doc, id) => { doc.getElementById(id).click(); await new Promise(r => setTimeout(r, 40)); };
+
+const PREVIEW_RES = {
+  ok: true,
+  text: '槽位表…\n待归位片段：[{"i":0,"where":"Miscellaneous","text":"校学生会宣传部 副部长 2022.09-2023.06"}]',
+  bytes: 1234, fragments: 1, blocked: [], endpoint: 'https://api.example.test/v1',
+};
+const RUN_RES = {
+  ok: true,
+  accepted: [{ i: 0, path: 'campus.0.org', value: '校学生会宣传部', from: 'Miscellaneous', sourceText: '校学生会宣传部 副部长 2022.09-2023.06' }],
+  rejected: [],
+};
+
+test('没预览就不给发送；预览之后按钮才亮', async () => {
+  const { doc, sent } = bootExtract(() => ({ ...PREVIEW_RES }));
+  await load();
+  doc.getElementById('mdText').value = MD;
+  await click(doc, 'btnImportMd');
+  const importDone = sent.some(m => m.type === 'nw:saveProfile');
+  assert.ok(importDone, '导入没落到 storage，AI 辅助也就没有报告可用');
+
+  assert.equal(doc.getElementById('btnExtractRun').disabled, true, '未预览就能点发送');
+  await click(doc, 'btnExtractRun');
+  assert.ok(!sent.some(m => m.type === 'nw:extractRun'), '未预览却发出了请求');
+
+  await click(doc, 'btnExtractPreview');
+  assert.equal(doc.getElementById('btnExtractRun').disabled, false, '预览成功后仍不能发送');
+  assert.match(doc.getElementById('extractPreviewText').textContent, /将发往：https:\/\/api\.example\.test\/v1/, '预览没显示收件人');
+});
+
+test('确认框取消时一个字节都不发；确认后才发，并且发完必须重新预览', async () => {
+  let confirmAnswer = false;
+  const { doc, sent } = bootExtract(m => (m.type === 'nw:extractRun' ? RUN_RES : { ...PREVIEW_RES }));
+  doc.defaultView.confirm = () => confirmAnswer;
+  await load();
+  doc.getElementById('mdText').value = MD;
+  await click(doc, 'btnImportMd');
+  await click(doc, 'btnExtractPreview');
+
+  await click(doc, 'btnExtractRun');
+  assert.ok(!sent.some(m => m.type === 'nw:extractRun'), '用户点了取消却还是发了');
+  assert.match(doc.getElementById('extractStatus').textContent, /已取消/);
+
+  confirmAnswer = true;
+  await click(doc, 'btnExtractRun');
+  const run = sent.find(m => m.type === 'nw:extractRun');
+  assert.ok(run, '确认后没发出请求');
+  assert.equal(run.confirm, true, '请求里要带着这次的确认标记，后台只认这个');
+  assert.equal(doc.getElementById('btnExtractRun').disabled, true, '发过一次就该重新预览');
+});
+
+test('结果默认全勾、点「写入勾选项」才落库，取消勾选的那条不写', async () => {
+  const { doc, sent } = bootExtract(m => (m.type === 'nw:extractRun' ? RUN_RES : { ...PREVIEW_RES }));
+  doc.defaultView.confirm = () => true;
+  await load();
+  doc.getElementById('mdText').value = MD;
+  await click(doc, 'btnImportMd');
+  await click(doc, 'btnExtractPreview');
+  await click(doc, 'btnExtractRun');
+
+  const rows = [...doc.getElementById('extractResults').querySelectorAll('input[type=checkbox]')];
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].dataset.path, 'campus.0.org');
+  assert.equal(rows[0].dataset.value, '校学生会宣传部', '写入值必须是原文逐字段落');
+  rows[0].checked = false;
+  const applyBtn = doc.getElementById('extractResults').querySelector('button');
+  assert.ok(applyBtn, '结果区没有「写入勾选项」按钮');
+  applyBtn.click();
+  await new Promise(r => setTimeout(r, 40));
+  assert.ok(!sent.some(m => m.type === 'nw:saveProfile' && JSON.stringify(m.profile || '').includes('校学生会宣传部')),
+    '一条都没勾，不该写库');
+
+  // 重新走一遍并勾选，确认这次真的写进去了
+  rows[0].checked = true;
+  await click(doc, 'btnExtractPreview');
+  await click(doc, 'btnExtractRun');
+  doc.getElementById('extractResults').querySelector('button').click();
+  await new Promise(r => setTimeout(r, 40));
+  const saved = sent.filter(m => m.type === 'nw:saveProfile').pop();
+  assert.ok(JSON.stringify(saved?.profile || '').includes('校学生会宣传部'), '勾了却没写入');
+});
+
+test('后台拒绝（未配 Key / 没有可发片段）时界面说清原因而不是转圈', async () => {
+  for (const err of ['ai_not_configured', 'no_fragments']) {
+    const { doc, sent } = bootExtract(m => (m.type === 'nw:extractRun' ? { ok: false, error: err } : { ...PREVIEW_RES }));
+    doc.defaultView.confirm = () => true;
+    await load();
+    doc.getElementById('mdText').value = MD;
+    await click(doc, 'btnImportMd');
+    await click(doc, 'btnExtractPreview');
+    await click(doc, 'btnExtractRun');
+    const status = doc.getElementById('extractStatus').textContent;
+    assert.match(status, /调用失败|没有|未配|失败/, `${err} 的提示不像人话：${status}`);
+    assert.ok(!/正在请求/.test(status), `${err} 之后还停在"正在请求"`);
+    assert.equal(doc.getElementById('extractResults').querySelectorAll('input').length, 0, '失败了却渲染了可写入的清单');
+  }
+});
+
+// 侧边栏的按钮状态只是"好不好用"，真正拦住了的是后台那道闸。
+// 这里用源码断言钉住它：以后谁把 confirm 判定删了，测试就红，而不是等到简历出门。
+test('后台的按次确认闸是真的：没有 confirm 一律不发，也不用填写侧的自检误拦导入', () => {
+  const sw = fs.readFileSync(root('../background/service-worker.js'), 'utf8');
+  assert.match(sw, /msg\.type === 'nw:extractPreview' \|\| msg\.type === 'nw:extractRun'/);
+  assert.match(sw, /msg\.confirm !== true/, '没带 confirm 也照发，等于"按次确认"是假的');
+  assert.match(sw, /not_confirmed/);
+  assert.ok(!/assertNoProfileValues\(built\.text/.test(sw), '导入侧本来就允许发简历原文，套用填写侧的取值自检会永远拦死');
+  assert.match(sw, /EXTRACT_MAX_BYTES/, '片段总量还得有一道字节上限兜底');
+});

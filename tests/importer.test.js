@@ -199,3 +199,21 @@ test('虚构简历：「语言与证书」合并标题两类信息都不丢', ()
   assert.ok(g('certifications.0.name').includes('软件专业技术资格'), '证书行被语言段吞掉就是丢数据');
   assert.equal(g('certifications.1.name'), 'CET-6');
 });
+
+test('认不出的标题要把正文一起留在 report.unplaced：AI 辅助导入靠它取片段', () => {
+  const { report } = importMarkdown('# 基本信息\n\n张三\n\n# 一些奇怪的栏目\n\n字节跳动 数据分析师 2023.04-2024.05\n');
+  const u = report.unplaced.find(x => /奇怪/.test(x.heading));
+  assert.ok(u, '未识别标题没留下 unplaced 记录');
+  assert.ok(u.lines.join(' ').includes('字节跳动'), '只留标题不留正文，AI 也没得可归 —— 内容照样丢');
+  assert.equal(u.why, 'unrouted_heading');
+});
+
+test('字典认不出的"标签：值"行也进 unplaced，不只是丢进其他信息', () => {
+  const { report } = importMarkdown('# 基本信息\n\n张三\n\n# 其他补充\n\n特殊需求说明：希望安排无障碍工位\n');
+  // 「档案所在地」这类词典认得的必须照常路由，不能被当成"判不动"发给 AI
+  const known = importMarkdown('# 其他补充\n\n档案所在地：南京市教育局\n');
+  assert.ok(known.report.mapped.some(m => m.path === 'records.dossierLocation'), '词典认得的字段被误当成判不动了');
+  const u = report.unplaced.find(x => /希望安排无障碍工位/.test((x.lines || []).join(' ')));
+  assert.ok(u, '未识别字段没进 unplaced');
+  assert.equal(u.why, 'unclassified_field');
+});

@@ -10,11 +10,15 @@
 
 import { compileAdapters } from '../core/adapters.js';
 import { buildAiRequest, assertNoProfileValues, parseAiResponse, aiSlotCatalog } from '../core/ai.js';
+import { extractFragments, buildExtractRequest, parseExtractResponse } from '../core/ai-extract.js';
 import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, redact, findLeaksInExport, SECRETS_BUCKET } from '../core/ai-security.js';
 
 const AI_TIMEOUT_MS = 20000;
 const AI_MAX_BYTES = 12000;        // 请求体上限：只发字段名与槽位目录，超量说明构造出了问题
 const AI_MAX_OUT = 30;             // 一次最多问 30 个缺口，避免把整页字段都送出去
+// 导入侧要带简历片段，上限比填写侧宽；片段本身在 core/ai-extract.js 里有 6000 字的硬预算，
+// 这里只是最后一道"构造出了问题也别把整份简历发出去"的闸。
+const EXTRACT_MAX_BYTES = 40000;
 
 /**
  * Key 的读取顺序：先看 session（本次会话），再看用户勾了"记住 Key"时写入的 local.aiSecrets。
@@ -271,6 +275,45 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         candidates: parsed.candidates.map(c => ({ ...c, label: labelOf.get(c.index) || '' })),
         dropped: parsed.dropped,
         endpoint: target.url,
+        rawChars: String(call.content || '').length,
+      });
+    } else if (msg.type === 'nw:extractPreview' || msg.type === 'nw:extractRun') {
+      // AI 辅助导入：发的是"本地解析判不动的简历片段"，与填写侧的"只发字段名"是两条边界。
+      // 护栏：预览与发送共用同一次构造（看到的就是发出去的）；没带 confirm 一律不发；
+      // 号码类片段在 buildExtractRequest 里就被摘掉；片段总量有硬预算；Key/origin 同意照旧。
+      const fragments = extractFragments(msg.report || {});
+      if (!fragments.length) { sendResponse({ ok: false, error: 'no_fragments' }); return; }
+      const built = buildExtractRequest({ fragments, profile: msg.profile });
+      const bytes = new TextEncoder().encode(built.text).length;
+      if (bytes > EXTRACT_MAX_BYTES) { sendResponse({ ok: false, error: 'payload_too_large' }); return; }
+      const xSettings = (await chrome.storage.local.get('settings')).settings || {};
+      const xTarget = normalizeBaseUrl(xSettings.aiBaseUrl);
+      if (msg.type === 'nw:extractPreview') {
+        sendResponse({
+          ok: true,
+          text: built.text,
+          bytes,
+          fragments: built.fragments.length,
+          blocked: built.blocked,
+          endpoint: xTarget.ok ? xTarget.url : '',
+          endpointError: xTarget.ok ? '' : xTarget.error,
+        });
+        return;
+      }
+      if (msg.confirm !== true) { sendResponse({ ok: false, error: 'not_confirmed' }); return; }
+      if (!xTarget.ok) { sendResponse({ ok: false, error: 'endpoint_' + xTarget.error }); return; }
+      const xSess = await readAiSession();
+      if (!xSettings.aiModel || !xSess.key) { sendResponse({ ok: false, error: 'ai_not_configured' }); return; }
+      const xGate = maySendKey({ keyOrigin: xSess.keyOrigin, targetOrigin: xTarget.origin, consentOrigin: xSettings.aiConsentOrigin });
+      if (!xGate.ok) { sendResponse({ ok: false, error: xGate.error }); return; }
+      const call = await callAiEndpoint({ baseUrl: xSettings.aiBaseUrl, model: xSettings.aiModel, key: xSess.key, text: built.text });
+      if (!call.ok) { sendResponse({ ok: false, error: call.error }); return; }
+      const parsed = parseExtractResponse(call.content, { fragments: built.fragments, profile: msg.profile });
+      sendResponse({
+        ok: true,
+        accepted: parsed.accepted,
+        rejected: parsed.rejected,
+        endpoint: xTarget.url,
         rawChars: String(call.content || '').length,
       });
     } else if (msg.type === 'nw:saveAiKey') {

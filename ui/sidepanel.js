@@ -1,8 +1,9 @@
-import { createEmptyProfile, SECTIONS, buildFields, setValueByPath, countFilled } from '../core/profile-schema.js';
+import { createEmptyProfile, SECTIONS, buildFields, setValueByPath, getValueByPath, countFilled } from '../core/profile-schema.js';
 import { importMarkdown } from '../core/importers/markdown.js';
 import { auditProfile, editorModel, advice } from '../core/coverage.js';
 // 端点/Key 的判定规则与 service worker 用同一份代码：这里只用于即时反馈，
 // 真正的把关在 background（哪怕这个文件被改成永远不校验，请求也发不出去）。
+import { applyExtracted } from '../core/ai-extract.js';
 import { normalizeBaseUrl, sanityCheckKey, findLeaksInExport } from '../core/ai-security.js';
 
 const $ = id => document.getElementById(id);
@@ -397,7 +398,119 @@ $('btnImportMd').onclick = async () => {
   if (report.derived && report.derived.length) detail.push('自动推导（请核对）：\n  ' + report.derived.join('\n  '));
   detail.push('写入明细：\n  ' + report.mapped.map(m => m.path + ' ← ' + m.source).join('\n  '));
   $('mdDetail').textContent = detail.join('\n\n');
+  lastImportReport = report;
+  extractReset(report.unplaced && report.unplaced.length ? `本地判不动 ${report.unplaced.length} 段，可用下面「AI 辅助导入」逐字归位` : "本地解析没有剩余片段，不需要 AI 辅助");
 };
+
+// ── AI 辅助导入 ────────────────────────────────────────────────────────
+// 与填写侧的 AI 兜底是两条不同的边界：这里发出去的是"本地解析判不动的简历片段"，
+// 所以护栏是"预览 + 每次点发送都重新确认 + 逐字校验"，缺一条都不许静默发出去。
+let lastImportReport = null;      // 上一次「解析并填入」留下的报告
+let extractReady = null;          // 预览过的片段：没预览过就不给发
+
+function extractReset(msg) {
+  $('extractStatus').textContent = msg || '';
+  $('extractResults').replaceChildren();
+  $('extractPreviewText').hidden = true;
+  extractReady = null;
+  $('btnExtractRun').disabled = true;
+}
+
+$('btnExtractPreview').onclick = async () => {
+  if (!lastImportReport) { extractReset('先在上面「解析并填入」一次，才知道哪些片段本地判不动'); return; }
+  const profile = JSON.parse($('profileText').value || '{}');
+  const res = await chrome.runtime.sendMessage({ type: 'nw:extractPreview', profile, report: lastImportReport });
+  const box = $('extractPreviewText');
+  if (!res?.ok || typeof res.text !== 'string') {
+    box.hidden = false;
+    box.textContent = '预览失败：' + (res?.error || '后台没有返回可预览的文本');
+    extractReset('预览失败，未发送任何内容');
+    return;
+  }
+  box.hidden = false;
+  // 被拦下的片段不进请求，但必须在这里列出来：正则会把"2021 2022 2023 2024"这类
+  // 正常内容也判成号码，静默少发一段比误拦更难发现。
+  const blockedList = (res.blocked || []).length
+    ? `\n\n（以下 ${res.blocked.length} 段没有发出，理由见括号，请自己手动补进资料）\n`
+      + res.blocked.map(b => `  · ${b.head || ''}… （${b.reason === 'budget' ? '超出本次片段预算' : '含号码样式内容，安全规则拦下'}）`).join('\n')
+    : '';
+  box.textContent = `（将发往：${res.endpoint || '未配置地址'}，共 ${res.fragments} 段 / ${res.bytes} 字节，下面就是实际请求体全文）\n\n${res.text}${blockedList}`;
+  extractReady = { fragments: res.fragments, bytes: res.bytes, endpoint: res.endpoint || '未配置地址' };
+  const blocked = (res.blocked || []).length ? `，另拦下 ${res.blocked.length} 段（理由 ${res.blocked[0].reason}）` : '';
+  $('extractStatus').textContent = `待发 ${res.fragments} 段${blocked} · 目标 ${extractReady.endpoint} · 点右边按钮会再问你一次`;
+  $('btnExtractRun').disabled = false;
+};
+
+$('btnExtractRun').onclick = async () => {
+  if (!extractReady) { extractReset('请先点「预览将发送的片段」'); return; }
+  // 按次确认：每一次发送都要用户在这个框里再点一次，不记住上次的同意
+  const ready = extractReady;
+  const ok = window.confirm(
+    `这次将把 ${ready.fragments} 段简历原文（约 ${ready.bytes} 字节）发给：\n${ready.endpoint}\n\n`
+    + '模型只能逐字摘录这些片段里的原文；返回结果会先列出来给你勾选，勾了才写入资料。\n现在发送吗？');
+  if (!ok) {
+    $('extractStatus').textContent = '已取消，什么都没发出去';
+    return;                                     // 保留 ready：预览过的事实不该被一次取消冲掉
+  }
+  extractReset();                               // 发一次就清空，再发要重新预览
+  $('extractStatus').textContent = '正在请求…（只发本地判不动的片段）';
+  const profile = JSON.parse($('profileText').value || '{}');
+  const res = await chrome.runtime.sendMessage({ type: 'nw:extractRun', profile, report: lastImportReport, confirm: true });
+  if (!res?.ok) { $('extractStatus').textContent = '调用失败：' + (res?.error || '未知错误'); return; }
+  if (!res.accepted?.length) {
+    const why = [...new Set((res.rejected || []).map(r => r.reason))].join('、');
+    $('extractStatus').textContent = `没有逐字命中的结果（丢弃 ${(res.rejected || []).length} 条${why ? `：${why}` : ''}）`;
+    return;
+  }
+  renderExtractResults(res);
+};
+
+function renderExtractResults(res) {
+  const host = $('extractResults');
+  host.replaceChildren();
+  const intro = document.createElement('p');
+  intro.className = 'hint';
+  intro.textContent = `AI 给出 ${res.accepted.length} 条逐字摘录${res.rejected?.length ? `，另有 ${res.rejected.length} 条被规则丢弃` : ''}。只有勾选的会写入。`;
+  host.appendChild(intro);
+  const table = document.createElement('table');
+  for (const a of res.accepted) {
+    const tr = document.createElement('tr');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = true; cb.dataset.path = a.path; cb.dataset.value = a.value;
+    const td1 = document.createElement('td'); td1.appendChild(cb);
+    const td2 = document.createElement('td');
+    td2.textContent = `${a.path} ← 「${a.value}」`;
+    td2.title = `摘自「${a.from || ''}」：${a.sourceText || ''}`;
+    const td3 = document.createElement('td');
+    td3.className = 'hint';
+    // 模型只给了 campus.N.org 这种模板路径时，"第几条"是我们按空槽补的 —— 必须显式说出来
+    td3.textContent = (a.indexFilled ? '（条目序号由本地补为空槽，请核对）' : '') + `原文：${String(a.sourceText || '').slice(0, 60)}`;
+    tr.append(td1, td2, td3);
+    table.appendChild(tr);
+  }
+  host.appendChild(table);
+  const btn = document.createElement('button');
+  btn.textContent = '写入勾选项';
+  btn.className = 'primary';
+  btn.onclick = async () => {
+    const picked = [...host.querySelectorAll('input[type=checkbox]:checked')].map(x => ({ path: x.dataset.path, value: x.dataset.value }));
+    if (!picked.length) { $('extractStatus').textContent = '没勾任何一条，资料没动'; return; }
+    const base = JSON.parse($('profileText').value || '{}');
+    const { written, skipped } = applyExtracted(base, picked, {
+      overwrite: $('extractOverwrite').checked,
+      setValue: (o, path, v) => setValueByPath(o, path, v),
+      getValue: (o, path) => getValueByPath(o, path),
+    });
+    $('profileText').value = JSON.stringify(base, null, 2);
+    await chrome.runtime.sendMessage({ type: 'nw:saveProfile', profile: base });
+    lastState = { ...(lastState || {}), profile: base };
+    host.replaceChildren();
+    $('extractStatus').textContent = `写入 ${written.length} 项${skipped.length ? `，跳过 ${skipped.length} 项（已有值、未勾覆盖）` : ''}`;
+    await refresh();     // 资料变了，体检区和高频缺口要按新值重算
+  };
+  host.appendChild(btn);
+  $('extractStatus').textContent = '下面是逐字摘录的结果，勾完点「写入勾选项」才会进资料';
+}
 
 let probeJson = '';
 $('btnProbe').onclick = async () => {

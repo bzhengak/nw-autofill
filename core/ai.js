@@ -17,7 +17,7 @@ export const AI_ELIGIBLE_REASONS = new Set(['no_candidate', 'required_no_candida
  *  注意：这拦的是"路径能否被提名"，不是"值能否外发"（值本来就不外发）。
  *  姓名/生日/电话这类 sensitive 槽位允许被提名，但写入仍要走 fillSensitive 那道闸（见 applyAiCandidates）。 */
 const AI_FORBIDDEN_SECTION = new Set(['records', 'declaration']);
-const AI_FORBIDDEN_KEY = /(idNumber|passport|visa|credential|signature|consent|agree|salary|expect|criminal|background)/i;
+export const AI_FORBIDDEN_KEY = /(idNumber|passport|visa|credential|signature|consent|agree|salary|expect|criminal|background)/i;
 
 export function aiEligibleGaps(gaps = []) {
   return gaps.filter(g => AI_ELIGIBLE_REASONS.has(g.reason));

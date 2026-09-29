@@ -81,6 +81,26 @@
   <div class="note" id="mdReport"></div>
   <pre id="mdDetail" class="note" style="max-height:140px;overflow:auto;white-space:pre-wrap"></pre>
 
+  <details id="aiExtractPanel">
+    <summary>AI 辅助导入（只处理本地解析器判不动的片段）</summary>
+    <p class="hint">
+      本地解析按标题和小标题路由，简历里"直接写内容、不写'时间：'"这类写法会有剩下的一段段文字。
+      这个功能把<b>那些剩下的片段</b>（不是整份简历）发给你自己配置的模型，让它判断该进哪个槽位。
+      四条硬规则：① 只发判不动的片段，有总量上限；② 片段里出现身份证/护照/银行卡样式的内容，整段拒发；
+      ③ 模型必须<b>逐字摘录</b>原文，返回值不是原文子串的一律丢弃（不许改写、翻译、统一日期格式）；
+      ④ 结果先列出来给你勾选，勾了才写入，默认不覆盖已有值。
+      每次点「问 AI」都会重新预览、重新确认，不记住上次的同意。
+    </p>
+    <div class="row">
+      <button id="btnExtractPreview">预览将发送的片段</button>
+      <button id="btnExtractRun" disabled>逐字补齐（需先预览）</button>
+      <label class="chk"><input type="checkbox" id="extractOverwrite">写入时覆盖已有值</label>
+    </div>
+    <span id="extractStatus" class="hint"></span>
+    <pre id="extractPreviewText" class="hint" hidden style="max-height:180px;overflow:auto;white-space:pre-wrap"></pre>
+    <div id="extractResults"></div>
+  </details>
+
   <h2>站点结构导出（只读，不读取你填的内容）</h2>
   <div class="row">
     <button id="btnProbe">导出本页字段结构</button>

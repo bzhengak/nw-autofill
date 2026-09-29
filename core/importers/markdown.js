@@ -337,7 +337,7 @@ function titleAndTail(header) {
  */
 export function importMarkdown(md, opts = {}) {
   const profile = opts.base ? JSON.parse(JSON.stringify(opts.base)) : createEmptyProfile();
-  const report = { mapped: [], unmappedHeadings: [], warnings: [], skippedExisting: [], stats: { entries: 0, bullets: 0 } };
+  const report = { mapped: [], unmappedHeadings: [], unplaced: [], warnings: [], skippedExisting: [], stats: { entries: 0, bullets: 0 } };
 
   const put = (path, value, source) => {
     const v = String(value ?? '').trim();
@@ -397,6 +397,9 @@ export function importMarkdown(md, opts = {}) {
         for (const line of body) absorbContact(line, '姓名下方联系行');
       } else {
         report.unmappedHeadings.push(headingText);
+        // 整段都没地方去：正文也留着。AI 辅助导入只发"本地判不动的这几段"，
+        // 不发整份简历 —— 所以这里必须把正文留住，否则下一步就没得可发。
+        report.unplaced.push({ heading: headingText, lines: body.map(l => stripInline(l)).filter(Boolean), why: 'unrouted_heading' });
       }
       continue;
     }
@@ -484,7 +487,7 @@ export function importMarkdown(md, opts = {}) {
         if (consumed) continue;
         if (pairs.length) {
           // 标签认得出但词典没把握：原样存进"其他信息"，至少不丢内容
-          for (const { label, value } of pairs) put('others.otherInfo', `${label}：${value}`, `字段「${label}」（未识别）`);
+          for (const { label, value } of pairs) { put('others.otherInfo', `${label}：${value}`, `字段「${label}」（未识别）`); if (value) report.unplaced.push({ heading: label, lines: [value], why: 'unclassified_field' }); }
           continue;
         }
         if (t) put('others.otherInfo', t, `标题「${headingText}」`);
@@ -525,7 +528,7 @@ export function importMarkdown(md, opts = {}) {
     })();
     if (pre.some(l => l.trim())) {
       const intro = pre.map(l => l.trim()).filter(Boolean).map(stripInline).join(' ');
-      if (intro) put('others.otherInfo', `「${headingText}」段首未归类文字：${intro}`, `标题「${headingText}」`);
+      if (intro) { put('others.otherInfo', `「${headingText}」段首未归类文字：${intro}`, `标题「${headingText}」`); report.unplaced.push({ heading: headingText, lines: [intro], why: 'section_preamble' }); }
     }
 
     for (const e of source) {

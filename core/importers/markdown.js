@@ -171,20 +171,57 @@ function parseIntoFamily(lines, put) {
  * 从一行尾部文字里抽日期区间。支持：
  * 2025.09 – 至今 / 09/2025 – Present / 2024-09 ~ 2025-08 / 2025年9月（预计 2026.10 毕业）/ Ongoing / 持续进行
  */
+/** 英文月份名（含全称与缩写、带不带点）→ 月份数字。简历里 "Mar 2022" / "September 2021" 都出现过 */
+const EN_MONTH = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+const EN_MONTH_RE = String.raw`(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?`;
+
 export function parseDateRange(text) {
   const s = String(text || '');
   const out = { start: '', end: '', current: false, expected: '', raw: s.trim() };
+  // yi = 这一段里"年"字符出现的位置。裸年份那一轮靠它去重：
+  // "Mar 2022 - Aug 2022" 里 2022 出现在 4 和 13，而月份记录在 0 和 9，
+  // 只看记录位置会差 4 个字逃过去重，把 '2022' 当成第三个时间点，结束时间就退化成只到年。
   const ym = [];
-  for (const m of s.matchAll(/(20\d{2})\s*[.\-/年]\s*(\d{1,2})\s*月?/g)) ym.push({ i: m.index, v: `${m[1]}-${MONTH_FIX(m[2])}` });
-  for (const m of s.matchAll(/(\d{1,2})\s*[./\-]\s*(20\d{2})/g)) ym.push({ i: m.index, v: `${m[2]}-${MONTH_FIX(m[1])}` });
+  // 年份在前的主流写法。月份限死 1-12 且后面不能再跟数字，
+  // 否则 "2021 - 2022" 会吃成 "2021-20"（把 2022 的前两位当月份，实测踩过）。
+  for (const m of s.matchAll(/(20\d{2})\s*[.\-/年]\s*(0?[1-9]|1[0-2])(?!\d)\s*月?/g)) ym.push({ i: m.index, yi: m.index, v: `${m[1]}-${MONTH_FIX(m[2])}` });
+  // 「09/2021」「9月 2021」这种月在前年在后的写法。月份必须真是 1-12：
+  // 不加这个限制时 "2021 - 2022" 会被当成 "21 - 2022"，得到 2021-20 这种鬼日期（实测踩过）。
+  for (const m of s.matchAll(/(?:^|[^\d])(0?[1-9]|1[0-2])\s*(?:[/.\-]\s*|月\s*)(20\d{2})/g)) {
+    ym.push({ i: m.index + 1, yi: m.index + m[1].length, v: `${m[2]}-${MONTH_FIX(m[1])}` });
+  }
+  // "Mar 2022" / "September 2021"：英文月份名带年份，过去只抓得到年，月就丢了
+  for (const m of s.matchAll(new RegExp(String.raw`(${EN_MONTH_RE})\s*(20\d{2})`, 'gi'))) {
+    const mon = EN_MONTH[m[1].slice(0, 3).toLowerCase()];
+    if (mon) ym.push({ i: m.index, yi: m.index + m[0].lastIndexOf(m[2]), v: `${m[2]}-${MONTH_FIX(mon)}` });
+  }
+  for (const m of s.matchAll(new RegExp(String.raw`(20\d{2})\s*(?:年\s*)?(${EN_MONTH_RE})`, 'gi'))) {
+    // 只接受 "2022 August" / "2022年Aug"；带 - 的（"2022 - Aug 2022"）是区间连接符，
+    // 认成"2022 年 8 月"会把起点推到 8 月，结束时间反而丢了月份（实测踩过）
+    const mon = EN_MONTH[m[2].slice(0, 3).toLowerCase()];
+    if (mon) ym.push({ i: m.index, yi: m.index, v: `${m[1]}-${MONTH_FIX(mon)}` });
+  }
   for (const m of s.matchAll(/(20\d{2})(?![-.\d])/g)) {
-    if (ym.some(x => Math.abs(x.i - m.index) < 4)) continue;
-    ym.push({ i: m.index, v: m[1] });
+    if (ym.some(x => Math.abs(x.yi - m.index) < 4)) continue;
+    ym.push({ i: m.index, yi: m.index, v: m[1] });
   }
   ym.sort((a, b) => a.i - b.i);
-  if (ym.length) out.start = ym[0].v;
-  if (ym.length > 1) out.end = ym[ym.length - 1].v;
-  if (/(至今|现在|Present|Ongoing|持续|Current|现在)/i.test(s)) { out.current = true; if (ym.length > 1) out.end = ym[1].v; }
+  // 同一段文字被两个规则各记了一次（"2022" 与 "2022-08" 指的是同一个位置）才合并；
+  // 位置差得远的就是真的两个时间点（"2022 - Aug 2022" 是 2022 年到 2022 年 8 月），不能吞掉。
+  const uniq = [];
+  for (const x of ym) {
+    const prev = uniq[uniq.length - 1];
+    if (!prev) { uniq.push(x); continue; }
+    const near = Math.abs((prev.yi ?? prev.i) - (x.yi ?? x.i)) <= 3;
+    if (!near) { if (prev.v !== x.v) uniq.push(x); continue; }
+    if (/^\d{4}$/.test(prev.v) && prev.v === x.v.slice(0, 4)) { uniq[uniq.length - 1] = x; continue; }   // 裸年 → 同年带月，留精确的
+    if (/^\d{4}$/.test(x.v) && prev.v.slice(0, 4) === x.v) continue;                                       // 反过来：带月的已经在前面
+    if (prev.v === x.v) continue;
+    uniq.push(x);
+  }
+  if (uniq.length) out.start = uniq[0].v;
+  if (uniq.length > 1) out.end = uniq[uniq.length - 1].v;
+  if (/(至今|现在|Present|Ongoing|持续|Current|现在)/i.test(s)) { out.current = true; if (uniq.length > 1) out.end = uniq[1].v; }
   const exp = s.match(/预计\s*(20\d{2})\s*[.\-/年]?\s*(\d{1,2})?\s*月?\s*(毕业)?/);
   if (exp) out.expected = exp[2] ? `${exp[1]}-${MONTH_FIX(exp[2])}` : exp[1];
   if (!out.expected) {
@@ -208,12 +245,28 @@ function splitTitle(title) {
   return parts.length ? parts : [stripInline(title).trim()];
 }
 
+/** 职位/角色词：用来在"公司 职位 时间"这种空格分隔的行里认出职位那一段 */
+const ROLE_HINT_RE = /(实习生|助理|工程师|分析师|专员|主管|经理|运营|设计师|研究员|intern|analyst|engineer|assistant|manager|consultant|leader|scientist|developer)/i;
+
+/**
+ * 空格分隔的一行（没有 | / — 这类分隔符）里挑出职位段。
+ * 只在"职位词不在第一个词"时切：像「工程师联盟 数据工程师」这种公司名里就带职位词的，
+ * 切了会把公司名切成"工程师联盟"以外的东西，宁可整行当公司名。
+ * @returns {string[]|null} [主体, 职位] 或 null（不切）
+ */
+export function splitRoleFromLine(text) {
+  const segs = String(text || '').split(/[\s　]+/).filter(Boolean);
+  if (segs.length < 2) return null;
+  const idx = segs.findIndex(x => ROLE_HINT_RE.test(x));
+  if (idx <= 0) return null;
+  return [segs.slice(0, idx).join(' '), segs.slice(idx).join(' ')];
+}
+
 function degreeOf(text) {
   const s = String(text || '');
   if (/(博士|phd|ph\.d|doctor)/i.test(s)) return '博士';
   if (/(硕士|msc|master|mba|mpp)/i.test(s)) return '硕士';
-  if (/(学士|bsc|beng|bba|b\.s|b\.a|bachelor)/i.test(s)) return '本科';
-  if (/(大专|专科|associate|diploma)/i.test(s)) return '大专';
+  if (/(学士|本科|bsc|beng|bba|b\.s|b\.a|bachelor|undergraduate)/i.test(s)) return '本科';  if (/(大专|专科|associate|diploma)/i.test(s)) return '大专';
   if (/博士后|postdoc/i.test(s)) return '博士后';
   return '';
 }
@@ -303,6 +356,28 @@ function entryLinesToText(item) {
   return [main, ...subs].filter(Boolean).join('；').replace(/；{2,}/g, '；');
 }
 
+/**
+ * 没有加粗标题的区块怎么切成"条目"：
+ *  · 段里有普通行（非 bullet）→ 普通行是条目头，跟在它后面的 bullet 属于这一条；
+ *  · 整段全是 bullet → 每条 bullet 各自一条（奖项/证书列表就是这个形状）。
+ * 以前这里直接把 bulletsOf() 的结果当条目，于是「一行项目名 + 几行职责」里
+ * 每条职责都被当成一个新项目，凭空多出 3 条不存在的经历。
+ */
+function groupEntriesLoose(lines) {
+  const hasPlain = lines.some(l => l.trim() && !BULLET_RE.test(l));
+  if (!hasPlain) return bulletsOf(lines).map(b => ({ header: b.text, lines: b.sub }));
+  const entries = [];
+  let cur = null;
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    if (!BULLET_RE.test(line)) { cur = { header: line.trim(), lines: [] }; entries.push(cur); continue; }
+    if (!cur) { cur = { header: '', lines: [] }; entries.push(cur); }
+    cur.lines.push(line);
+  }
+  // 段首就是 bullet 的那一条：退回"每条 bullet 一项"，别把它的职责并到下一条去
+  return entries.flatMap(e => (e.header ? [e] : bulletsOf(e.lines).map(b => ({ header: b.text, lines: b.sub }))));
+}
+
 function splitEntryBlocks(lines) {
   const entries = [];
   let cur = null;
@@ -326,9 +401,53 @@ function splitEntryBlocks(lines) {
 function titleAndTail(header) {
   const bold = /^\*\*([\s\S]+?)\*\*\s*(.*)$/.exec(header.trim());
   if (bold) return { title: bold[1].trim(), tail: bold[2].trim() };
-  const m = /^(.*?)(\s*(?:[（(【].{0,40}[）)】])?\s*(?:\d{4}.*|0\d\/\d{4}.*|至今.*|Present.*|Ongoing.*))$/m.exec(header.trim());
-  if (m) return { title: m[1].trim(), tail: m[2].trim() };
-  return { title: header.trim(), tail: '' };
+  const h = header.trim();
+  const legacy = /^(.*?)(\s*(?:[（(【].{0,40}[）)】])?\s*(?:\d{4}.*|0\d\/\d{4}.*|至今.*|Present.*|Ongoing.*))$/m.exec(h);
+  const dm = DATE_HEAD.exec(h);
+  // 两个判据谁先把日期段切出来就用谁：legacy 只认 20xx 开头，
+  // "校园二手平台 | 负责人 | Mar 2022 - Aug 2022" 它会从 2022 切、把 "Mar" 留在项目名里；
+  // DATE_HEAD 认英文月份名，切点更早（Mar 那里），名字才干净。
+  const legacyAt = legacy ? legacy[1].length : -1;
+  const useDateHead = dm && dm.index > 0 && (!legacy || dm.index < legacyAt);
+  if (useDateHead) {
+    const head = h.slice(0, dm.index).replace(/[|｜:：、,，\s]*[-–—][\s]*$|[|｜:：、,，\s]+$/, '').trim();
+    if (head.length >= 2) return { title: head, tail: h.slice(dm.index) };
+  }
+  if (legacy) return { title: legacy[1].trim(), tail: legacy[2].trim() };
+  return { title: h, tail: '' };
+}
+
+/** 条目头里"日期段"的起点：2021.09 / 2021年9月 / Mar 2022 / September 2021，可带一段区间尾巴 */
+const DATE_HEAD = new RegExp(String.raw`\b(?:(?:19|20)\d{2}\s*[.\-/年]?\s*\d{0,2}\s*月?|${EN_MONTH_RE}\s*(?:'?\d{2}|(?:19|20)\d{2}))(?:\s*[-–—~至到]\s*(?:至今|现在|[A-Za-z]+\.?|(?:19|20)\d{2}[\s.\-/年]*\d{0,2}\s*月?))?`, 'i');
+
+/**
+ * 「公司一行、职位一行、时间一行」是简历里最常见的写法之一：不写"时间："这种对应，直接就是内容。
+ * 条目头没日期时，从正文里把**独立成行的日期**和**紧跟的职位行**捞出来，
+ * 剩下的才进 summary —— 否则一段经历的时间烂在正文里，站点上的起止时间栏位永远空着。
+ * 只捞"第一行非 bullet 且短"的那一条，抓不到就放弃，宁可少要不乱抓。
+ * @returns {{extraTail:string, extraTitle:string, lines:string[]}}
+ */
+export function absorbLooseLines(lines = []) {
+  const DATE_ONLY = new RegExp(String.raw`^\s*(?:[*\-—]\s*)?((?:(?:19|20)\d{2}\s*[.\-/年]?\s*\d{0,2}\s*月?|${EN_MONTH_RE}\s*(?:'?\d{2}|(?:19|20)\d{2}))(?:\s*(?:[-–—~至到]|--)\s*(?:至今|现在|Present|Ongoing|[A-Za-z]+\.?|(?:19|20)\d{2}[\s.\-/年]*\d{0,2}\s*月?))?)\s*(?:[*\-—]\s*)?$`, 'i');
+  const ROLE_HINT = ROLE_HINT_RE;
+  const rest = [];
+  let extraTail = '';
+  for (const line of lines) {
+    const bare = String(line || '').replace(/^\s*[*\-—]\s*/, '').trim();
+    if (!extraTail && !BULLET_RE.test(line) && DATE_ONLY.test(bare)) { extraTail = bare; continue; }
+    rest.push(line);
+  }
+  let extraTitle = '';
+  for (let k = 0; k < rest.length; k++) {
+    const raw = rest[k];
+    if (!raw.trim()) continue;
+    const t = stripInline(raw);
+    if (BULLET_RE.test(raw) || t.length > 30) break;      // 首行是 bullet 或长句：不猜职位
+    extraTitle = ROLE_HINT.test(t) ? t : '';
+    if (extraTitle) rest.splice(k, 1);
+    break;
+  }
+  return { extraTail, extraTitle, lines: rest };
 }
 
 /**
@@ -522,11 +641,11 @@ export function importMarkdown(md, opts = {}) {
 
     // 列表型主区块：education / internship / work / projects
     const { entries, pre } = splitEntryBlocks(body);
-    const source = entries.length ? entries : (() => {
-      const bs = bulletsOf(body);
-      return bs.map(b => ({ header: b.text, lines: b.sub }));
-    })();
-    if (pre.some(l => l.trim())) {
+    const source = entries.length ? entries : groupEntriesLoose(body);
+    // 「段首未归类文字」只在有加粗条目时才成立：没有加粗标题时，那些普通行本身就是条目头
+    // （groupEntriesLoose 已把它们收下），再当成"没地方去的内容"报一遍就是重复，
+    // 也会让 AI 辅助导入把已经解析好的内容再发一次。
+    if (entries.length && pre.some(l => l.trim())) {
       const intro = pre.map(l => l.trim()).filter(Boolean).map(stripInline).join(' ');
       if (intro) { put('others.otherInfo', `「${headingText}」段首未归类文字：${intro}`, `标题「${headingText}」`); report.unplaced.push({ heading: headingText, lines: [intro], why: 'section_preamble' }); }
     }
@@ -535,12 +654,30 @@ export function importMarkdown(md, opts = {}) {
       const { title, tail } = titleAndTail(e.header || '');
       if (!title) continue;
       const i = nextSlot(route);
-      const dates = parseDateRange(tail);
-      const parts = splitTitle(title);
-      const bullets = bulletsOf(e.lines || []);
+      // 「**字节跳动**」这种条目头只有公司名，职位与时间各占一行：先独立捞出来。
+      // 不捞的话起止时间就烂在 summary 里，站点上「开始时间/结束时间」两栏永远空着。
+      const loose = absorbLooseLines(e.lines || []);
+      const headDates = parseDateRange(tail);
+      const dates = headDates.start ? headDates : parseDateRange([tail, loose.extraTail].filter(Boolean).join(' '));
+      let parts = splitTitle(title);
+      if (parts.length === 1 && loose.extraTitle) parts = [parts[0], loose.extraTitle];
+      const bullets = bulletsOf(loose.lines);
       report.stats.entries++;
 
       if (route === 'education') {
+        // 「南京大学　计算机科学与技术　本科」这种只用空格（甚至是全角空格）分隔的写法，
+        // splitTitle 拆不出来（它只认 | / — 这类分隔符），于是整行进了校名，专业与学历两栏永远空着。
+        // 只在"整行没被拆过"时兜一次：先找出像校名的一段，剩下的原样交给后面的专业/学历推断。
+        if (parts.length === 1) {
+          const segs = stripInline(title).split(/[\s　]+/).filter(Boolean);
+          const idx = segs.findIndex(x => /(大学|学院|学校|university|college|institute)/i.test(x));
+          if (segs.length >= 2 && idx >= 0) {
+            // "Stanford University" 里 University 自己就是那个通用词，校名要把它前面的词一起带走
+            const generic = /^(university|college|institute|school|大学|学院|学校)$/i.test(segs[idx]);
+            const cut = generic ? idx : idx;
+            parts = [segs.slice(0, cut + 1).join(' '), ...segs.slice(cut + 1)];
+          }
+        }
         const [schoolRaw, ...rest] = parts;
         const school = stripInline(schoolRaw);
         put(`education.${i}.school`, school, `教育条目「${title}」`);
@@ -551,7 +688,7 @@ export function importMarkdown(md, opts = {}) {
         const dg = degreeOf(mainLine || restText || title);
         if (dg) put(`education.${i}.degree`, dg, '按标题词推断');
         const major = mainLine
-          .replace(/(硕士学位研究生|硕士学位|硕士|学士学位|学士|博士学位|博士|研究生)/g, ' ')
+          .replace(/(硕士学位研究生|硕士学位|本科批|硕士学位|博士学位|博士学位研究生|硕士|学士|本科|博士|研究生|应届毕业生|应届)/g, ' ')
           .replace(/\b(M\.?Sc|M\.?Eng|B\.?Sc|B\.?Eng|Master|Bachelor|PhD|Doctor|Doctorate)\b/gi, ' ')
           .replace(/^\s*(in|of|en|on)\s+/i, '')
           .replace(/[\s、，,;；]+$/g, '')
@@ -569,6 +706,12 @@ export function importMarkdown(md, opts = {}) {
           else put(`education.${i}.transcript`, t, '教育条目补充');
         }
       } else if (route === 'internship' || route === 'work') {
+        // 「腾讯 高级数据分析师 2025年7月 至今 深圳」这类整行只用空格分隔的写法：
+        // splitTitle 拆不出 | 之外的结构，不处理就会把公司+职位一起塞进公司名
+        if (parts.length === 1) {
+          const roleSplit = splitRoleFromLine(stripInline(title));
+          if (roleSplit) parts = roleSplit;
+        }
         const [company, ...rest] = parts;
         put(`${route}.${i}.company`, company, `${route === 'work' ? '工作' : '实习'}条目「${title}」`);
         if (rest.length) put(`${route}.${i}.title`, rest.join(' '), '条目职位');
@@ -584,16 +727,21 @@ export function importMarkdown(md, opts = {}) {
         }
         if (lines.length) put(`${route}.${i}.summary`, lines.join('\n'), '条目正文');
       } else if (route === 'projects') {
-        const paren = title.match(/[（(]([^）)]{2,60})[）)]/);
-        const name = title.replace(/[（(][^）)]{2,60}[）)]/, '').trim();
+        // 「校园二手交易平台 | 负责人 | Mar 2022 - Aug 2022」：名称/角色/时间三段，
+        // 时间由 titleAndTail 拆进 tail，剩下的用 splitTitle 拆成 名称 + 角色
+        const nameSeg = parts[0] || title;
+        const paren = nameSeg.match(/[（(]([^）)]{2,60})[）)]/);
+        const name = nameSeg.replace(/[（(][^）)]{2,60}[）)]/, '').trim();
         put(`projects.${i}.name`, name || title, `项目「${name || title}」`);
         if (paren) put(`projects.${i}.org`, paren[1].trim(), '项目标题括号说明');
         put(`projects.${i}.startDate`, dates.start, '条目日期');
         put(`projects.${i}.endDate`, dates.current ? '' : dates.end, '条目日期');
         const lines = bullets.map(entryLinesToText).filter(Boolean);
         if (lines.length) put(`projects.${i}.description`, lines.join('\n'), '项目正文');
-        const role = (stripInline(title).match(/^(负责|主导|参与|独立)/) || [])[1];
-        if (role) put(`projects.${i}.role`, role, '标题角色前缀');
+        const roleSeg = parts.slice(1).join(' ').trim();
+        const role = (stripInline(nameSeg).match(/^(负责|主导|参与|独立)/) || [])[1]
+          || (/^(负责|主导|参与|独立|负责人|项目负责人|队长|组长|main|lead)/i.test(roleSeg) ? roleSeg : '');
+        if (role) put(`projects.${i}.role`, role, '标题角色段');
       }
     }
     if (!LIST_SECTIONS.has(route) && route !== 'skills') report.unmappedHeadings.push(headingText);

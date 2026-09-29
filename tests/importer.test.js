@@ -217,3 +217,83 @@ test('字典认不出的"标签：值"行也进 unplaced，不只是丢进其他
   assert.ok(u, '未识别字段没进 unplaced');
   assert.equal(u.why, 'unclassified_field');
 });
+
+// ── 边界形状：用户原话是"经历不会写『时间：』这种对应，而是直接写内容" ──
+// 这一组锁的都是**没有字段名**的写法：解析器只能靠形状，形状判错就等于资料缺项。
+
+test('教育行用全角空格分隔 + 括号里放起止：校名/专业/学历/日期四项都要分开', () => {
+  const { profile: p, report } = importMarkdown('# 教育经历\n\n**南京大学　计算机科学与技术　本科**（2021.09 - 2025.06）\n');
+  const e = p.education[0];
+  assert.equal(e.school, '南京大学', '整行被当成校名，专业和学历就永远空着');
+  assert.equal(e.major, '计算机科学与技术');
+  assert.equal(e.degree, '本科', '「本科」不在学位词典里就会漏判');
+  assert.deepEqual([e.enrollDate, e.gradDate], ['2021-09', '2025-06']);
+  assert.equal(report.unplaced.length, 0, '这条明明解析出来了，不该再发给 AI');
+});
+
+test('英文校名带空格不被切碎（University 是通名，要跟着前面的专名走）', () => {
+  const { profile: p } = importMarkdown('# Education\n\nStanford University Computer Science Master\n');
+  assert.equal(p.education[0].school, 'Stanford University');
+  assert.equal(p.education[0].major, 'Computer Science');
+  assert.equal(p.education[0].degree, '硕士');
+});
+
+test('「公司一行 / 职位一行 / 时间一行」的实习条目：职位与起止都要落到自己栏里，summary 只留正文', () => {
+  const { profile: p } = importMarkdown([
+    '# 实习经历',
+    '**字节跳动**',
+    '数据分析实习生（数据组）',
+    '2024年3月 - 至今',
+    '- 负责周报复盘，输出 12 份看板',
+  ].join('\n'));
+  const it = p.internship[0];
+  assert.deepEqual([it.company, it.title], ['字节跳动', '数据分析实习生（数据组）']);
+  assert.deepEqual([it.startDate, it.endDate, it.current], ['2024-03', '', '是']);
+  assert.equal(it.summary, '负责周报复盘，输出 12 份看板', '日期行混进正文，站点上起止时间栏就还是空的');
+});
+
+test('整行只用空格分隔的工作条目：公司、职位、至今分别归位，且不再重复报成"段首未归类文字"', () => {
+  const { profile: p, report } = importMarkdown('# 工作经历\n\n腾讯 高级数据分析师 2025年7月 至今 深圳\n');
+  const w = p.work[0];
+  assert.deepEqual([w.company, w.title], ['腾讯', '高级数据分析师']);
+  assert.deepEqual([w.startDate, w.current], ['2025-07', '是']);
+  assert.ok(!report.mapped.some(m => m.path === 'others.otherInfo' && /腾讯/.test(m.preview)), '同一条内容被同时写进公司名和"其他信息"');
+  assert.equal(report.unplaced.length, 0);
+});
+
+test('公司名里本来就有职位词时不硬切：宁可整行当公司名', () => {
+  const { profile: p } = importMarkdown('# 工作经历\n\n工程师联盟 2021.09 - 2022.06\n');
+  assert.equal(p.work[0].company, '工程师联盟');
+  assert.equal(p.work[0].title, '');
+});
+
+test('项目行用竖线分隔 + 英文月份：名称/角色/起止到月', () => {
+  const { profile: p } = importMarkdown('# 项目经历\n\n校园二手交易平台 | 负责人 | Mar 2022 - Aug 2022\n- 需求梳理与数据分析\n');
+  const j = p.projects[0];
+  assert.equal(j.name, '校园二手交易平台', '「| Mar」留在名字里就是日期切点选错了');
+  assert.equal(j.role, '负责人');
+  assert.deepEqual([j.startDate, j.endDate], ['2022-03', '2022-08']);
+  assert.equal(j.description, '需求梳理与数据分析');
+  assert.equal(p.projects[1].name, '', '一条职责被当成第二个项目 = 凭空多一条经历');
+});
+
+test('日期形状：裸年份区间不许解析成 "2021-20"，"9月 2021" 要保住月份', () => {
+  const a = parseDateRange('2021 - 2022');
+  assert.deepEqual([a.start, a.end], ['2021', '2022'], '把 2022 的前两位当月份，写进站点就是错值');
+  const b = parseDateRange('9月 2021 - 6月 2022');
+  assert.deepEqual([b.start, b.end], ['2021-09', '2022-06']);
+  const c = parseDateRange('2021.09 - 2025.06');
+  assert.deepEqual([c.start, c.end], ['2021-09', '2025-06']);
+  const d = parseDateRange('September 2021 – June 2022');
+  assert.deepEqual([d.start, d.end], ['2021-09', '2022-06']);
+  const e = parseDateRange('2021 September - 2022 June');
+  assert.deepEqual([e.start, e.end], ['2021-09', '2022-06'], '年份在前的英文月份写法也要带月');
+  const f = parseDateRange('2022 - Aug 2022');
+  assert.deepEqual([f.start, f.end], ['2022', '2022-08'], '位置不同的两个时间点不能被当成同一段文字吞掉一个');
+});
+
+test('全 bullet 的奖项列表仍按"每条一项"处理（groupEntriesLoose 不能把它并成一条）', () => {
+  const { profile: p } = importMarkdown('# 获奖荣誉\n- 全国大学生数学竞赛 一等奖 2023.11\n- 校级三好学生 2022.09\n');
+  assert.deepEqual([p.awards[0].title, p.awards[0].date], ['全国大学生数学竞赛 一等奖', '2023-11']);
+  assert.equal(p.awards[1].title, '校级三好学生');
+});

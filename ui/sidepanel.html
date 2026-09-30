@@ -73,6 +73,15 @@
     <button id="btnClear">清除标注</button>
   </div>
 
+  <h2>填写授权（默认全部关着）</h2>
+  <label class="chk"><input type="checkbox" id="fillSensitive">允许填写证件号等敏感字段</label>
+  <label class="chk"><input type="checkbox" id="allowCustomSelect">允许点开自定义下拉并选中（会真的点击页面控件）</label>
+  <label class="chk"><input type="checkbox" id="enZhFallback">英文表单遇到只有中文写法的栏位：写中文并标黄（默认不写，列入"需要你处理"）</label>
+  <div class="note" id="authNote">
+    这三条各管一件事：改敏感内容、动页面控件、降级填中文。默认都不动 —— 关掉时对应栏位进「需要你处理」，
+    不是"悄悄少填"。它们以前藏在「编辑 / 导入 JSON」里，很多人根本找不到。
+  </div>
+
   <h2>本次结果</h2>
   <div class="stats" id="stats">尚未运行</div>
   <table id="results"></table>
@@ -153,18 +162,49 @@
   <div class="row">
     <button id="btnEdit">编辑 / 导入 JSON</button>
     <button id="btnTemplate">下载空白模板（全字段）</button>
+    <button id="btnExportProfile">导出资料 JSON（下载到自己的电脑）</button>
     <span class="note" id="profileMeta"></span>
   </div>
+  <div class="note" id="exportNote"></div>
   <div id="editor">
     <textarea id="profileText" spellcheck="false"></textarea>
     <div class="row">
       <button class="primary" id="btnSave">保存</button>
       <button id="btnCancel">取消</button>
-      <label class="chk"><input type="checkbox" id="fillSensitive">允许填写证件号等敏感字段</label>
-      <label class="chk"><input type="checkbox" id="allowCustomSelect">允许点开自定义下拉并选中（会真的点击页面控件）</label>
-      <label class="chk"><input type="checkbox" id="enZhFallback">英文表单遇到只有中文写法的栏位：写中文并标黄（默认不写，列入"需要你处理"）</label>
     </div>
   </div>
+
+  <details id="whereData">
+    <summary>这些数据到底存在哪个文件里？</summary>
+    <p class="hint">
+      全部存在<b>浏览器自己的存储</b>（<code>chrome.storage.local</code>）里：本扩展没有服务器，
+      也没有申请 <code>storage.sync</code> 权限，所以它不会被同步到任何云端。Windows 上它落在浏览器的 LevelDB 目录：
+    </p>
+    <pre class="note">Chrome: %LOCALAPPDATA%\Google\Chrome\User Data\&lt;配置文件&gt;\Local Extension Settings\&lt;扩展ID&gt;\
+Edge:   %LOCALAPPDATA%\Microsoft\Edge\User Data\&lt;配置文件&gt;\Local Extension Settings\&lt;扩展ID&gt;\</pre>
+    <p class="hint">
+      目录里的 <code>*.ldb</code> 与 <code>*.log</code> 就是数据本体。整个扩展只写三个键：
+      <code>profile</code>（你填的简历，含中英两份值）、<code>settings</code>（Base URL、模型名、等待与长度上限、三个授权开关）、
+      <code>aiSecrets</code>（只有勾了「记住 Key」才存在；没勾时 Key 只在 <code>chrome.storage.session</code>，关掉浏览器就没了）。
+      <b>扩展 ID 在 <code>chrome://extensions</code> 的卡片上能看到</b>；解压加载的扩展 ID 由文件夹路径算出来，
+      把仓库换到别的目录就会换成另一个 ID（旧目录里的数据不会跟过去，这也是"我资料怎么没了"的常见真因）。
+    </p>
+    <p class="hint">
+      想看里面到底存了什么，别去读 <code>.ldb</code>（那是二进制）：在 <code>chrome://extensions</code> 点本扩展的
+      「Service Worker」→ 打开 DevTools → Console 里执行
+      <code>chrome.storage.local.get(null).then(console.table)</code>。
+    </p>
+    <p class="hint">
+      说清楚代价：<b>这个目录是明文，不加密</b>。扩展拿不到系统钥匙串（要走 DPAPI 就得装本地程序，那违反"纯浏览器插件"）。
+      所以任何能读到你这个 Windows 账户磁盘的进程或人都能取出简历内容（勾了「记住 Key」时连 Key 一起）。
+      公用电脑请别勾「记住 Key」，用完按下面两步清干净。
+    </p>
+    <p class="hint">
+      彻底清掉：① 在「简历数据」里把内容清空并保存（或点 AI 面板里的「清除」删 Key）；
+      ② 在 <code>chrome://extensions</code> 移除本扩展，再删掉上面那个 <code>&lt;扩展ID&gt;</code> 目录。
+      换机/重装前用「导出资料 JSON」带走 —— 那个文件只含 <code>profile</code>，不含端点与 Key。
+    </p>
+  </details>
 
   <details id="aiPanel">
     <summary>AI 兜底（只在本地词典答不上时问，且只问字段名）</summary>

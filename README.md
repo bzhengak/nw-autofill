@@ -311,6 +311,39 @@ Azure OpenAI 那种要把 `?api-version=…` 写在地址里的形态**目前不
   不驻留定时器、不自动读取。想要更严，可以把注入改成"只在你点图标的那个标签页按需注入"（`activeTab`），
   这是一项待办改动，现在的实现还没做。
 
+## 数据到底存在哪个文件
+
+扩展没有服务器，也不申请 `storage.sync` —— 一切都在**浏览器自己的存储**（`chrome.storage.local`）里。
+Windows 上它是浏览器 profile 下的一个 LevelDB 目录：
+
+```
+Chrome: %LOCALAPPDATA%\Google\Chrome\User Data\<配置文件>\Local Extension Settings\<扩展ID>\
+Edge:   %LOCALAPPDATA%\Microsoft\Edge\User Data\<配置文件>\Local Extension Settings\<扩展ID>\
+```
+
+目录里的 `*.ldb` / `*.log` 就是数据本体。整个扩展只写三个键：
+
+| 键 | 内容 | 什么时候存在 |
+|---|---|---|
+| `profile` | 你填的简历（含中英两份值） | 只要保存过就有 |
+| `settings` | Base URL、模型名、等待与长度上限、三个授权开关、编辑语言 | 改过任何设置就有 |
+| `aiSecrets` | **API Key 明文** | 只有勾了「记住 Key」；没勾时 Key 只在 `chrome.storage.session`，关掉浏览器就没了 |
+
+几件必须知道的事：
+
+- **明文，不加密**。扩展拿不到系统钥匙串（要走 DPAPI 就得装本地程序，那违反"纯浏览器插件"的边界），
+  所以能读你这个 Windows 账户磁盘的人或进程都能取出简历内容。公用电脑别勾「记住 Key」。
+- **解压加载的扩展 ID 由文件夹路径决定**：把仓库换到别的目录，ID 就变了，
+  旧目录里的数据不会跟过去 —— 这就是"我资料怎么没了"的常见真因。ID 在 `edge://extensions` /
+  `chrome://extensions` 的扩展卡片上能看到（需先打开开发者模式）。
+  也可以自己算：`node tools/ext-id.mjs "C:\路径\nw-autofill"`（ID = 路径 UTF-16LE 的 SHA-256
+  前 32 个十六进制位，逐位映射 `0→a … f→p`），它直接把那两个 `<扩展ID>` 目录对上号。
+- **想看里面存了什么**，别去读 `.ldb`（二进制且可能被压缩）：在扩展卡片上点「Service Worker」
+  打开 DevTools，Console 执行 `chrome.storage.local.get(null).then(console.table)`。
+- **备份**用侧边栏的「导出资料 JSON」：它只含 `profile`，不含端点与 Key（导出物常被随手丢进网盘）。
+  下载/清空之前会先弹确认，因为里面是明文个人信息。
+- **彻底清掉**：先「清除」删 Key、清空资料并保存，再移除扩展，然后删掉上面那个 `<扩展ID>` 目录。
+
 ## 开发
 
 ```bash

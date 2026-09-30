@@ -471,3 +471,97 @@ test('流式接收这个勾：默认是开的，跟着存储走，改动要落�
   await new Promise(r => setTimeout(r, 60));
   assert.equal(b.sent.filter(m => m.type === 'nw:saveSettings').pop().settings.aiStream, true, '勾选没落到设置');
 });
+
+// ── 授权开关的可见性 + 资料落盘位置：这两件事以前都"藏在折叠区里" ─────────────
+test('三个填写授权开关摆在明面上（它们管的是填写行为，不是 JSON 编辑）', async () => {
+  const { doc } = bootExtract(() => ({ ok: true, profile: null, settings: {}, tabId: 1 }));
+  await load();
+  for (const id of ['fillSensitive', 'allowCustomSelect', 'enZhFallback']) {
+    const el = doc.getElementById(id);
+    assert.ok(el, `${id} 不见了`);
+    assert.equal(el.closest('#editor'), null, `${id} 还藏在「编辑 / 导入 JSON」里 —— 默认看不见`);
+    assert.equal(el.closest('#formEditor'), null, `${id} 藏在要先展开的表单编辑里`);
+    assert.equal(el.closest('details'), null, `${id} 折叠在 details 里，等于没有`);
+  }
+  assert.match(doc.body.textContent, /填写授权/, '这一节没有标题，用户不知道这三个勾是干什么的');
+  // 导出按钮是同一类错误的高发地：它一旦被放进折叠的 JSON 编辑器里，就等于没有这个功能
+  const btn = doc.getElementById('btnExportProfile');
+  assert.ok(btn, '「导出资料 JSON」不见了');
+  assert.equal(btn.closest('#editor'), null, '导出按钮藏在要先展开的 JSON 编辑器里');
+  assert.equal(doc.getElementById('whereData').closest('#editor'), null, '“数据存在哪里”这段同样不能被折叠起来');
+});
+
+test('敏感字段没填时的提示要指向那一节的真实位置', async () => {
+  const { doc } = bootExtract(m => (m.type === 'nw:scan'
+    ? {
+      ok: true, adapterId: '', adapterInfo: null,
+      data: {
+        stats: { scanned: 1, planned: 0, green: 0, review: 0, red: 0, gaps: 1, profileFilled: 5 },
+        results: [],
+        gaps: [{ index: 0, label: 'ID Number', reason: 'sensitive_withheld', kind: 'text' }],
+      },
+    }
+    : { ok: true, profile: { basics: { name: '张伟' } }, settings: {}, tabId: 1 }));
+  await load();
+  await click(doc, 'btnPreview');
+  const txt = doc.getElementById('stats').textContent;
+  assert.match(txt, /填写授权/, `提示没指向那一节：${txt}`);
+  assert.ok(!/在下方勾选/.test(txt), '还在说"在下方勾选"，而那一片其实是折叠的 JSON 编辑器');
+});
+
+test('「导出资料 JSON」只带走 profile：不确认就不下载，下载物里没有端点和 Key', async () => {
+  const { createEmptyProfile, setValueByPath } = await import('../core/profile-schema.js');
+  const profile = createEmptyProfile();
+  setValueByPath(profile, 'basics.name', '张伟');
+  setValueByPath(profile, 'basics.idNumber', '110101199001011234');
+  const blobs = [];
+  const clicks = [];
+  globalThis.URL = globalThis.URL || {};
+  const realCreate = globalThis.URL.createObjectURL;
+  globalThis.URL.createObjectURL = blob => { blobs.push(blob); return 'blob:fake'; };
+  const { doc } = bootExtract(async m => ({
+    ok: true, tabId: 1, profile,
+    settings: m.type === 'nw:getState' ? { aiBaseUrl: 'https://api.example.test/v1', aiModel: 'm' } : {},
+  }));
+  doc.defaultView.HTMLAnchorElement.prototype.click = function () { clicks.push(this.download); };
+  await load();
+  try {
+    doc.defaultView.confirm = () => false;
+    await click(doc, 'btnExportProfile');
+    assert.equal(clicks.length, 0, '取消确认了却还是下载了文件');
+    assert.match(doc.getElementById('exportNote').textContent, /取消/);
+
+    doc.defaultView.confirm = () => true;
+    await click(doc, 'btnExportProfile');
+    assert.equal(clicks.length, 1);
+    assert.match(clicks[0], /^nw-autofill-profile-\d{4}-\d{2}-\d{2}\.json$/, '文件名没日期，几份备份分不清');
+    const text = await blobs[0].text();
+    assert.match(text, /张伟/, '资料本身没写进去');
+    assert.ok(!text.includes('api.example.test'), '导出物里混进了端点：备份文件常被随手丢进网盘');
+    assert.ok(!/aiBaseUrl|aiSecrets|aiModel/.test(text), '导出物里混进了 settings');
+  } finally {
+    if (realCreate) globalThis.URL.createObjectURL = realCreate;
+  }
+});
+
+test('面板里查得到资料落在哪个文件，并且写明它是明文存储', async () => {
+  const { doc } = bootExtract(() => ({ ok: true, profile: {}, settings: {}, tabId: 1 }));
+  await load();
+  const t = doc.getElementById('whereData').textContent;
+  assert.match(t, /Local Extension Settings/, '没给出磁盘上的具体目录');
+  // 反斜杠在 HTML、正则、shell 之间来回转义太容易看错，所以按"整行"检查：
+  // 两条路径都得是完整的一行（含厂商目录、User Data、Local Extension Settings、扩展 ID）
+  const lines = t.split('\n').map(s => s.trim()).filter(Boolean);
+  const chrome = lines.find(l => /Chrome:/.test(l));
+  const edge = lines.find(l => /Edge:/.test(l));
+  for (const [who, line] of [['Chrome', chrome], ['Edge', edge]]) {
+    assert.ok(line, `${who} 那条路径没写`);
+    assert.ok(line.includes('User Data') && line.includes('Local Extension Settings') && line.includes(who),
+      `${who} 的路径写得不完整：${line}`);
+    assert.ok(/配置文件/.test(line) && /扩展ID/.test(line), `${who} 的路径没标出可变的两段：${line}`);
+  }
+  assert.match(t, /明文/, '没告诉用户这是明文，不加密');
+  assert.match(t, /aiSecrets/, '没说清 Key 存在哪个键、勾了"记住"才有');
+  assert.match(t, /chrome\.storage\.local\.get/, '没给出"想查看就这么查"的办法');
+  assert.match(t, /换到别的目录|换 ID|换成另一个 ID/, '解压加载换目录会换 ID，资料"消失"的真因没写');
+});

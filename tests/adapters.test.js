@@ -179,3 +179,24 @@ test('真实自带的每个适配器都能被 compileAdapters 接受（防止提
     'https://hkex.wd3.myworkdayjobs.com/zh-CN/HKEXCareerPage/job/x',
   ]) assert.ok(matchAdapter(url, adapters), `${url} 选不到适配器`);
 });
+
+// 扩展 ID 推导：换目录=换 ID，"我资料怎么没了"的常见真因就藏在这里。
+// 只钉算法性质，不钉任何人的真实路径。
+test('tools/ext-id.mjs：ID 是路径 UTF-16LE 的 SHA-256 前 32 位，逐位映射到 a-p', async () => {
+  const { extensionIdFor } = await import('../tools/ext-id.mjs');
+  const { createHash } = await import('node:crypto');
+  const pathMod = await import('node:path');
+  // 用 join 造带分隔符的路径：测试里的 \ 转义在几个环节极易看错（这次就被写成了单斜杠）
+  const win = pathMod.win32.join('D:', 'work', 'demo-ext');
+  const id = extensionIdFor(win);
+  assert.equal(id.length, 32);
+  assert.match(id, /^[a-p]{32}$/, `ID 只能由 a-p 组成：${id}`);
+  assert.equal(extensionIdFor(win), id, '同一个路径必须给同一个 ID');
+  assert.notEqual(extensionIdFor(pathMod.win32.join('D:', 'work', 'demo-ext-2')), id,
+    '换个目录就是另一个 ID（这正是"我资料怎么没了"的真因）');
+  assert.equal(extensionIdFor(win + pathMod.win32.sep), id, '结尾斜杠不该改变 ID');
+  assert.equal(extensionIdFor('D:/work/demo-ext'), id, '正斜杠与反斜杠该归一');
+  // 手算一份固定向量：算法（UTF-16LE / 前 32 位 / a-p 映射）被改坏时要能看见
+  const hex = createHash('sha256').update(win, 'utf16le').digest('hex');
+  assert.equal(id, hex.slice(0, 32).split('').map(c => String.fromCharCode(97 + parseInt(c, 16))).join(''));
+});

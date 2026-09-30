@@ -262,7 +262,7 @@ function render(data, meta = {}) {
   if (s.profileFilled === 0) {
     banners.push('<div class="banner">简历资料是空的（0 项有值）：所以现在一个字段都填不了。先去「导入简历 Markdown」或「分类编辑」把资料灌进来，再来扫描。</div>');
   } else if (withheld.length) {
-    banners.push(`<div class="banner">${withheld.length} 个敏感字段（证件号/手机号等）按你的设置没有写入。要自动填就在下方勾选「允许填写敏感字段」。</div>`);
+    banners.push(`<div class="banner">${withheld.length} 个敏感字段（证件号/手机号等）按你的设置没有写入。要自动填，就在上方「填写授权」里勾上「允许填写证件号等敏感字段」。</div>`);
   }
   // 英文页面上"中文有值、英文没值"的槽位：我们宁可留空也不把中文写进英文名栏，
   // 所以必须说清是哪几栏、以及两条出路（补英文值 / 开那个降级开关）。
@@ -730,13 +730,36 @@ $('btnSave').onclick = async () => {
   $('editor').classList.remove('on');
   refresh();
 };
-$('btnTemplate').onclick = () => {  const blank = createEmptyProfile();
+$('btnTemplate').onclick = () => {
+  const blank = createEmptyProfile();
   const blob = new Blob([JSON.stringify(blank, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = 'nw-autofill-profile-template.json';
   a.click();
   alert(`空白模板含 ${SECTIONS.length} 个分组、${buildFields().length} 个可填项。\n\n用文本编辑器打开这个 JSON，把你简历里没有但网申会问的条目（家庭成员、档案所在地、港企签证合规等）手动补上，再回到这里「编辑 / 导入 JSON」粘贴保存即可。`);
+};
+
+/**
+ * 导出**当前资料**（不是空模板）。存在的意义只有一个：换机或清库之前你能把它带走。
+ * 只导出 profile —— settings 里有端点与授权痕迹、aiSecrets 里有 Key，
+ * 那两个不该被顺手写进一个"备份文件"里（导出物常被人丢进网盘或微信）。
+ */
+$('btnExportProfile').onclick = async () => {
+  const state = await chrome.runtime.sendMessage({ type: 'nw:getState', tabId });
+  const profile = state?.profile;
+  if (!profile) { $('exportNote').textContent = '还没有资料可导出：先导入 Markdown 或展开表单编辑填一份。'; return; }
+  const filled = countFilled(profile);
+  if (!window.confirm(`将下载一份包含你全部简历资料的 JSON（${filled} 项有值，含证件号/手机号等敏感字段）。\n\n这个文件是明文：下载后请自己保管，别丢进网盘共享目录或聊天窗口。确认下载？`)) {
+    $('exportNote').textContent = '已取消，没有写出任何文件。';
+    return;
+  }
+  const day = new Date().toISOString().slice(0, 10);
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(profile, null, 2)], { type: 'application/json' }));
+  a.download = `nw-autofill-profile-${day}.json`;
+  a.click();
+  $('exportNote').textContent = `已导出 ${filled} 项有值的资料（文件名 nw-autofill-profile-${day}.json）。它不含端点、不含 Key —— 那两样本来就不该跟着备份文件跑。`;
 };
 
 refresh();

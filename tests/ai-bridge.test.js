@@ -217,3 +217,25 @@ test('后台把构建号带回侧边栏：不一致时界面才可能发现"重�
   assert.equal(unknown.error, 'unknown_message');
   assert.equal(unknown.build, BUILD, '连兜底回包都不带版本号，unknown_message 就没法自证是哪一版');
 });
+
+test('设置里的回答长度上限真的进到请求体；没配时用默认 4000（不再写死 2000）', async () => {
+  const a = await bootSw([okJson('[]')]);
+  await configure(a.send, null, { baseUrl: BASE });
+  await a.send(ASK_MSG);
+  assert.equal(JSON.parse(a.calls[0].init.body).max_tokens, 4000, '默认上限没生效：reasoning 模型会被砍断');
+
+  const b = await bootSw([okJson('[]')]);
+  await configure(b.send, null, { baseUrl: BASE });
+  await b.send({ type: 'nw:saveSettings', settings: { aiMaxOutput: 9000 } });
+  await b.send(ASK_MSG);
+  assert.equal(JSON.parse(b.calls[0].init.body).max_tokens, 9000, '改了设置但请求体还是老数字（穿线断了）');
+});
+
+test('自检那一发只给 1 token：它测的是通不通，不是模型能想多久', async () => {
+  const { send, calls } = await bootSw([okJson('Pong')]);
+  await configure(send, null, { baseUrl: BASE });
+  await send({ type: 'nw:aiPing', timeoutSec: 5 });
+  const body = JSON.parse(calls[0].init.body);
+  assert.equal(body.max_tokens, 1);
+  assert.equal(body.messages[0].content, 'ping');
+});

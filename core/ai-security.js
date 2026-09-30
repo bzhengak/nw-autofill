@@ -5,7 +5,7 @@
 
 /** 可以持久化的设置白名单。Key 不在里面 —— 它只配活在 chrome.storage.session。 */
 export const SETTING_KEYS = ['mode', 'fillSensitive', 'autoSubmitNever', 'allowCustomSelect', 'aiEnabled',
-  'aiBaseUrl', 'aiModel', 'aiMaxGaps', 'aiConsentOrigin', 'aiTimeoutSec', 'editorLang', 'enMissingMode'];
+  'aiBaseUrl', 'aiModel', 'aiMaxGaps', 'aiConsentOrigin', 'aiTimeoutSec', 'aiMaxOutput', 'editorLang', 'enMissingMode'];
 
 const SECRETISH = /(key|token|secret|password|credential|auth)/i;
 
@@ -151,6 +151,38 @@ export function clampTimeoutSec(v) {
 export function effectiveTimeoutSec(settings) {
   const got = clampTimeoutSec(settings?.aiTimeoutSec);
   return got.ok ? got.seconds : AI_TIMEOUT_DEFAULT_SEC;
+}
+
+/**
+ * 回答长度上限（请求体里的 max_tokens）。
+ *
+ * 为什么这也要能配：reasoning 模型（DeepSeek-R1 / QwQ / Qwen3 思考模式）把
+ * **思考过程一起算进 max_tokens**。上限给小了会出现两种表现：正文是空的（`reasoning_only`），
+ * 或 JSON 被砍半（`truncated`）—— 都不是"模型没建议"，而是我们没留够写字的地方。
+ * 老实现写死 2000，对几十个缺口的 JSON 回答 + 思考链本来就不够。
+ *
+ * 设置键名故意叫 `aiMaxOutput` 而不是 `aiMaxTokens`：持久化设置有一条按**键名**拦秘密的闸
+ * （名字里带 token/key/secret 的一律拒收，因为 settings 会被导出 JSON 带走），
+ * 叫 aiMaxTokens 会被那道闸当成可疑键名丢掉 —— 那道闸不能为了一个数字键开口子。
+ */
+export const AI_MAX_TOKENS_DEFAULT = 4000;
+export const AI_MAX_TOKENS_MIN = 500;
+export const AI_MAX_TOKENS_MAX = 16000;
+
+export function clampMaxTokens(v) {
+  const raw = String(v ?? '').trim();
+  if (!raw) return { ok: false, error: 'output_invalid', tokens: AI_MAX_TOKENS_DEFAULT };
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return { ok: false, error: 'output_invalid', tokens: AI_MAX_TOKENS_DEFAULT };
+  const t = Math.round(n);
+  if (t < AI_MAX_TOKENS_MIN) return { ok: false, error: 'output_too_small', tokens: AI_MAX_TOKENS_MIN };
+  if (t > AI_MAX_TOKENS_MAX) return { ok: false, error: 'output_too_large', tokens: AI_MAX_TOKENS_MAX };
+  return { ok: true, tokens: t };
+}
+
+export function effectiveMaxTokens(settings) {
+  const got = clampMaxTokens(settings?.aiMaxOutput);
+  return got.ok ? got.tokens : AI_MAX_TOKENS_DEFAULT;
 }
 
 export function maySendKey({ keyOrigin, targetOrigin, consentOrigin }) {

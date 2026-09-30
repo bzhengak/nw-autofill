@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, redact, SETTING_KEYS, SECRETS_BUCKET, findLeaksInExport, consentAfterSettingsPatch, clampTimeoutSec, effectiveTimeoutSec, AI_TIMEOUT_DEFAULT_SEC } from '../core/ai-security.js';
+import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, redact, SETTING_KEYS, SECRETS_BUCKET, findLeaksInExport, consentAfterSettingsPatch, clampTimeoutSec, effectiveTimeoutSec, AI_TIMEOUT_DEFAULT_SEC, clampMaxTokens, effectiveMaxTokens, AI_MAX_TOKENS_DEFAULT } from '../core/ai-security.js';
 
 test('持久化 Key 只能进独立桶：SECRETS_BUCKET 不在 settings 白名单里', () => {
   assert.equal(SECRETS_BUCKET, 'aiSecrets');
@@ -151,4 +151,27 @@ test('等待上限：默认 180 秒，可配 15–900，非法值退回默认而
   assert.equal(effectiveTimeoutSec({ aiTimeoutSec: '乱填' }), AI_TIMEOUT_DEFAULT_SEC, '手滑填错不该把请求锁死');
   assert.equal(effectiveTimeoutSec(undefined), AI_TIMEOUT_DEFAULT_SEC);
   assert.ok(SETTING_KEYS.includes('aiTimeoutSec'), '不在白名单里就存不进 settings，改了等于没改');
+});
+
+// 回答长度上限（请求里的 max_tokens）：reasoning 模型把思考链也算进这里，
+// 上限写死 2000 时的表现是"AI 没建议"，其实是没留够写字的地方。
+test('回答长度上限：边界、非法退回默认，并且键名不能被"秘密键名闸"吞掉', () => {
+  assert.equal(clampMaxTokens('6000').tokens, 6000);
+  assert.equal(clampMaxTokens('6000').ok, true);
+  assert.equal(clampMaxTokens('100').error, 'output_too_small');      // 太小：一条完整建议都装不下
+  assert.equal(clampMaxTokens('999999').error, 'output_too_large');   // 太大：交给服务商那边确认
+  assert.equal(clampMaxTokens('').error, 'output_invalid');            // 留空=没填，不当成 0
+  assert.equal(clampMaxTokens('abc').error, 'output_invalid');
+  assert.equal(effectiveMaxTokens({}), AI_MAX_TOKENS_DEFAULT, '没配就该退回默认');
+  assert.equal(effectiveMaxTokens({ aiMaxOutput: 8000 }), 8000);
+  assert.equal(effectiveMaxTokens({ aiMaxOutput: 'x' }), AI_MAX_TOKENS_DEFAULT, '脏值不能把请求锁死');
+  // 键名带 token 会被 sanitizeSettings 的秘密键名闸拒收（那是设计），所以设置键叫 aiMaxOutput；
+  // 这条断言防的是"以后有人改回 aiMaxTokens，于是这个设置永远存不下去"
+  assert.ok(SETTING_KEYS.includes('aiMaxOutput'), 'aiMaxOutput 不在白名单里 → 存了就丢');
+  const { clean, dropped } = sanitizeSettings({ aiMaxOutput: 6000 });
+  assert.equal(clean.aiMaxOutput, 6000, JSON.stringify(dropped));
+  assert.equal(dropped.length, 0, '被秘密键名闸误杀了');
+  // 与端点无关的设置不得擦掉 AI 确认（needs_consent 的老形状）
+  const prev = { aiBaseUrl: 'https://api.a.test/v1', aiConsentOrigin: 'https://api.a.test' };
+  assert.equal(consentAfterSettingsPatch({ prev, patch: { aiMaxOutput: 6000 } }), 'https://api.a.test');
 });

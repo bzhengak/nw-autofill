@@ -270,3 +270,64 @@ test('网络层错误的分类：redirect 单独一类（它意味着 Key 会跟
   const e = new Error('x'); e.name = 'AbortError';
   assert.equal(classifyFetchError(e).error, 'timeout');
 });
+
+// ── 自检的 max_tokens：这条是 2026-09-30 那次误判的回归 ──────────────────────
+// 第一版自检沿用了真请求的 max_tokens=2000，reasoning 模型光思考就超过 15 秒，
+// 于是"对端在慢慢想"被自检误报成"没回话"。自检要的是"通不通"，不是"想多久"。
+
+test('自检那一发带的是 max_tokens:1；真请求带的是设置里的上限', async () => {
+  const f = fakeFetch(ok('Pong'));
+  await pingAiEndpoint({ baseUrl: 'https://api.x.test/v1', model: 'm', key: KEY, fetchImpl: f });
+  assert.equal(JSON.parse(f.calls[0].body).max_tokens, 1, '自检不该给模型留思考的余地');
+  assert.ok(!('stream' in JSON.parse(f.calls[0].body)), '第一发不该开流式：那会改变响应形状');
+
+  const g = fakeFetch(ok('[]'));
+  await callChatEndpoint({ baseUrl: 'https://api.x.test/v1', model: 'm', key: KEY, text: 'q', maxTokens: 6000, fetchImpl: g });
+  assert.equal(JSON.parse(g.calls[0].body).max_tokens, 6000, '真请求没按设置给长度上限');
+});
+
+test('域名通、非流式沉默时：再用流式摸一次第一个字节，据此分开"慢"和"不通"', async () => {
+  const calls = [];
+  const impl = async (url, init) => {
+    calls.push({ url, init, body: JSON.parse(init.body || '{}') });
+    if (init?.method !== 'POST') return { ok: true, status: 200, text: async () => '', json: async () => ({}) };
+    if (init.body.includes('"stream":true')) {
+      return { ok: true, status: 200, body: { getReader: () => ({ read: async () => ({ done: false, value: new Uint8Array([1]) }), cancel: async () => {} }) } };
+    }
+    // 非流式那一发：一直沉默
+    return new Promise((_r, reject) => init.signal.addEventListener('abort', () => {
+      const e = new Error('aborted'); e.name = 'AbortError'; reject(e);
+    }));
+  };
+  const res = await pingAiEndpoint({ baseUrl: 'https://api.x.test/v1', model: 'm', key: KEY, fetchImpl: impl, timeoutSec: 2 });
+  assert.equal(res.verdict, 'holding_response', JSON.stringify(res));
+  assert.ok(res.firstChunkMs != null, '流式那一发没记第一个字节的耗时');
+  const posts = calls.filter(c => c.init?.method === 'POST');
+  assert.equal(posts.length, 2, '该先非流式、再流式各一发');
+  assert.equal(posts[1].body.stream, true, '第二发没开流式');
+  assert.equal(posts[1].body.max_tokens, 1);
+});
+
+test('流式也摸不到字节 → 判 no_first_byte（这才轮到"对端没回话"）', async () => {
+  const impl = async (url, init) => {
+    if (init?.method !== 'POST') return { ok: true, status: 200, text: async () => '', json: async () => ({}) };
+    return new Promise((_r, reject) => init.signal.addEventListener('abort', () => {
+      const e = new Error('aborted'); e.name = 'AbortError'; reject(e);
+    }));
+  };
+  const res = await pingAiEndpoint({ baseUrl: 'https://api.x.test/v1', model: 'm', key: KEY, fetchImpl: impl, timeoutSec: 2 });
+  assert.equal(res.verdict, 'no_first_byte', JSON.stringify(res));
+  assert.equal(res.firstChunkMs, null);
+});
+
+test('被直接拒掉的 POST（fetch_failed）不再做流式二次探测：那不是"慢"', async () => {
+  const calls = [];
+  const impl = async (url, init) => {
+    calls.push(init?.method);
+    if (init?.method === 'POST') throw new TypeError('Failed to fetch');
+    return { ok: true, status: 200, text: async () => '', json: async () => ({}) };
+  };
+  const res = await pingAiEndpoint({ baseUrl: 'https://api.x.test/v1', model: 'm', key: KEY, fetchImpl: impl, timeoutSec: 2 });
+  assert.equal(res.verdict, 'post_blocked');
+  assert.deepEqual(calls, ['POST', 'GET'], '被拒的情况不该再补一发流式');
+});

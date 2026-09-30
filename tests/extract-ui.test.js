@@ -363,14 +363,15 @@ test('自检结论要说清下一步：连不上 ≠ Key 错 ≠ 模型慢', asy
   const CASES = [
     ['unreachable', /连不上|代理|DNS/, '域名都到不了，还谈什么 Key'],
     ['post_blocked', /POST 被拒|被拦/, '域名通、POST 不通，得说清是后者'],
-    ['no_first_byte', /响应字节|没开始回话/, '连上了但对方不回话'],
+    ['no_first_byte', /第一个字节|没回话/, '连流式都摸不到字节才算真没回话'],
+    ['holding_response', /慢|第一个字节/, '非流式慢要对端在生成，不能说成不通'],
     ['key_rejected', /Key/, 'Key 被拒要说 Key'],
     ['path_not_found', /端点|路径/, '路径没对上要说路径'],
     ['ok', /通了/, '成功也要说一句'],
   ];
   for (const [verdict, want, why] of CASES) {
     const { doc } = bootExtract(m => (m.type === 'nw:aiPing'
-      ? { ok: verdict === 'ok', verdict, endpoint: 'https://api.example.test/v1/chat/completions', origin: 'https://api.example.test', status: verdict === 'key_rejected' ? 401 : verdict === 'path_not_found' ? 404 : null, timing: { upBytes: 90, headersMs: 12, bodyMs: 30, limitMs: 15000 }, originReachable: true, originMs: 8 }
+      ? { ok: verdict === 'ok', verdict, endpoint: 'https://api.example.test/v1/chat/completions', origin: 'https://api.example.test', status: verdict === 'key_rejected' ? 401 : verdict === 'path_not_found' ? 404 : null, timing: { upBytes: 90, headersMs: 12, bodyMs: 30, limitMs: 15000 }, originReachable: true, originMs: 8, firstChunkMs: 240 }
       : AI_READY));
     await load();
     await click(doc, 'btnAiPing');
@@ -429,4 +430,29 @@ test('自检遇到 unknown_message：结论要落在"后台是旧构建"，不�
   const txt = doc.getElementById('aiPingState').textContent;
   assert.match(txt, /后台|service worker/i, `没指出是后台的问题：${txt}`);
   assert.match(txt, /重载|关掉再打开|停止/, '没给出自愈步骤');
+});
+
+// 回答长度上限这个输入框：填错不能把请求锁死，也不能顺手擦掉 AI 确认
+test('「回答长度上限」：合法值进设置、非法值保住原状并说明、生效值一直看得见', async () => {
+  const { doc, sent } = bootExtract(() => ({ ok: true, profile: {}, settings: { aiMaxOutput: 6000 }, tabId: 1 }));
+  await load();
+  assert.equal(doc.getElementById('aiMaxTokens').value, '6000', '已存的值没回填');
+  assert.match(doc.getElementById('aiMaxTokensState').textContent, /当前生效：6000 token/);
+
+  const box = doc.getElementById('aiMaxTokens');
+  box.value = '9000';
+  box.dispatchEvent(new doc.defaultView.Event('change', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 60));
+  assert.equal(sent.filter(m => m.type === 'nw:saveSettings').pop().settings.aiMaxOutput, 9000, '没落到 aiMaxOutput');
+
+  box.value = '50';
+  box.dispatchEvent(new doc.defaultView.Event('change', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 60));
+  assert.match(doc.getElementById('aiMaxTokensState').textContent, /最少 500/, '非法值没说清下限');
+  assert.equal(box.value, '', '非法值留在输入框里，下次保存会再踩一次');
+
+  box.value = '';
+  box.dispatchEvent(new doc.defaultView.Event('change', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 60));
+  assert.equal(sent.filter(m => m.type === 'nw:saveSettings').pop().settings.aiMaxOutput, '', '清空应回到默认而不是存个 0');
 });

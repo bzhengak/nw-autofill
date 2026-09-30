@@ -13,7 +13,7 @@ import { compileAdapters } from '../core/adapters.js';
 import { BUILD } from '../core/build.js';
 import { buildAiRequest, assertNoProfileValues, parseAiResponse, aiSlotCatalog, AI_MAX_BYTES } from '../core/ai.js';
 import { extractFragments, buildExtractRequest, parseExtractResponse } from '../core/ai-extract.js';
-import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, findLeaksInExport, SECRETS_BUCKET, consentAfterSettingsPatch, effectiveTimeoutSec, AI_TIMEOUT_DEFAULT_SEC, chatEndpointCandidates } from '../core/ai-security.js';
+import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, findLeaksInExport, SECRETS_BUCKET, consentAfterSettingsPatch, effectiveTimeoutSec, effectiveMaxTokens, AI_TIMEOUT_DEFAULT_SEC, AI_MAX_TOKENS_DEFAULT, chatEndpointCandidates } from '../core/ai-security.js';
 import { callChatEndpoint, pingAiEndpoint } from '../core/ai-endpoint.js';
 
 // 默认等 180 秒：reasoning 模型 + 几十个缺口的 JSON 回答，旧的 20 秒几乎必然超时，
@@ -64,13 +64,14 @@ async function buildAiCall(profile, plan, pageFields) {
  * ② 留一个在飞的 AbortController，让「取消等待」真的能停 —— 300 秒的干等没有出口是很难受的。
  */
 let activeAiAbort = null;
-async function callAiEndpoint({ baseUrl, model, key, text, timeoutSec }) {
+async function callAiEndpoint({ baseUrl, model, key, text, timeoutSec, maxTokens }) {
   const ctrl = new AbortController();
   activeAiAbort = ctrl;
   try {
     return await callChatEndpoint({
       baseUrl, model, key, text,
       timeoutSec: Number(timeoutSec) > 0 ? Number(timeoutSec) : AI_TIMEOUT_DEFAULT_SEC,
+      maxTokens: Number(maxTokens) > 0 ? Number(maxTokens) : AI_MAX_TOKENS_DEFAULT,
       signal: ctrl.signal,
     });
   } finally {
@@ -265,7 +266,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // 而且用户没勾过"确认发往这个地址"时一律拒发。
       const gate = maySendKey({ keyOrigin: sess.keyOrigin, targetOrigin: target.origin, consentOrigin: settings.aiConsentOrigin });
       if (!gate.ok) { sendResponse({ ok: false, error: gate.error }); return; }
-      const call = await callAiEndpoint({ baseUrl: settings.aiBaseUrl, model: settings.aiModel, key: sess.key, text: built.req.text, timeoutSec: effectiveTimeoutSec(settings) });
+      const call = await callAiEndpoint({ baseUrl: settings.aiBaseUrl, model: settings.aiModel, key: sess.key, text: built.req.text, timeoutSec: effectiveTimeoutSec(settings), maxTokens: effectiveMaxTokens(settings) });
       if (!call.ok) {
         // detail / finishReason / attempted 一并带回：用户报"空输出"或"调用失败"时，
         // 这几个字段就能区分是路径没对上（404 + 试过哪几个地址）、上游 4xx、
@@ -321,7 +322,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (!xSettings.aiModel || !xSess.key) { sendResponse({ ok: false, error: 'ai_not_configured' }); return; }
       const xGate = maySendKey({ keyOrigin: xSess.keyOrigin, targetOrigin: xTarget.origin, consentOrigin: xSettings.aiConsentOrigin });
       if (!xGate.ok) { sendResponse({ ok: false, error: xGate.error }); return; }
-      const call = await callAiEndpoint({ baseUrl: xSettings.aiBaseUrl, model: xSettings.aiModel, key: xSess.key, text: built.text, timeoutSec: effectiveTimeoutSec(xSettings) });
+      const call = await callAiEndpoint({ baseUrl: xSettings.aiBaseUrl, model: xSettings.aiModel, key: xSess.key, text: built.text, timeoutSec: effectiveTimeoutSec(xSettings), maxTokens: effectiveMaxTokens(xSettings) });
       if (!call.ok) { sendResponse({ ok: false, error: call.error, detail: call.detail, finishReason: call.finishReason, reasoningChars: call.reasoningChars, attempted: call.attempted, endpoint: call.endpoint, timing: call.timing }); return; }
       const parsed = parseExtractResponse(call.content, { fragments: built.fragments, profile: msg.profile });
       sendResponse({

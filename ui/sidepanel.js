@@ -5,7 +5,7 @@ import { gapReasonLabel } from '../core/matcher.js';
 // 端点/Key 的判定规则与 service worker 用同一份代码：这里只用于即时反馈，
 // 真正的把关在 background（哪怕这个文件被改成永远不校验，请求也发不出去）。
 import { applyExtracted } from '../core/ai-extract.js';
-import { normalizeBaseUrl, sanityCheckKey, findLeaksInExport, clampTimeoutSec, effectiveTimeoutSec, AI_TIMEOUT_DEFAULT_SEC } from '../core/ai-security.js';
+import { normalizeBaseUrl, sanityCheckKey, findLeaksInExport, clampTimeoutSec, effectiveTimeoutSec, AI_TIMEOUT_DEFAULT_SEC, clampMaxTokens, effectiveMaxTokens, AI_MAX_TOKENS_DEFAULT } from '../core/ai-security.js';
 import { BUILD } from '../core/build.js';
 
 const $ = id => document.getElementById(id);
@@ -74,6 +74,8 @@ async function refresh() {
   if (state?.settings?.aiModel) $('aiModel').value = state.settings.aiModel;
   $('aiTimeoutSec').value = state?.settings?.aiTimeoutSec || '';
   $('aiTimeoutState').textContent = `当前生效：${effectiveTimeoutSec(state?.settings || {})} 秒`;
+  $('aiMaxTokens').value = state?.settings?.aiMaxOutput || '';
+  $('aiMaxTokensState').textContent = `当前生效：${effectiveMaxTokens(state?.settings || {})} token`;
   aiKeyPresent = Boolean(state?.hasAiKey);
   aiKeyBoundOrigin = state?.aiKeyOrigin || '';
   $('aiPersist').checked = Boolean(state?.aiKeyPersisted);
@@ -500,6 +502,30 @@ $('aiTimeoutSec').onchange = async e => {
   e.target.value = String(got.seconds);
   $('aiTimeoutState').textContent = `当前生效：${got.seconds} 秒`;
 };
+
+// 回答长度上限（max_tokens）：reasoning 模型把思考链也算进这里，给小了就表现为"AI 没建议"
+$('aiMaxTokens').onchange = async e => {
+  const raw = e.target.value.trim();
+  if (!raw) {
+    await chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { aiMaxOutput: '' } });
+    $('aiMaxTokensState').textContent = `当前生效：${AI_MAX_TOKENS_DEFAULT} token（默认）`;
+    return;
+  }
+  const got = clampMaxTokens(raw);
+  if (!got.ok) {
+    const why = {
+      output_invalid: '回答长度要填数字（token）',
+      output_too_small: '最少 500：再小就连一条完整建议都装不下了',
+      output_too_large: '最多 16000：更大的窗口该由服务商那边确认',
+    }[got.error];
+    $('aiMaxTokensState').textContent = `${why}（保持 ${AI_MAX_TOKENS_DEFAULT} 不变）`;
+    e.target.value = '';
+    return;
+  }
+  await chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { aiMaxOutput: got.tokens } });
+  e.target.value = String(got.tokens);
+  $('aiMaxTokensState').textContent = `当前生效：${got.tokens} token`;
+};
 $('aiConsent').onchange = async e => {
   const base = normalizeBaseUrl($('aiBaseUrl').value);
   if (!e.target.checked) {
@@ -633,7 +659,11 @@ function pingVerdictText(res) {
     upstream_error: `连上了，但对端自己报错（HTTP ${res?.status || res?.error}）${timing}：这不是插件的问题，看服务商状态页或稍后再试。`,
     unreachable: `这台电脑连不上 ${res?.origin || ''} —— 连不带凭据的 GET 都没回来。所以用量必然是 0：请求根本没出门。查代理 / VPN / DNS / 防火墙（公司网络常拦境外 API 域）。`,
     post_blocked: `${res?.origin || ''} 连得上（GET ${res?.originMs}ms，HTTP ${res?.originStatus}），但 POST 被拒 —— 多半是代理/防火墙只放行简单请求，或 CORS 预检没过去。把这条结果发我。`,
-    no_first_byte: `域名连得上，但 ${res?.timing?.limitMs ? Math.round(res.timing.limitMs / 1000) : 15} 秒内一个响应字节都没回来（GET 却用了 ${res?.originMs}ms 就通）。请求出门了、对端没回话 —— 换成用量页能看到这次记录才算真通。`,
+    no_first_byte: `域名连得上，但连"只回一个词"的请求都摸不到第一个字节（GET ${res?.originMs}ms 就通）—— 对端确实没回话。`
+      + '这通常不是模型慢：查服务商状态页、账号是否被限，或中间是否有网关把 POST 挂住了。',
+    holding_response: `路是通的：非流式那一发在 ${res?.timing?.limitMs ? Math.round(res.timing.limitMs / 1000) : 15} 秒内没吐字节，`
+      + `但改成流式后 ${res?.firstChunkMs}ms 就收到了第一个字节。说明对端要等整段生成完才发（reasoning 模型尤其明显）—— `
+      + '这是"慢"不是"不通"：把「回答长度上限」调大、一次少问几栏，或换非 reasoning 模型。',
     streaming_stalled: `响应头 ${res?.timing?.headersMs}ms 就到了，但正文一直没写完 —— 生成中途挂住，通常是模型侧或中间代理缓冲。`,
     redirect_blocked: `这个地址会把请求重定向到别处（我们禁止跟跳转，否则 Key 会跟着跑到别的域）。请把 Base URL 填成最终地址本身。`,
     bad_body: `对方回了 HTTP 200，但正文不是一份能用的 JSON 响应${timing} —— 通常是中间有个"网页版"网关或 Base URL 指错了服务，不是连不上的问题。`,

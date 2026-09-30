@@ -565,3 +565,85 @@ test('面板里查得到资料落在哪个文件，并且写明它是明文存�
   assert.match(t, /chrome\.storage\.local\.get/, '没给出"想查看就这么查"的办法');
   assert.match(t, /换到别的目录|换 ID|换成另一个 ID/, '解压加载换目录会换 ID，资料"消失"的真因没写');
 });
+
+// ── 保险箱：口令错不能伤到现有资料，写出的文件必须真的没有明文 ──────────────
+const PASS = '只有我记得的长短语-2026';
+function vaultProfile() {
+  return { basics: { name: '欧阳中华', idNumber: '330105199912034567' }, contact: { phone: '13900002222' },
+    education: [], work: [], internship: [], projects: [], campus: [], awards: [], competitions: [],
+    publications: [], skills: {}, languages: [], certifications: [], intent: {}, others: {},
+    records: {}, family: {}, hkGlobal: {}, declaration: {}, en: {} };
+}
+
+test('加密保存：写出的文件里找不到任何明文，且退回下载路径时会说明落在哪', async () => {
+  const { createEmptyProfile, setValueByPath } = await import('../core/profile-schema.js');
+  const p = createEmptyProfile();
+  setValueByPath(p, 'basics.name', '欧阳中华');
+  setValueByPath(p, 'basics.idNumber', '330105199912034567');
+  const blobs = [];
+  const { doc } = bootExtract(async m => (m.type === 'nw:getState'
+    ? { ok: true, tabId: 1, profile: p, settings: {} }
+    : { ok: true, tabId: 1, profile: p, settings: {} }));
+  globalThis.URL.createObjectURL = b => { blobs.push(b); return 'blob:v'; };
+  doc.defaultView.HTMLAnchorElement.prototype.click = function () { this.__clicked = true; };
+  await load();
+  doc.getElementById('vaultPass').value = PASS;
+  doc.getElementById('btnVaultSave').click();
+  await new Promise(r => setTimeout(r, 2500));            // PBKDF2 60 万轮要一会儿
+  const text = await blobs[0].text();
+  for (const leak of ['欧阳中华', '330105199912034567', 'basics', 'idNumber', PASS]) {
+    assert.ok(!text.includes(leak), `保险箱文件里出现了${leak === PASS ? '口令' : '明文'}：${leak}`);
+  }
+  assert.match(text, /nw-vault-v1/);
+  const note = doc.getElementById('vaultNote').textContent;
+  assert.match(note, /不含任何明文/);
+  assert.match(note, /下载目录/, 'jsdom 没有文件选择器，就该说明这次落到下载目录');
+  assert.match(note, /网盘同步/);
+  const { decryptVault } = await import('../core/vault.js');
+  const back = await decryptVault({ text, passphrase: PASS });
+  assert.equal(back.ok, true, '自己写的文件自己解不开');
+  assert.equal(back.profile.basics.name, '欧阳中华');
+});
+
+test('载入保险箱：口令错绝不碰现有资料；确认取消也不碰；只有确认后才保存', async () => {
+  const { encryptVault } = await import('../core/vault.js');
+  const { ok: enc, vault } = await encryptVault({ profile: vaultProfile(), passphrase: PASS });
+  assert.ok(enc);
+  const fileText = JSON.stringify(vault, null, 2);
+  const mkDoc = (confirmAnswer) => {
+    const h = bootExtract(async m => (m.type === 'nw:getState'
+      ? { ok: true, tabId: 1, profile: vaultProfile(), settings: {} }
+      : { ok: true, tabId: 1, profile: vaultProfile(), settings: {} }));
+    h.doc.defaultView.confirm = () => confirmAnswer;
+    return h;
+  };
+  const fire = async (doc, text) => {
+    const input = doc.getElementById('vaultFile');
+    Object.defineProperty(input, 'files', { value: [new doc.defaultView.File([text], 'v.json', { type: 'application/json' })], configurable: true });
+    input.dispatchEvent(new doc.defaultView.Event('change', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 2500));
+  };
+
+  const a = mkDoc(true);
+  await load();
+  a.doc.getElementById('vaultPass').value = '完全不对的口令-1234';
+  await fire(a.doc, fileText);
+  assert.match(a.doc.getElementById('vaultNote').textContent, /解不开/, '没说清是口令/篡改问题');
+  assert.ok(!a.sent.some(m => m.type === 'nw:saveProfile'), '口令错了却把资料覆盖了');
+
+  const b = mkDoc(false);
+  await load();
+  b.doc.getElementById('vaultPass').value = PASS;
+  await fire(b.doc, fileText);
+  assert.ok(!b.sent.some(m => m.type === 'nw:saveProfile'), '确认框里取消了却还是保存');
+  assert.match(b.doc.getElementById('vaultNote').textContent, /没动/);
+
+  const c = mkDoc(true);
+  await load();
+  c.doc.getElementById('vaultPass').value = PASS;
+  await fire(c.doc, fileText);
+  const saved = c.sent.filter(m => m.type === 'nw:saveProfile').pop();
+  assert.ok(saved, '确认载入后没写入');
+  assert.equal(saved.profile.basics.idNumber, '330105199912034567');
+  assert.ok(!JSON.stringify(c.sent).includes(PASS), '口令被带进了发往后台的消息里');
+});

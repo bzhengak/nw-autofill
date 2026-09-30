@@ -174,6 +174,28 @@
     </div>
   </div>
 
+  <h2>保险箱（加密备份到你选的本地文件）</h2>
+  <p class="hint">
+    日常填写仍读浏览器里那份<b>工作副本</b>（明文，否则每次扫描都要你输口令）；这里做的是把它
+    <b>加密成一个文件</b>交给你保存 —— 口令 → PBKDF2(600,000 轮) → AES-256-GCM，整份资料进密文。
+    防的是"文件被别人拿走"（拷盘、误传网盘、电脑丢失）；防不住"你正开着侧边栏时别人看你的屏幕/内存"。
+    <b>口令没有找回机制</b>：忘了就打不开，扩展里不存在任何后门。
+  </p>
+  <div class="row">
+    <input id="vaultPass" type="password" placeholder="口令（至少 8 位，只在本次操作中使用，绝不保存）" autocomplete="off" spellcheck="false">
+  </div>
+  <div class="row">
+    <button id="btnVaultSave">加密并保存到文件</button>
+    <button id="btnVaultOpen">从保险箱文件载入</button>
+    <input id="vaultFile" type="file" accept=".json,application/json" hidden>
+    <span class="note" id="vaultNote"></span>
+  </div>
+  <p class="hint">
+    保存位置自己选，但注意：<b>「文档」「桌面」常常在 OneDrive 的同步范围内</b>，
+    明文放过去等于把简历交给云；放本地文件也建议避开这些目录（或至少走这里的加密）。
+    读文件优先用浏览器的文件选择器（Edge/Chrome 支持）；不支持时会自动退化成普通下载/上传。
+  </p>
+
   <details id="whereData">
     <summary>这些数据到底存在哪个文件里？</summary>
     <p class="hint">

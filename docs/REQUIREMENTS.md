@@ -170,6 +170,7 @@ UI 兼容：Chrome 114+ / Edge 114+ 用 Side Panel；更老版本降级为独立
 |---|---|---|
 | **P0 骨架** | fork 落库 + LICENSE/NOTICE/UPSTREAM 三件套 + scanner/filler/matcher 最小闭环 + `plain-cn.html` | 本地测试零 AI 调用，`plain-cn` 命中率 ≥ 85%，写后回读 0 不一致；`node --test` 全绿 |
 | **P1 数据** | MD + PDF 本地解析 → profile、多模板、导出导入、词典中英扩充 | 用你的真实 MD/PDF 一次导入生成完整 profile，30 个高频字段人工核对无错；全程无网络请求 |
+| **P1.5 保险箱（2026-10-01 追加）** | 整份 profile 用口令加密成用户自选位置的本地文件（PBKDF2-SHA256 600k + AES-256-GCM），载入前显示差异、确认后才覆盖 | 写出的文件里搜不到任何明文（含槽位名与条数）；口令错/文件被改 → 现有资料一个字节都不动；口令不出现在任何 storage 或发往后台的消息里 |
 | **P2 中文三家族** | `element-ui-cn` / `antd-react` / `moka-multi-step` 适配 + 附件 spike + 三态 UI + 回滚 | 三个仿真页各 ≥ 85%；附件上传结论明确（可行/降级）并在文档写明；shadow DOM 与同源 iframe 通过 |
 | **P3 英文与港企** | `sf-career-center-en` / `workday-en` + 英文别名词典 + **混合 AI 兜底**上线 | 英文仿真页 ≥ 80%；AI 请求只含字段名时命中率增益可量化；prompt 可见性验证通过 |
 | **P4 可观测与回归** | report + dashboard + adapter 导入导出 + Playwright E2E 接 CI | 一次 E2E 出完整命中率报告；CI 全绿；失败案例导出内容经检查不含取值 |

@@ -7,6 +7,7 @@ import { gapReasonLabel } from '../core/matcher.js';
 import { applyExtracted } from '../core/ai-extract.js';
 import { normalizeBaseUrl, sanityCheckKey, findLeaksInExport, clampTimeoutSec, effectiveTimeoutSec, AI_TIMEOUT_DEFAULT_SEC, clampMaxTokens, effectiveMaxTokens, AI_MAX_TOKENS_DEFAULT, effectiveStream } from '../core/ai-security.js';
 import { BUILD } from '../core/build.js';
+import { encryptVault, decryptVault, profileDelta, describeDelta } from '../core/vault.js';
 
 const $ = id => document.getElementById(id);
 let tabId = null;
@@ -760,6 +761,94 @@ $('btnExportProfile').onclick = async () => {
   a.download = `nw-autofill-profile-${day}.json`;
   a.click();
   $('exportNote').textContent = `已导出 ${filled} 项有值的资料（文件名 nw-autofill-profile-${day}.json）。它不含端点、不含 Key —— 那两样本来就不该跟着备份文件跑。`;
+};
+
+// ── 保险箱：把资料加密成你自选位置的本地文件（浏览器里那份仍是明文工作副本，这点不含糊）──
+const VAULT_ERR_ZH = {
+  passphrase_empty: '先输口令（至少 8 位）。口令不会被保存，也不会写进文件 —— 忘了就解不开。',
+  passphrase_too_short: '口令太短（至少 8 位）：这么短的口令挡不住拿到文件的人。',
+  not_json: '这个文件不是 JSON，读不动。',
+  not_vault: '这个文件不是保险箱（看起来是明文 profile 备份）：那种走上面的「编辑 / 导入 JSON」。',
+  wrong_passphrase_or_tampered: '解不开：口令不对，或文件被改过（AES-GCM 带完整性校验，改一个字节都会失败）。浏览器里那份资料没有被改动。',
+  no_webcrypto: '这个浏览器不给你 WebCrypto，加密功能用不了。',
+};
+
+function downloadJson(name, text) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+  a.download = name;
+  a.click();
+}
+
+/** 写文件：优先浏览器的文件选择器（能挑出网盘同步范围），没有就退回下载目录 */
+async function writeVaultFile(name, text) {
+  if (typeof window.showSaveFilePicker === 'function') {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: name,
+        types: [{ description: 'nw-autofill 保险箱', accept: { 'application/json': ['.json'] } }],
+      });
+      const w = await handle.createWritable();
+      await w.write(text);
+      await w.close();
+      return { ok: true, where: handle?.name || name, picked: true };
+    } catch (err) {
+      if (String(err?.name || '') === 'AbortError') return { ok: false, cancelled: true };
+      return { ok: false, error: String(err?.message || err) };
+    }
+  }
+  downloadJson(name, text);
+  return { ok: true, where: '浏览器下载目录/' + name, picked: false };
+}
+
+$('btnVaultSave').onclick = async () => {
+  const note = $('vaultNote');
+  const btn = $('btnVaultSave');
+  const state = await chrome.runtime.sendMessage({ type: 'nw:getState', tabId });
+  const profile = state?.profile;
+  if (!profile || !countFilled(profile)) { note.textContent = '资料还是空的，没什么可加密的。'; return; }
+  const passphrase = $('vaultPass').value;
+  btn.disabled = true;
+  note.textContent = '正在加密（口令派生约 1 秒，别关面板）…';
+  try {
+    const enc = await encryptVault({ profile, passphrase, build: BUILD });
+    if (!enc.ok) { note.textContent = VAULT_ERR_ZH[enc.error] || ('没能加密：' + enc.error); return; }
+    const name = `nw-autofill-vault-${new Date().toISOString().slice(0, 10)}.json`;
+    const wrote = await writeVaultFile(name, JSON.stringify(enc.vault, null, 2));
+    if (wrote.cancelled) { note.textContent = '已取消，没有写出任何文件。'; return; }
+    if (!wrote.ok) { note.textContent = '写入失败：' + wrote.error; return; }
+    $('vaultPass').value = '';
+    note.textContent = `已写成密文文件：${wrote.where}（${countFilled(profile)} 项有值，文件里不含任何明文）`
+      + (wrote.picked ? '' : '　·　这个浏览器没提供文件选择器，只能落到下载目录 —— 记得自己挪出网盘同步范围')
+      + '　·　口令只用过一次，但 JS 无法真正把内存清零：公共电脑上别做这件事。';
+  } catch (err) {
+    note.textContent = '加密失败：' + String(err?.message || err);
+  } finally { btn.disabled = false; }
+};
+
+$('btnVaultOpen').onclick = () => { $('vaultFile').value = ''; $('vaultFile').click(); };
+
+$('vaultFile').onchange = async e => {
+  const note = $('vaultNote');
+  const file = e.target?.files?.[0];
+  if (!file) return;
+  let text = '';
+  try { text = await file.text(); } catch { note.textContent = '文件读不出来。'; return; }
+  // 口令只在这一刻用一下：不写 storage、不进日志、不进任何回包
+  const got = await decryptVault({ text, passphrase: $('vaultPass').value });
+  if (!got.ok) { note.textContent = VAULT_ERR_ZH[got.error] || ('打不开：' + got.error); return; }
+  const state = await chrome.runtime.sendMessage({ type: 'nw:getState', tabId });
+  const delta = profileDelta(state?.profile || {}, got.profile, buildFields());
+  const lost = delta.willLose.length
+    ? `\n会被清空的栏（前 ${delta.willLose.length} 个）：${delta.willLose.join('、')}${delta.removed > delta.willLose.length ? ' …' : ''}` : '';
+  if (!window.confirm(`载入这份保险箱会覆盖浏览器里现在的工作副本：\n${describeDelta(delta)}${lost}\n\n确认载入？`)) {
+    note.textContent = '已取消，浏览器里的资料没动。';
+    return;
+  }
+  await chrome.runtime.sendMessage({ type: 'nw:saveProfile', profile: got.profile });
+  $('vaultPass').value = '';
+  note.textContent = `已载入并保存：${describeDelta(delta)}${got.meta?.builtAt ? `（文件写于 ${String(got.meta.builtAt).slice(0, 10)}）` : ''}`;
+  await refresh();
 };
 
 refresh();

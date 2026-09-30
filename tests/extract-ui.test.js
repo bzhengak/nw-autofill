@@ -233,3 +233,112 @@ test('等待中有计时与上限；超时提示给出下一步；「等待上�
   await new Promise(r => setTimeout(r, 60));
   assert.match(doc.getElementById('aiTimeoutState').textContent, /最少 15 秒/);
 });
+
+// 用户实测报的是"调用失败：http_404 / Not Found"——这种错误光说状态码没用，
+// 唯一能让他自己修好的信息就是"我到底把请求发去了哪个地址"。
+test('上游回 404：界面必须列出真正请求过的每一个地址，并说清是路径没对上', async () => {
+  const FAIL = {
+    ok: false, error: 'http_404', detail: 'Not Found',
+    // 故意不给 endpoint：只显示"成功那次"的地址不够，404 恰恰没有成功那次
+    endpoint: '',
+    attempted: [
+      { url: 'https://api.example.test/v1/chat/completions/chat/completions', status: 404 },
+      { url: 'https://api.example.test/v1/chat/completions', status: 404 },
+    ],
+  };
+  const { doc } = bootExtract(m => (m.type === 'nw:extractRun' ? FAIL : { ...PREVIEW_RES }));
+  doc.defaultView.confirm = () => true;
+  await load();
+  doc.getElementById('mdText').value = MD;
+  await click(doc, 'btnImportMd');
+  await click(doc, 'btnExtractPreview');
+  await click(doc, 'btnExtractRun');
+  await new Promise(r => setTimeout(r, 120));
+  const status = doc.getElementById('extractStatus').textContent;
+  assert.match(status, /404/, `没报出状态码：${status}`);
+  assert.match(status, /路径|端点/, '只说了失败，没说这是 Base URL 最后一段路径的问题');
+  assert.match(status, /chat\/completions\/chat\/completions/, '没把第一个试过的地址念出来');
+  assert.match(status, /https:\/\/api\.example\.test\/v1\/chat\/completions\n/, '没把第二个试过的地址念出来');
+  // 详情区同样带上，方便截图报障
+  assert.match(doc.getElementById('extractPreviewText').textContent, /实际请求的地址/, '详情区没有地址线索');
+  // 上游原文不能重复贴两遍
+  const dup = (doc.getElementById('extractPreviewText').textContent.match(/Not Found/g) || []).length;
+  assert.equal(dup, 1, `上游原文被念了 ${dup} 遍`);
+});
+
+// 填写侧（「问 AI」）与导入侧是同一条错误文本函数，但渲染点有两个：
+// 以前只补了一边的"detail 不再拼两遍"，另一边会重复显示 —— 两条链路都要钉。
+test('填写侧「问 AI」遇到 404：同一句话、同样带地址、同样不把上游原文念两遍', async () => {
+  const BASE = 'https://api.example.test/v1';
+  const FAIL = {
+    ok: false, error: 'http_404', detail: 'Not Found', endpoint: '',
+    attempted: [{ url: BASE + '/chat/completions/chat/completions', status: 404 }],
+  };
+  const { doc } = bootExtract(msg => {
+    if (msg.type === 'nw:scan') {
+      return {
+        ok: true, adapterId: '', adapterInfo: null,
+        data: {
+          stats: { scanned: 1, planned: 0, green: 0, review: 0, red: 0, gaps: 1 },
+          results: [],
+          gaps: [{ index: 0, label: 'Full Name', reason: 'no_candidate', kind: 'text' }],
+          aiFields: [{ index: 0, label: 'Full Name' }],
+        },
+      };
+    }
+    if (msg.type === 'nw:aiAsk') return FAIL;
+    return {
+      ok: true, tabId: 1, profile: { basics: {}, education: [], work: [] },
+      settings: { aiBaseUrl: BASE, aiModel: 'm', aiConsentOrigin: 'https://api.example.test' },
+      hasAiKey: true, aiKeyOrigin: 'https://api.example.test', aiKeyPersisted: false, aiKeyLength: 24,
+    };
+  });
+  await load();
+  await click(doc, 'btnPreview');
+  assert.equal(doc.getElementById('btnAiAsk').disabled, false, '这条测试的前提是 AI 按钮已解锁');
+  await click(doc, 'btnAiAsk');
+  await new Promise(r => setTimeout(r, 120));
+  const status = doc.getElementById('aiStatus').textContent;
+  assert.match(status, /404/);
+  assert.match(status, /api\.example\.test\/v1\/chat\/completions\/chat\/completions/, '填写侧没念出请求过的地址');
+  const box = doc.getElementById('aiPreviewText').textContent;
+  assert.equal((box.match(/Not Found/g) || []).length, 1, '填写侧把上游原文念了两遍');
+});
+
+test('上游回 401/429：要分清是 Key 的问题还是额度的问题，别让人去改 Base URL', async () => {
+  for (const [code, want] of [['http_401', /Key/], ['http_429', /限流|额度/], ['http_503', /503/]]) {
+    const { doc } = bootExtract(m => (m.type === 'nw:extractRun' ? { ok: false, error: code, detail: 'upstream says no' } : { ...PREVIEW_RES }));
+    doc.defaultView.confirm = () => true;
+    await load();
+    doc.getElementById('mdText').value = MD;
+    await click(doc, 'btnImportMd');
+    await click(doc, 'btnExtractPreview');
+    await click(doc, 'btnExtractRun');
+    await new Promise(r => setTimeout(r, 120));
+    assert.match(doc.getElementById('extractStatus').textContent, want, `${code} 的提示不对味`);
+  }
+});
+
+// 第二个候选才通 = 用户粘的 Base URL 形状不对。这次填上了，下次还会绕一遍，
+// 所以"该怎么写"要顺着成功的那句一起说出来，而不是只在失败时才提。
+test('换到第二个候选才成功：界面提示 Base URL 该怎么写', async () => {
+  const RES = {
+    ...RUN_RES,
+    endpoint: 'https://api.example.test/chat/completions',
+    attempted: [
+      { url: 'https://api.example.test/v1/chat/completions', status: 404 },
+      { url: 'https://api.example.test/chat/completions', status: 200 },
+    ],
+  };
+  const { doc } = bootExtract(m => (m.type === 'nw:extractRun' ? RES : { ...PREVIEW_RES }));
+  doc.defaultView.confirm = () => true;
+  await load();
+  doc.getElementById('mdText').value = MD;
+  await click(doc, 'btnImportMd');
+  await click(doc, 'btnExtractPreview');
+  await click(doc, 'btnExtractRun');
+  await new Promise(r => setTimeout(r, 140));
+  const txt = doc.getElementById('extractResults').textContent;
+  assert.match(txt, /第一个地址回了 404/, `成功就没下文了：${txt}`);
+  assert.match(txt, /把 Base URL 直接写成 https:\/\/api\.example\.test/, '没告诉用户地址该怎么写');
+});

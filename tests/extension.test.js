@@ -119,3 +119,36 @@ test('handleScan 的每个入参都要真的被用掉，也要真的由 nw:scan 
     assert.ok(new RegExp(`\\b${p}\\s*:`).test(listener), `${p} 从没被 nw:scan 传过：handleScan 永远只能拿到默认值`);
   }
 });
+
+/**
+ * 模型原文（call.content）只能喂给解析函数或用于计数，绝不能进给侧边栏的回包 ——
+ * 界面看到的是解析结果与脱敏后的 snippet。这条是给"顺手把 content 也回给前端"准备的。
+ */
+test('service worker 里的模型原文只用于本机解析，不进任何回包', () => {
+  const sw = read('../background/service-worker.js');
+  const uses = [...sw.matchAll(/call\.content/g)];
+  assert.ok(uses.length >= 4, `只抓到 ${uses.length} 处 call.content 引用，正则没生效`);
+  for (const u of uses) {
+    const from = sw.lastIndexOf('\n', u.index) + 1;
+    const to = sw.indexOf('\n', u.index + u[0].length);
+    const line = sw.slice(from, to < 0 ? undefined : to);
+    assert.ok(
+      /parseAiResponse\(call\.content|parseExtractResponse\(call\.content|String\(call\.content \|\| ''\)\.length/.test(line),
+      `原文被用在了"解析 / 计数"之外：${line.trim()}`,
+    );
+  }
+  assert.ok(!/content:\s*call\.content/.test(sw), '回包字段里出现了模型原文');
+});
+
+/**
+ * 出网代码必须只有一处实现。重构后 fetch 在 core/ai-endpoint.js 里，
+ * service worker 再出现裸 fetch(chat) 就意味着两条链路各写一套端点/脱敏规则（会漂移）。
+ */
+test('AI 出网只有 core/ai-endpoint.js 一处：service worker 里不许再手写 chat/completions', () => {
+  const sw = read('../background/service-worker.js');
+  assert.ok(!/chat\/completions/.test(sw), 'service worker 里又出现了端点拼接：请改 core/ai-endpoint.js');
+  assert.match(sw, /callChatEndpoint/, '没走统一的出网函数');
+  const ep = read('../core/ai-endpoint.js');
+  assert.match(ep, /redirect:\s*'error'/, '禁跟跳转是 Key 不外泄的一条实闸');
+  assert.match(ep, /authorization: 'Bearer '/, '请求头形状变了');
+});

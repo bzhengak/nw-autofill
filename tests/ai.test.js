@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildAiRequest, assertNoProfileValues, parseAiResponse, applyAiCandidates, aiSlotCatalog, aiEligibleGaps, interpretAiReply } from '../core/ai.js';
+import { buildAiRequest, assertNoProfileValues, parseAiResponse, applyAiCandidates, aiSlotCatalog, aiEligibleGaps, interpretAiReply, compactSlotCatalog, AI_MAX_BYTES } from '../core/ai.js';
 import { createEmptyProfile, setValueByPath, buildFields, getValueByPath } from '../core/profile-schema.js';
 import { sampleProfile } from './fixtures/sample-profile.js';
 import { planFill } from '../core/matcher.js';
@@ -234,4 +234,86 @@ test('答案被长度砍断时不能当成"模型没建议"：unparsable 与 tru
   const parsedHalf = parseAiResponse(half.content, { allowedPaths: WL, askedIndexes: IX });
   assert.equal(parsedHalf.candidates.length, 1, '截断尾巴把已经答对的那条也拖没了');
   assert.equal(parsedHalf.candidates[0].path, 'basics.name');
+});
+
+// ── 请求体体积：填写侧那条链路曾经整条是死的 ─────────────────────────────
+// 上限本来写在 service worker 里（12000），而未压缩的槽位目录本身就有 36KB：
+// 于是每次「问 AI」都在本机被判 payload_too_large，一个字节都没发出去过。
+// 单元测只看函数、界面测只看文案，两边都照不出来 —— 修好之后把体积本身钉住。
+
+test('槽位目录归并后仍覆盖每一条白名单路径，且请求体装得下上限', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'basics.lastName', '欧阳');
+  const slots = aiSlotCatalog(p);
+  const compact = compactSlotCatalog(slots);
+  assert.ok(compact.length < slots.length, '同构重复没归并，体积还是 36KB 那个量级');
+  // 归并不能丢槽位：每一条具体路径都要能从某一条目录项还原出来
+  const allowed = new Set(slots.map(s => s.path));
+  for (const s of slots) {
+    const m = /^([a-z]+)\.(\d+)\.(.+)$/i.exec(s.path);
+    const generic = m ? `${m[1]}.N.${m[3]}` : s.path;
+    assert.ok(compact.some(c => c.p === generic), `${s.path} 在目录里没有对应条目（字面或 N 形式）`);
+    assert.ok(allowed.has(s.path));
+  }
+  const req = buildAiRequest({ plan: PLAN, profile: p, pageFields: PAGEFIELDS, limit: 30 });
+  const bytes = new TextEncoder().encode(req.text).length;
+  assert.ok(bytes <= AI_MAX_BYTES, `请求体 ${bytes} 字节 > 上限 ${AI_MAX_BYTES}：填写侧又会一发出不了`);
+});
+
+test('最坏情况（30 个长标签缺口 + 满选项）也不许越过上限', () => {
+  const p = createEmptyProfile();
+  const gaps = Array.from({ length: 40 }, (_, i) => ({ index: i, label: 'X'.repeat(160), reason: 'no_candidate' }));
+  const fields = Array.from({ length: 40 }, (_, i) => ({
+    index: i, kind: 'select', labelRaw: 'Y'.repeat(160),
+    options: Array.from({ length: 24 }, (_, j) => ({ text: 'Z'.repeat(40) + j })),
+    nearbyLabels: ['附近标签'.repeat(20)], required: true,
+  }));
+  const req = buildAiRequest({ plan: { gaps }, profile: p, pageFields: fields, limit: 30 });
+  const bytes = new TextEncoder().encode(req.text).length;
+  assert.ok(bytes <= AI_MAX_BYTES, `最坏情况 ${bytes} 字节 > 上限 ${AI_MAX_BYTES}`);
+  // 装得下不是白装的：削了什么必须报出来，否则用户会以为"模型没建议"是自己的问题
+  assert.ok(req.trim.level > 0, '超预算却没报告削了哪一层辅助信号');
+  assert.match(req.trim.why, /选项|标签|体积/);
+  assert.deepEqual(JSON.parse(req.payload.user).fields.length, req.gaps.length, 'payload.user 与真正发出去的那段文本不是同一份');
+});
+
+test('模型交回带 N 的归并路径：本地补成第一条并说明是我们补的；陌生路径照样丢', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'work.0.company', '寰宇智能');
+  const allowed = new Set(aiSlotCatalog(p).map(s => s.path));
+  const got = parseAiResponse('[{"index":3,"path":"work.N.company","reason":"经历单位"}]', { allowedPaths: allowed, askedIndexes: new Set([3]) });
+  assert.equal(got.candidates.length, 1, JSON.stringify(got.dropped));
+  assert.equal(got.candidates[0].path, 'work.0.company');
+  assert.equal(got.candidates[0].nExpanded, true, '没记下"序号是我们补的"');
+  assert.ok(got.dropped.every(d => d.reason !== 'unknown_path'), '带 N 的路径被当成非法路径丢了');
+
+  const bad = parseAiResponse('[{"index":3,"path":"records.0.x"}]', { allowedPaths: allowed, askedIndexes: new Set([3]) });
+  assert.equal(bad.candidates.length, 0);
+  assert.equal(bad.dropped[0].reason, 'unknown_path', '白名单被放宽了');
+});
+
+test('AI 落地时的黄字说明要写出"第几条经历是我们补的"', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'work.0.company', '寰宇智能装备');
+  const plan = {
+    gaps: [{ index: 3, label: 'Company', reason: 'no_candidate', kind: 'text' }],
+    assignments: [], stats: { planned: 0, review: 0, gaps: 1 },
+  };
+  const merged = applyAiCandidates(plan, p, [
+    { index: 3, path: 'work.0.company', nExpanded: true, reason: '经历单位' },
+  ]);
+  assert.equal(merged.assignments.length, 1);
+  assert.equal(merged.assignments[0].tier, 'review', 'AI 的结果永远黄字');
+  assert.match(merged.assignments[0].note, /第几条经历是我们补的/);
+});
+
+test('归并后自检仍然拦得住取值：目录豁免只盖住目录那一串字', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'basics.name', '欧阳中华绝密');
+  const req = buildAiRequest({ plan: PLAN, profile: p, pageFields: PAGEFIELDS, limit: 30 });
+  const tampered = { ...req, text: req.text + ' 欧阳中华绝密' };
+  const leaks = assertNoProfileValues(tampered.text, p, { exempt: [tampered.slotSection] });
+  assert.ok(leaks.length, '取值混进目录以外的地方却没被自检拦下');
+  const clean = assertNoProfileValues(req.text, p, { exempt: [req.slotSection] });
+  assert.equal(clean.length, 0, '正常请求被自己的豁免规则误拦（归并改动过目录形状）');
 });

@@ -6,18 +6,22 @@
 //  2. Base URL 必须是 https（本机 127.0.0.1/localhost 例外，供 Ollama/LM Studio 自测），
 //     不接受 userinfo、query、非 http 协议。
 //  3. 请求体由 core/ai.js 构造，发送前再过一次 assertNoProfileValues —— 漏值就地拒发。
-//  4. 响应只当"路径建议"；不写页面、不提交；超时 20s、禁跟跳转、体积上限。
+//  4. 响应只当"路径建议"；不写页面、不提交；等待上限可配（默认 180 秒）、禁跟跳转、请求体有构造预算。
+//     出网本身在 core/ai-endpoint.js，本文件只做"读设置 + 调一次 + 把结果带回侧边栏"。
 
 import { compileAdapters } from '../core/adapters.js';
-import { buildAiRequest, assertNoProfileValues, parseAiResponse, aiSlotCatalog, interpretAiReply } from '../core/ai.js';
+import { buildAiRequest, assertNoProfileValues, parseAiResponse, aiSlotCatalog, AI_MAX_BYTES } from '../core/ai.js';
 import { extractFragments, buildExtractRequest, parseExtractResponse } from '../core/ai-extract.js';
-import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, redact, findLeaksInExport, SECRETS_BUCKET, consentAfterSettingsPatch, effectiveTimeoutSec, AI_TIMEOUT_DEFAULT_SEC } from '../core/ai-security.js';
+import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, findLeaksInExport, SECRETS_BUCKET, consentAfterSettingsPatch, effectiveTimeoutSec, AI_TIMEOUT_DEFAULT_SEC, chatEndpointCandidates } from '../core/ai-security.js';
+import { callChatEndpoint } from '../core/ai-endpoint.js';
 
 // 默认等 180 秒：reasoning 模型 + 几十个缺口的 JSON 回答，旧的 20 秒几乎必然超时，
 // 而超时是最难归因的失败——用户只看到"没反应"，其实是模型还没答完。
 // 具体值由设置里的 aiTimeoutSec 决定（effectiveTimeoutSec），非法值退回默认。
-const AI_TIMEOUT_MS = AI_TIMEOUT_DEFAULT_SEC * 1000;
-const AI_MAX_BYTES = 12000;        // 请求体上限：只发字段名与槽位目录，超量说明构造出了问题
+// 请求体与响应体的处理都在 core 里（那边能用假 fetch 离线测），这里只剩"读设置 + 调一次"。
+// 请求体上限（AI_MAX_BYTES）与请求构造同住 core/ai.js，测试要能盯住"最坏情况装不装得下"：
+// 以前它是这里的私有常量 12000，而未压缩的槽位目录本身就有 36KB，
+// 于是「问 AI」每次都在本机被判超限 —— 整条填写侧 AI 链路其实是死的（2026-09-30 集成测抓出来）。
 const AI_MAX_OUT = 30;             // 一次最多问 30 个缺口，避免把整页字段都送出去
 // 导入侧要带简历片段，上限比填写侧宽；片段本身在 core/ai-extract.js 里有 6000 字的硬预算，
 // 这里只是最后一道"构造出了问题也别把整份简历发出去"的闸。
@@ -52,55 +56,16 @@ async function buildAiCall(profile, plan, pageFields) {
   return { ok: true, req };
 }
 
+/**
+ * 出网就这一个函数，实现放在 core/ai-endpoint.js（那里能用假 fetch 离线测：
+ * 端点形状错、只重试 404、错误体脱敏，这些在 service worker 里都没法断言）。
+ * 这里只补上"每次调用现取上限"这一条：用户在设置里改了等待秒数要立刻生效，而不是等扩展重载。
+ */
 async function callAiEndpoint({ baseUrl, model, key, text, timeoutSec }) {
-  const base = normalizeBaseUrl(baseUrl);
-  if (!base.ok) return { ok: false, error: `endpoint_${base.error}` };
-  const url = base.url + '/chat/completions';
-  const ctrl = new AbortController();
-  // 每次调用现取上限：用户在设置里改了"等待秒数"要立刻生效，而不是等扩展重载
-  const limitMs = Math.max(1000, (Number(timeoutSec) > 0 ? Number(timeoutSec) : AI_TIMEOUT_DEFAULT_SEC) * 1000);
-  const timer = setTimeout(() => ctrl.abort(), limitMs);
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      // redirect:'error'：被 302 到别的域时直接失败。fetch 会跟着跳转并把 Authorization 带过去，
-      // 不关掉这一条，"Key 只发给这个 origin"就有个现实的后门。
-      redirect: 'error',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + key },
-      signal: ctrl.signal,
-      body: JSON.stringify({
-        model,
-        temperature: 0,
-        // 几十个缺口的 JSON 答案很容易超过 800 token：截断后解析不出来，
-        // 用户看到的就成了"AI 没给建议"，其实是回答被砍断了（本轮"空输出"的候选成因之一）。
-        max_tokens: 2000,
-        messages: [{ role: 'user', content: text }],
-      }),
-    });
-    if (!res.ok) {
-      const bodyText = await res.text().catch(() => '');
-      // 上游错误体常带模型名/额度信息，对用户有用；也可能回显请求内容，一律先过 redact
-      return { ok: false, error: `http_${res.status}`, detail: redact(String(bodyText).slice(0, 300), key) };
-    }
-    const json = await res.json().catch(() => null);
-    if (json?.error) return { ok: false, error: 'upstream_' + String(json.error.code || json.error.type || 'error'), detail: redact(String(json.error.message || '').slice(0, 300), key) };
-    // 正文/思考/截断的判定全在 core/ai.js 的纯函数里（那才是"空输出"最容易出事的环节，Node 里可测）
-    const got = interpretAiReply(json);
-    if (!got.ok) return { ok: false, error: got.error, detail: redact(got.detail || '', key), finishReason: got.finishReason, reasoningChars: got.reasoningChars };
-    return {
-      ok: true,
-      content: got.content,
-      finishReason: got.finishReason,
-      rawChars: got.rawChars,
-      // 回显兜底：上游要是把 Key 印进正文里（见过这种代理），也不能带进界面
-      snippet: redact(got.snippet, key),
-    };
-  } catch (err) {
-    const name = String(err?.name || '');
-    // 错误文本可能带上请求 URL 甚至 Header，一律脱敏后再返回
-    if (name === 'AbortError') return { ok: false, error: 'timeout', detail: `等待 ${Math.round(limitMs / 1000)} 秒后中止`, waitedSec: Math.round(limitMs / 1000) };
-    return { ok: false, error: redact(String(err?.message || 'network_error'), key) };
-  } finally { clearTimeout(timer); }
+  return callChatEndpoint({
+    baseUrl, model, key, text,
+    timeoutSec: Number(timeoutSec) > 0 ? Number(timeoutSec) : AI_TIMEOUT_DEFAULT_SEC,
+  });
 }
 
 const CHANNEL = 'nw-autofill';
@@ -271,8 +236,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({
           ok: true, text: built.req.text, bytes: new TextEncoder().encode(built.req.text).length,
           asks: built.req.gaps.length,
-          // 预览必须把"这东西会发去哪儿"一起显示，否则用户核对了内容却不知道收件人
-          endpoint: target.ok ? target.url : '', endpointError: target.ok ? '' : target.error,
+          // 预算内削了什么要如实带出（选项文本 / 邻近标签 / 少问几栏），
+          // 否则用户看到"没建议"会以为是模型不行，其实是这次没把分组线索发过去
+          trim: built.req.trim,
+          // 预览必须把"这东西会发去哪儿"一起显示，否则用户核对了内容却不知道收件人。
+          // 这里给的是**真正要 POST 的完整 URL**（不是 Base URL）：404 的成因就在最后那一段路径上。
+          endpoint: chatEndpointCandidates(settings.aiBaseUrl).endpoint || (target.ok ? target.url : ''),
+          endpointError: target.ok ? '' : target.error,
         });
         return;
       }
@@ -285,9 +255,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (!gate.ok) { sendResponse({ ok: false, error: gate.error }); return; }
       const call = await callAiEndpoint({ baseUrl: settings.aiBaseUrl, model: settings.aiModel, key: sess.key, text: built.req.text, timeoutSec: effectiveTimeoutSec(settings) });
       if (!call.ok) {
-        // detail / finishReason 一并带回：用户报"空输出"时，这三个字段就能区分是
-        // 上游 4xx、reasoning 模型没正文、还是答案被 max_tokens 截断
-        sendResponse({ ok: false, error: call.error, detail: call.detail, finishReason: call.finishReason, reasoningChars: call.reasoningChars });
+        // detail / finishReason / attempted 一并带回：用户报"空输出"或"调用失败"时，
+        // 这几个字段就能区分是路径没对上（404 + 试过哪几个地址）、上游 4xx、
+        // reasoning 模型没正文、还是答案被 max_tokens 截断
+        sendResponse({ ok: false, error: call.error, detail: call.detail, finishReason: call.finishReason, reasoningChars: call.reasoningChars, attempted: call.attempted, endpoint: call.endpoint });
         return;
       }
       const parsed = parseAiResponse(call.content, {
@@ -300,7 +271,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         ok: true,
         candidates: parsed.candidates.map(c => ({ ...c, label: labelOf.get(c.index) || '' })),
         dropped: parsed.dropped,
-        endpoint: target.url,
+        endpoint: call.endpoint || target.url,
+        // 换了第二个候选才通 = 用户粘的 Base URL 形状不对，这个信息要留给界面说一句
+        attempted: call.attempted,
         rawChars: String(call.content || '').length,
         // 一条都没解析出来时，原样前 200 字是唯一线索（请求里没有取值，回显也不会有）
         snippet: parsed.candidates.length ? undefined : call.snippet,
@@ -324,7 +297,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           bytes,
           fragments: built.fragments.length,
           blocked: built.blocked,
-          endpoint: xTarget.ok ? xTarget.url : '',
+          endpoint: chatEndpointCandidates(xSettings.aiBaseUrl).endpoint || (xTarget.ok ? xTarget.url : ''),
           endpointError: xTarget.ok ? '' : xTarget.error,
         });
         return;
@@ -336,13 +309,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const xGate = maySendKey({ keyOrigin: xSess.keyOrigin, targetOrigin: xTarget.origin, consentOrigin: xSettings.aiConsentOrigin });
       if (!xGate.ok) { sendResponse({ ok: false, error: xGate.error }); return; }
       const call = await callAiEndpoint({ baseUrl: xSettings.aiBaseUrl, model: xSettings.aiModel, key: xSess.key, text: built.text, timeoutSec: effectiveTimeoutSec(xSettings) });
-      if (!call.ok) { sendResponse({ ok: false, error: call.error, detail: call.detail, finishReason: call.finishReason, reasoningChars: call.reasoningChars }); return; }
+      if (!call.ok) { sendResponse({ ok: false, error: call.error, detail: call.detail, finishReason: call.finishReason, reasoningChars: call.reasoningChars, attempted: call.attempted, endpoint: call.endpoint }); return; }
       const parsed = parseExtractResponse(call.content, { fragments: built.fragments, profile: msg.profile });
       sendResponse({
         ok: true,
         accepted: parsed.accepted,
         rejected: parsed.rejected,
-        endpoint: xTarget.url,
+        endpoint: call.endpoint || xTarget.url,
+        attempted: call.attempted,
         rawChars: String(call.content || '').length,
         snippet: parsed.accepted.length ? undefined : call.snippet,
         finishReason: call.finishReason,

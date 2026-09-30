@@ -354,3 +354,69 @@ build `2026-09-29-4` 的 12 份导出（`c.iguopin.com/apply`，同一站点不�
 工程上补了一条装配层断言（`tests/extension.test.js`）：`handleScan` 的每个入参既要自己被用到、
 也要真的由 `nw:scan` 传进来。这条是给"面板有勾、matcher 会读、中间 content.js 忘了传"准备的 ——
 `fillSensitive` 当年就是这么骗过人的，而这类断链 jsdom 测不到（内容脚本要真浏览器）。
+
+## 2026-09-30 · 「调用失败：http_404 Not Found」：错误正文的形状就已经指到了病根
+
+用户实测 AI 兜底报 `http_404`，正文只有一行 `Not Found`。这一行本身就是证据：
+
+- OpenAI 兼容层报"模型不存在/Key 不对"回的是 **JSON**（`{"error":{"message":…}}`）；
+- 纯文本 `Not Found` 是**网关/静态路由**的 404 —— 说明请求根本没打到 API 路由上，
+  也就是我们 POST 的那个 URL 路径不对，而不是模型名或 Key 的问题。
+
+病根在老写法 `normalizeBaseUrl(base).url + '/chat/completions'`：大家嘴里的"Base URL"形状不统一，
+两种常见粘贴必坏 —— ① 粘了完整端点 `…/v1/chat/completions` → 拼成 `…/chat/completions/chat/completions`；
+② 只粘主机名 `https://api.x.test` → 少了 `/v1` 那一段。
+
+改成 `chatEndpointCandidates()`（`core/ai-security.js`，纯函数）把粘贴形状收敛成**最多两个同源候选**，
+出网那段整体挪进 `core/ai-endpoint.js` —— 留在 service worker 里就只能靠人在浏览器里试，
+挪出来就能用假 fetch 离线测（`tests/ai-endpoint.test.js` 12 条）。
+
+三条边界是这次一并钉死的：
+
+1. **只有 404/405 才顺延下一个候选**。401/403/429/5xx/超时都只发一次：
+   非路径错误重发等于多敲一次 Key、多烧一次额度、多等一遍时间（超时最狠，180 秒 × 2）。
+   等待预算改成"整个调用共享一个 deadline"，不是每次各自 180 秒。
+2. **候选永远同域**：Base URL 里塞 `//evil.test`、`@evil.test` 只会变成路径的一部分。
+   代码里那行 origin 检查今天是**跑不到的后盾**（候选都由 `${origin}${pathname}` 拼出来），
+   所以测试钉的是"所有候选同域"这个**性质**，而不是那行代码 —— 这行删掉测试不会变红，
+   但如果将来谁把候选改成直接吃原文，性质测试就会红，后盾再兜住它。
+3. **错误里必须带上下文**：404 会把**真正请求过的每个地址**逐行列出，「预览」也显示完整 URL 而不是 Base URL。
+   两条 AI 链路（填写兜底 / 辅助导入）共用一份 `aiErrorText()`，两边都补了回归 ——
+   只补一边是这类修复最常见的漂移方向。
+
+顺手清掉两处"说了但没做"：`AI_ERROR_ZH.timeout` 还写着"（20s）"（上限早就能配了）；
+详情区把上游原文拼了两遍（`aiErrorText` 已经带 detail，渲染点又加了一次）。
+Azure OpenAI 那种必须带 `?api-version=` 的形态仍然不支持，而且是**有意拒绝**（`endpoint_has_query`）：
+带 token 的链接最常被人整段粘进来，宁可让它明确报错，也不要在背后偷偷收下。
+
+## 2026-09-30（续）· 给 service worker 补集成测，顺手挖出"填写侧 AI 从来没发出去过"
+
+上面那条 404 修完之后，为了让"SW 到底把 attempted 带回侧边栏没有"可测，
+把真 `background/service-worker.js` 装进 Node（假 chrome + 假 fetch，`tests/ai-bridge.test.js`）。
+第一条用例就红了：**`payload_too_large`**。
+
+量出来的数字：
+
+| 项 | 体积 |
+|---|---|
+| 未压缩的槽位目录（519 条 path+zh+group） | 35,879 字节 |
+| SW 里的请求体上限 `AI_MAX_BYTES` | 12,000 字节 |
+
+也就是说填写侧每一次「问 AI」都在**本机**被自己的体积闸拦下，一个字节都没发出去过。
+三层测试都没照到：单元测只喂一个 gap（不测整包体积）、界面测 mock 掉了后台、
+判分集不走网络。真正的原因是**上限与请求构造分住在两个文件里** ——
+`AI_MAX_BYTES` 是 SW 的私有常量，`buildAiRequest` 在 core，两边各自演进，
+目录长到 519 条那天这条链路就死了，而没有任何一条断言把它们绑在一起。
+
+三处一起改，缺一条都还会再犯：
+
+1. 目录归并：`work.0./work.1./…` 收成 `work.N.company` + `r:"0-3"`，519 条 → 206 条、36KB → 10.8KB。
+   **白名单没动**：`parseAiResponse` 仍按 `aiSlotCatalog` 的具体路径校验，压缩只改"怎么说"。
+   模型原样交回带 `N` 的路径时，本地补成该段第一条，黄字说明里写明"序号是我们补的，不是 AI 定的"。
+2. 上限搬进 `core/ai.js` 并当**构造预算**用：装不下时按「选项文本 → 邻近标签 → 标签长度 → 少问几栏」
+   逐级削，削到哪一级写进 `req.trim`，「预览」那一行如实说出来。发送前的 `payload_too_large`
+   退回它本来的职责——"构造出了问题"的哨兵，而不是日常失败的原因。
+3. `tests/ai-bridge.test.js` 真跑 SW：候选顺延、401 不重发、Key 不进 settings/回包、
+   预览显示完整 URL、两条 AI 链路都带 `attempted`。这条测存在本身就是为了不再出现"函数都对、链路是死的"。
+
+把上限改小到 4000 会立刻红 8 条 —— 说明这个数字现在是被测的，不是一个可以自由漂移的魔法数。

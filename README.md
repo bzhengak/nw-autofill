@@ -178,11 +178,53 @@ MV3 的 service worker 空闲约 30 秒会被回收，它一旦被杀，那个�
 | 答案被长度上限砍断 | JSON 不完整所以解析不出来 | 少问几栏再问一次（上限已提到 2000 token） |
 | 上游回了 200 但正文为空 | 模型名或兼容层不对 | 核对模型名；先看「预览」文本是否发到了那个地址 |
 | 上游回的不是 JSON | Base URL 指到了网页而不是 API 根路径 | 应形如 `https://…/v1`，不要带 `/chat/completions` |
+| **这个地址上没有聊天端点（HTTP 404）** | Base URL 最后一段路径没对上 | 看提示里列出的**实际请求地址**，见下一节 |
 | 上游错误：… | API 自己的报错原文（已脱敏，只留 300 字） | 按报错处理（额度 / 模型不存在 / 权限） |
 | AI 回了 N 字但一条都没落进白名单 | 模型答了，但格式或路径不对 | 界面附上**它原样回的前 200 字**，贴给维护者就够定位 |
 
 响应信封已放宽：裸数组、`{"result":[…]}`、`{"data":{"matches":[…]}}`、`i/p` 简写都认；
 但**路径白名单**与"只认本次问过的缺口下标"一条都没放松 —— 容错只加在"怎么读"，不加在"信什么"。
+
+### Base URL 到底该填什么（404 就是这么来的）
+
+大家嘴里的"Base URL"形状并不统一，而差最后一段路径的表现是一句没有任何信息量的
+`http_404 Not Found`。现在扩展会把你粘的东西收敛成**候选端点**依次试（最多两个，且全部同域）：
+
+| 你填的 Base URL | 实际 POST 到 |
+|---|---|
+| `https://api.x.test/v1` | `https://api.x.test/v1/chat/completions` |
+| `https://api.x.test/v1/`（带尾斜杠） | 同上 |
+| `https://api.x.test`（只给主机名） | 先 `/v1/chat/completions`，404 再退 `/chat/completions` |
+| `https://api.x.test/v1/chat/completions`（粘了完整端点） | **原样用**，不再拼第二段 |
+| `https://api.x.test/compatible-mode` | 先 `/compatible-mode/chat/completions`，404 再补 `/v1` |
+
+规则写死在 `core/ai-security.js` 的 `chatEndpointCandidates()`，出网那段在 `core/ai-endpoint.js`，
+`tests/ai-endpoint.test.js` 用假 fetch 覆盖。三条不可谈判的：
+
+- **只有 404/405 才顺延下一个地址**。401/403/429/5xx 与超时都只发一次 ——
+  非路径错误重发等于多敲一次 Key、多烧一次额度、多等一遍时间。
+- **候选永远同域**：Base URL 里塞 `//evil.test`、`@evil.test` 之类都只会变成路径的一部分，
+  Key 与 origin 绑定的前提不会从这里漏掉。
+- **出错就把试过的地址原样列出来**，「预览」显示的也是这个完整 URL（不是 Base URL），
+  不然"收件人是谁"这句话又是一句没法核对的承诺。
+
+Azure OpenAI 那种要把 `?api-version=…` 写在地址里的形态**目前不支持**：
+`normalizeBaseUrl` 直接拒绝带 query 串的 Base URL（`endpoint_has_query`），这是有意的 ——
+带 token 的链接最常被整段粘进来。
+
+### 发给模型的"可选槽位表"是压缩过的
+
+白名单有 519 条，逐条列出来光是目录就 36KB。现在把 `work.0.company / work.1.company / …`
+这种同构重复归并成 `work.N.company` + `"r":"0-3"`，206 条 / 10.8KB —— 每次少发 25KB，
+模型答得也快一截。归并只改"怎么对模型说"：收回来的路径**仍按完整白名单校验**；
+模型要是原样交回带 `N` 的路径，本地会补成该段第一条，并在黄字说明里写明
+"这一条属于第几条经历是我们补的，不是 AI 定的"。
+
+请求体还有构造预算（`core/ai.js` 的 `AI_MAX_BYTES`）：装不下时按
+「选项文本 → 邻近标签 → 标签长度 → 少问几栏」的顺序削，削了什么在「预览」那一行如实写出来。
+这条以前是**发送前的拒绝条件**，而未压缩的目录必然超 —— 于是填写侧的「问 AI」每次都在本机被判
+`payload_too_large`，一个字节都没发出去过（2026-09-30 给 service worker 加集成测 `tests/ai-bridge.test.js`
+时才暴露：SW 真跑一遍，才看见这条链路一直是死的）。
 
 ## 填真实信息之前：数据在哪、谁会出去
 

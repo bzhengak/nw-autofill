@@ -1,0 +1,161 @@
+// service worker 的 AI 链路集成测：把真的 background/service-worker.js 装进 Node，
+// 用假 chrome + 假 fetch 走一遍「配 Key → 预览 → 问 AI」。
+//
+// 为什么要这一层：core/ai-endpoint.js 的单测证明"函数本身对"，界面测证明"错误文案对"，
+// 但中间那段（SW 到底把 attempted/endpoint 带回侧边栏没有、Key 到底有没有走进 session）
+// 只有把 SW 真跑起来才测得到 —— 而 2026-09-30 的 http_404 就断在这一层。
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+const KEY = 'sk-ABCDEFGHIJ0123456789';
+const BASE = 'https://api.example.test/gateway';
+
+function makeChrome() {
+  const local = {};
+  const session = {};
+  const store = bag => ({
+    get: async (k) => {
+      if (typeof k === 'string') return { [k]: bag[k] };
+      if (Array.isArray(k)) return Object.fromEntries(k.map(x => [x, bag[x]]));
+      return { ...bag };
+    },
+    set: async (obj) => Object.assign(bag, obj),
+    remove: async (keys) => (Array.isArray(keys) ? keys : [keys]).forEach(x => delete bag[x]),
+  });
+  const listeners = [];
+  return {
+    local, session, listeners,
+    runtime: {
+      id: 'nwtest',
+      getURL: p => 'chrome-extension://nwtest/' + p,
+      onMessage: { addListener: fn => listeners.push(fn) },
+      onInstalled: { addListener() {} },
+      sendMessage: async () => ({ ok: true }),
+    },
+    action: { onClicked: { addListener() {} } },
+    storage: { local: store(local), session: store(session) },
+    tabs: { query: async () => [{ id: 1 }], get: async () => ({ id: 1, url: 'https://job.example.test/apply' }), create() {}, sendMessage: async () => ({ ok: true }) },
+    webNavigation: { getAllFrames: async () => [] },
+  };
+}
+
+/** 起一次独立的 SW 实例（模块有模块级状态，每个场景都要重新 import） */
+async function bootSw(replies) {
+  const chrome = makeChrome();
+  globalThis.chrome = chrome;
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, init });
+    const r = replies[calls.length - 1] ?? replies.at(-1);
+    if (r instanceof Error) throw r;
+    return r;
+  };
+  // SW 里有模块级 listener 注册，每次换 query 让它重新求值
+  await import('../background/service-worker.js?sw=' + Math.random().toString(36).slice(2));
+  const send = msg => new Promise(resolve => chrome.listeners[0](msg, {}, resolve));
+  return { chrome, send, calls };
+}
+
+const http = (status, body = '') => ({
+  ok: false, status, text: async () => body, json: async () => { throw new Error('not json'); },
+});
+const okJson = content => ({
+  ok: true, status: 200,
+  json: async () => ({ choices: [{ message: { content }, finish_reason: 'stop' }] }),
+  text: async () => '',
+});
+
+/** 配好一套"能用 AI"的状态：session Key + Base URL + 模型 + 确认 */
+async function configure(send, chrome, { baseUrl = BASE, consent = true } = {}) {
+  await send({ type: 'nw:saveAiKey', key: KEY, baseUrl, persist: false });
+  await send({ type: 'nw:saveSettings', settings: { aiBaseUrl: baseUrl, aiModel: 'some-model' } });
+  if (consent) await send({ type: 'nw:saveSettings', settings: { aiConsentOrigin: new URL(baseUrl).origin } });
+  return chrome;
+}
+
+const ASK_MSG = {
+  type: 'nw:aiAsk',
+  profile: { basics: { name: '张伟' }, contact: {}, education: [] },
+  gaps: [{ index: 0, label: 'Full Name', reason: 'no_candidate' }],
+  fields: [{ index: 0, label: 'Full Name', kind: 'text' }],
+};
+
+test('真实链路：Base URL 少一段路径时，404 会自动顺延到下一个候选，并把用过的地址带回侧边栏', async () => {
+  const { send, calls } = await bootSw([http(404, 'Not Found'), okJson('[{"i":0,"p":"basics.name","why":"标签就是 Full Name"}]')]);
+  await configure(send, null, { baseUrl: 'https://api.example.test' });   // 只给到主机名
+  const res = await send(ASK_MSG);
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.deepEqual(calls.map(c => c.url), [
+    'https://api.example.test/v1/chat/completions',
+    'https://api.example.test/chat/completions',
+  ], 'SW 没有走候选端点，或者顺序不对');
+  assert.equal(res.endpoint, 'https://api.example.test/chat/completions', '显示用的地址该是真正成功那一次');
+  assert.equal(res.attempted?.length, 2, '回包没带 attempted：界面就列不出试过哪些地址');
+  // 候选归并后请求体才装得下：这条断言盯的是"填写侧 AI 链路是活的"
+  assert.ok(res.candidates.length >= 1, `AI 候选没落地：${JSON.stringify(res.dropped)}`);
+  assert.ok(!res.attempted.some(a => /张伟/.test(a.url)), '请求地址里不该有取值');
+});
+
+test('两次都 404：回包带 error=http_404、detail 与全部 attempted（界面靠这三个说话）', async () => {
+  const { send } = await bootSw([http(404, 'Not Found'), http(404, 'Not Found')]);
+  await configure(send, null, { baseUrl: 'https://api.example.test/gateway' });
+  const res = await send(ASK_MSG);
+  assert.equal(res.ok, false);
+  assert.equal(res.error, 'http_404');
+  assert.match(res.detail, /Not Found/);
+  assert.equal(res.attempted.length, 2);
+});
+
+test('上游回 401 时只发一次：不能因为"再试一个路径"把错误状态下的 Key 再敲一遍', async () => {
+  const { send, calls } = await bootSw([http(401, 'invalid api key')]);
+  await configure(send, null, { baseUrl: 'https://api.example.test/gateway' });
+  const res = await send(ASK_MSG);
+  assert.equal(calls.length, 1, '非 404 却重发了');
+  assert.equal(res.error, 'http_401');
+});
+
+test('粘了完整端点也不会重复拼接：SW 只发一次，URL 就是用户给的那个', async () => {
+  const { send, calls } = await bootSw([okJson('[]')]);
+  const full = 'https://api.example.test/v1/chat/completions';
+  await configure(send, null, { baseUrl: full });
+  await send(ASK_MSG);
+  assert.deepEqual(calls.map(c => c.url), [full]);
+});
+
+test('没勾确认时一个字节都不发（这条在重构后必须仍然成立）', async () => {
+  const { send, calls } = await bootSw([okJson('[]')]);
+  await configure(send, null, { baseUrl: 'https://api.example.test/gateway', consent: false });
+  const res = await send(ASK_MSG);
+  assert.equal(res.ok, false);
+  assert.equal(res.error, 'needs_consent');
+  assert.equal(calls.length, 0, '没确认也发出去了');
+});
+
+test('Key 不进 settings、不进回包；预览显示的是真正会 POST 的完整 URL', async () => {
+  const { send, chrome } = await bootSw([okJson('[]')]);
+  await configure(send, chrome, { baseUrl: 'https://api.example.test/gateway' });
+  assert.ok(!JSON.stringify(chrome.local.settings || {}).includes(KEY), 'Key 落进了 settings（settings 会被导出）');
+
+  const prev = await send({
+    type: 'nw:aiPreview', profile: ASK_MSG.profile, gaps: ASK_MSG.gaps, fields: ASK_MSG.fields,
+  });
+  assert.equal(prev.ok, true);
+  assert.match(prev.endpoint, /^https:\/\/api\.example\.test\/gateway\/chat\/completions$/, '预览只显示 Base URL，看不到真正要 POST 的地址');
+  assert.ok(!JSON.stringify(prev).includes(KEY), '预览回包里带出了 Key');
+});
+
+test('导入侧同样带上 attempted：两条 AI 链路不能一条修好一条没修', async () => {
+  const report = {
+    unplaced: [{ heading: 'Miscellaneous', lines: ['校学生会宣传部 副部长 2022.09-2023.06'], why: 'unrouted' }],
+  };
+  const { send, calls } = await bootSw([http(404, 'Not Found'), http(404, 'Not Found')]);
+  await configure(send, null, { baseUrl: 'https://api.example.test/gateway' });
+  const res = await send({
+    type: 'nw:extractRun', confirm: true, report,
+    profile: { basics: {}, education: [], work: [], campus: [] },
+  });
+  assert.equal(res.error, 'http_404');
+  assert.equal(res.attempted.length, 2, '导入侧没带回试过的地址');
+  assert.equal(calls.length, 2);
+});

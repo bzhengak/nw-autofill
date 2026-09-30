@@ -52,8 +52,61 @@ export function normalizeBaseUrl(input) {
   return { ok: true, url, origin: u.origin, secure: u.protocol === 'https:' };
 }
 
-/** Key 的最小校验：只做形状检查，绝不回显内容 */
-export function sanityCheckKey(key) {
+/**
+ * Base URL → 真正要 POST 的端点候选（有序，最多两个，全部同源）。
+ *
+ * 为什么要候选而不是硬拼：大家粘的"Base URL"形状根本不统一 ——
+ * `https://api.x.test/v1`、`https://api.x.test/v1/`、`https://api.x.test`、
+ * 甚至有人直接粘了完整端点 `https://api.x.test/v1/chat/completions`。
+ * 老写法一律 `base + '/chat/completions'`，后两种就会 404，
+ * 而上游回的 404 正文往往只是 "Not Found" —— 用户看到的就是"调用失败：http_404"，
+ * 完全猜不到是自己粘的地址差一段。（2026-09-30 实测就是这个形状。）
+ *
+ * 候选只在同一个 origin 的 pathname 上做文章：**永不换域**。
+ * Key 与 origin 绑定那条规则（maySendKey）因此不会被这里绕过。
+ */
+export function chatEndpointCandidates(input) {
+  const base = normalizeBaseUrl(input);
+  if (!base.ok) return { ok: false, error: base.error, candidates: [] };
+  const u = new URL(base.url);
+  const path = u.pathname.replace(/\/+$/, '');
+  const at = p => `${base.origin}${p}/chat/completions`;
+  const list = [];
+  const push = url => {
+    if (!url || list.includes(url)) return;
+    // 同源兜底：候选全部由 `${origin}${pathname}` 拼出来，今天这条路改不动域；
+    // 留着这行是**后盾**——将来谁把候选改成直接吃用户原文，这一行会把它挡住，
+    // 而界面层的断言（tests/ai-endpoint.test.js）会同时变红。
+    if (new URL(url).origin !== base.origin) return;
+    list.push(url);
+  };
+  if (/\/chat\/completions$/i.test(path)) {
+    push(`${base.origin}${path}`);                     // 粘的就是完整端点，原样用
+  } else if (/\/(completions|responses|messages)$/i.test(path)) {
+    push(`${base.origin}${path}`);                     // 其它 API 动词：别再加一段，先按它试
+    push(at(path.replace(/\/[^/]*$/i, '')));           // 再退回同前缀的 chat/completions
+  } else if (path === '') {
+    push(at('/v1'));                                   // 只给了主机名：OpenAI 兼容层的规范形状
+    push(at(''));
+  } else if (/\/v\d+([a-z0-9]*)$/i.test(path)) {
+    push(at(path));                                    // /v1、/v1beta、/v3：直接接上
+  } else {
+    push(at(path));                                    // 自定义前缀（/api/gateway…）
+    push(at(`${path}/v1`));                             // 同一前缀下带版本号的另一种常见摆法
+  }
+  return { ok: true, origin: base.origin, candidates: list, endpoint: list[0] || '' };
+}
+
+/**
+ * 只有"路径没对上"才值得顺延下一个候选。
+ * 401/403/429/5xx 与超时都不是路径问题：重一次就是多发一次真实请求，
+ * 既烧额度也可能把同一个 Key 在错误状态下敲第二遍。
+ */
+export function shouldRetryNextEndpoint(status) {
+  return status === 404 || status === 405;
+}
+
+/** Key 的最小校验：只做形状检查，绝不回显内容 */export function sanityCheckKey(key) {
   const k = String(key || '').trim();
   if (!k) return { ok: false, error: 'empty' };
   if (k.length < 12) return { ok: false, error: 'too_short' };

@@ -315,7 +315,7 @@ const KEY_ERROR_ZH = {
 const AI_ERROR_ZH = {
   ai_not_configured: '还没配好 Base URL / 模型 / Key（Key 只存本次会话）',
   value_leak: '自检拦下了这次请求，已拒绝发送',
-  timeout: '请求超时（20s）：模型太慢或网络不通，先少问几栏再试',
+  timeout: '请求超时：模型太慢或网络不通，先少问几栏再试（等待上限在「AI 兜底」里可改）',
   network_error: '网络错误：检查 Base URL 与站点可达性',
   payload_too_large: '请求体超限，一次问太多了，先分批',
   no_fragments: '本地解析没有剩余片段，不需要 AI 辅助',
@@ -331,16 +331,45 @@ const AI_ERROR_ZH = {
   truncated: '答案被长度上限砍断，JSON 不完整 —— 先少问几栏',
   empty_content: '上游回了 200 但正文是空的（多半是模型名或兼容层不对）',
   not_json: '上游回的不是 JSON：Base URL 可能指到了网页而不是 API 根路径（应形如 https://…/v1）',
+  http_404: '这个地址上没有聊天端点（HTTP 404）—— 九成是 Base URL 最后一段路径没对上，试过的地址在下面',
+  http_401: 'Key 不对或已失效（HTTP 401）：重新录一次 Key',
+  http_403: '这个 Key 没有调用权限（HTTP 403）',
+  http_429: '被限流或额度用完（HTTP 429）：等一会儿再试，或换个模型',
 };
 
+/**
+ * 把后台/AI 的错误码翻成"下一步该做什么"。
+ * HTTP 那几条必须把**真正请求过的 URL** 念出来：404 唯一的线索就是最后那段路径长什么样
+ * （粘了完整端点 → 出现 /chat/completions/chat/completions；只粘主机名 → 少一段 /v1）。
+ */
+/**
+ * 换了第二个候选才通 = 用户粘的 Base URL 形状不对。
+ * 这次能填上不代表下次还顺：直接把该写成的地址说出来，比"成功"更值钱。
+ */
+function endpointNote(res) {
+  const a = res?.attempted || [];
+  if (a.length < 2) return '';
+  const suggest = String(res.endpoint || '').replace(/\/chat\/completions\/?$/, '');
+  return `　·　注意：第一个地址回了 ${a[0].status}，换到第二个才通 —— 把 Base URL 直接写成 ${suggest} 就不用绕这一趟`;
+}
+
 function aiErrorText(res) {
-  const base = AI_ERROR_ZH[res?.error] || ('调用失败：' + (res?.error || '未知错误'));
+  const code = String(res?.error || '');
   // 超时最容易被误读成"插件坏了"：把实际等了多久和怎么调都说出来
-  if (res?.error === 'timeout') {
+  if (code === 'timeout') {
     const sec = res.waitedSec || aiTimeoutSecNow();
     return `等了 ${sec} 秒模型还没答完（不是出错了）。想多等就在「等待上限」里改大（当前 ${sec} 秒，最多 900），或者少问几栏`;
   }
-  return res?.detail ? `${base}\n${res.detail}` : base;
+  const known = AI_ERROR_ZH[code];
+  const base = known
+    || (/^http_/.test(code)
+      ? `上游回了 HTTP ${code.slice(5)}${res?.detail ? '：' + res.detail : ''}`
+      : '调用失败：' + (code || '未知错误'));
+  const tried = (res?.attempted || []).map(a => a.url).filter(Boolean);
+  const lines = tried.length ? tried : (res?.endpoint ? [String(res.endpoint)] : []);
+  // 已经知道是 HTTP 类错误时 detail 已经并进 base 了，别再念一遍
+  const tail = !known && /^http_/.test(code) ? '' : (res?.detail ? `\n${res.detail}` : '');
+  return base + (lines.length ? `\n实际请求的地址：\n${lines.join('\n')}` : '') + tail;
 }
 
 /** 设置里生效的等待上限（秒）。与后台用同一个 clamp 规则，避免两边算出两个数。 */
@@ -502,7 +531,8 @@ $('btnAiPreview').onclick = async () => {
   box.hidden = false;
   // 预览必须把收件人一起显示：只核对内容不看地址，等于让用户以为"发给我核对过的地址"
   box.textContent = `（将发往：${res.endpoint || '未配置地址'}）\n` + res.text;
-  $('aiStatus').textContent = `将发送 ${res.asks} 个缺口 · ${res.bytes} 字节 · 目标 ${res.endpoint || '未配置'} · 以上文本就是实际请求体全文`;
+  $('aiStatus').textContent = `将发送 ${res.asks} 个缺口 · ${res.bytes} 字节 · 目标 ${res.endpoint || '未配置'} · 以上文本就是实际请求体全文`
+    + (res.trim?.level ? `　·　为控制体积：${res.trim.why}` + (res.trim.droppedQuestions ? `，并少问 ${res.trim.droppedQuestions} 栏` : '') : '');
 };
 $('btnAiAsk').onclick = async () => {
   if (!await aiNeedsScan()) return;
@@ -515,7 +545,8 @@ $('btnAiAsk').onclick = async () => {
       $('aiStatus').textContent = why;
       const box = $('aiPreviewText');
       box.hidden = false;
-      box.textContent = [why, res.detail, res.finishReason ? `finish_reason=${res.finishReason}` : '', res.reasoningChars ? `思考过程 ${res.reasoningChars} 字` : '']
+      // why 里已经带上游原文（res.detail）与试过的地址了，这里不能再拼一遍
+      box.textContent = [why, res.finishReason ? `finish_reason=${res.finishReason}` : '', res.reasoningChars ? `思考过程 ${res.reasoningChars} 字` : '']
         .filter(Boolean).join('\n');
       return;
     }
@@ -531,7 +562,8 @@ $('btnAiAsk').onclick = async () => {
     }
     await run('preview', { aiCandidates: res.candidates });
     $('aiStatus').textContent = `AI 补齐 ${res.candidates.length} 栏（全部黄字待你核对）；已用「只预演」应用，确认后点「扫描并填写」写入`
-      + (res.finishReason === 'length' ? ' —— 注意：这次回答被长度上限截断了，可能还有缺口没给出，再点一次问剩下的' : '');
+      + (res.finishReason === 'length' ? ' —— 注意：这次回答被长度上限截断了，可能还有缺口没给出，再点一次问剩下的' : '')
+      + endpointNote(res);
   } finally { stopWait(); }   // 任何一条出口都得停掉计时与心跳，不能让它在后台一直跳
 };
 $('btnUndo').onclick = async () => { await chrome.runtime.sendMessage({ type: 'nw:undo', tabId }); render({ stats: {}, results: [], gaps: [] }); };
@@ -642,7 +674,7 @@ $('btnExtractRun').onclick = async () => {
       $('extractStatus').textContent = why;
       const box = $('extractPreviewText');
       box.hidden = false;
-      box.textContent = [why, res.detail, res.finishReason ? `finish_reason=${res.finishReason}` : ''].filter(Boolean).join('\n');
+      box.textContent = [why, res.finishReason ? `finish_reason=${res.finishReason}` : ''].filter(Boolean).join('\n');
       return;
     }
     if (!res.accepted?.length) {
@@ -664,7 +696,8 @@ function renderExtractResults(res) {
   host.replaceChildren();
   const intro = document.createElement('p');
   intro.className = 'hint';
-  intro.textContent = `AI 给出 ${res.accepted.length} 条逐字摘录${res.rejected?.length ? `，另有 ${res.rejected.length} 条被规则丢弃` : ''}。只有勾选的会写入。`;
+  intro.textContent = `AI 给出 ${res.accepted.length} 条逐字摘录${res.rejected?.length ? `，另有 ${res.rejected.length} 条被规则丢弃` : ''}。只有勾选的会写入。`
+    + endpointNote(res);
   host.appendChild(intro);
   const table = document.createElement('table');
   for (const a of res.accepted) {

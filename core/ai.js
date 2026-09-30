@@ -12,6 +12,16 @@ import { buildFields, getValueByPath } from './profile-schema.js';
 /** 允许参与 AI 的缺口原因：本地词典答不上来的那三种 */
 export const AI_ELIGIBLE_REASONS = new Set(['no_candidate', 'required_no_candidate', 'conflict_unresolved']);
 
+/**
+ * 填写侧请求体的体积上限。
+ * 它是"构造出了问题"的哨兵（比如哪天误把整份资料拼进了 prompt），**不是配额** ——
+ * 真正拦取值外发的是 assertNoProfileValues，那条才是硬闸。
+ * 上限必须待在 core 里并由测试盯住：以前它写在 service worker 里是 12000，
+ * 而未压缩的槽位目录本身就有 36KB，于是「问 AI」每次都在本机被判超限，整条链路是死的，
+ * 单元测（只看函数）和界面测（只看文案）都照不出来。
+ */
+export const AI_MAX_BYTES = 24000;
+
 /** 永不让 AI 接触的槽位（即使 AI 提名也直接丢弃）：
  *  证件号/签证/薪酬期望/声明类 —— 要么是高敏感标识，要么必须本人表态。
  *  注意：这拦的是"路径能否被提名"，不是"值能否外发"（值本来就不外发）。
@@ -36,26 +46,63 @@ export function aiSlotCatalog(profile) {
 }
 
 /**
- * 构造请求。返回 { payload, text, blocked[] }：
- * text 是**将要原样发出去的那段文本**（UI 预览用它，不做二次加工，避免"预览的和发的不是同一份"）。
+ * 槽位表压缩（发给模型的"可选槽位"那一段）。
+ *
+ * 为什么必须有这一段：白名单有 519 条，全列出来光是目录就 **36KB**，
+ * 而 service worker 里的体积上限本来是 12KB —— 结果每次「问 AI」都在本机被判
+ * `payload_too_large`，一个字节都没发出去过（2026-09-30 用 service worker 集成测才抓出来：
+ * 单元层测的是"函数对不对"，只有真跑一遍 SW 才发现这条链路一直是死的）。
+ *
+ * 归并方式：`work.0.company / work.1.company / …` 这种同构重复收成 `work.N.company` + `r:"0-3"`，
+ * 519 条 → 206 条、36KB → 10.8KB。慢模型少等 25KB，配额也少烧 25KB。
+ * **收回来的路径仍按完整白名单校验**（parseAiResponse 用的是 aiSlotCatalog 的具体路径），
+ * 所以压缩只改"怎么对模型说"，不改"我们收不收"。
  */
-export function buildAiRequest({ plan, profile, pageFields, locale = 'zh', limit = 30 }) {
-  const eligible = aiEligibleGaps(plan?.gaps || []);
-  const gaps = eligible.slice(0, Math.max(1, limit));
-  const slots = aiSlotCatalog(profile);
-  const questions = gaps.map(g => {
-    const pf = pageFields?.[g.index] || {};
-    return {
-      index: g.index,
-      label: String(pf.labelRaw || g.label || '').slice(0, 160),
-      kind: pf.kind || g.kind || 'text',
-      // 选项文本是页面自己的内容，离开本机不涉及隐私；带上它能显著减少"猜错分组"
-      options: (pf.options || []).map(o => String(o.text ?? o).slice(0, 40)).filter(Boolean).slice(0, 24),
-      required: Boolean(pf.required),
-      nearby: (pf.nearbyLabels || []).slice(0, 3),
-    };
+export function compactSlotCatalog(slots = []) {
+  const groups = new Map();
+  for (const s of slots) {
+    const m = /^([a-z]+)\.(\d+)\.(.+)$/i.exec(s.path);
+    const key = m ? `${m[1]}.N.${m[3]}` : s.path;
+    const g = groups.get(key) || { p: key, zh: s.zh, lo: 99, hi: -1 };
+    if (m) { const n = Number(m[2]); g.lo = Math.min(g.lo, n); g.hi = Math.max(g.hi, n); }
+    groups.set(key, g);
+  }
+  return [...groups.values()].map(g => {
+    const out = { p: g.p, zh: g.zh };
+    if (g.hi >= 0) out.r = `${g.lo}-${g.hi}`;
+    return out;
   });
+}
 
+/**
+ * 把模型给的 `work.N.company` 落成具体第几条。
+ * 我们**不猜**它是第几段经历：按 r 的范围从前往后取第一个存在于白名单里的路径，
+ * 并在结果的 note 里写明"序号由本地补"（同 AI 辅助导入的口径）。
+ */
+export function expandSlotPath(rawPath, allowedPaths) {
+  const p = String(rawPath || '').trim();
+  if (allowedPaths.has(p)) return { path: p, expanded: false };
+  const m = /^([a-z]+)\.N\.(.+)$/i.exec(p);
+  if (!m) return { path: null, expanded: false };
+  for (let i = 0; i < 10; i++) {
+    const cand = `${m[1]}.${i}.${m[2]}`;
+    if (allowedPaths.has(cand)) return { path: cand, expanded: true };
+  }
+  return { path: null, expanded: false };
+}
+
+/**
+ * 构造请求。返回 { payload, text, gaps, slots, slotSection, trim }：
+ * text 是**将要原样发出去的那段文本**（UI 预览用它，不做二次加工，避免"预览的和发的不是同一份"）。
+ *
+ * `maxBytes` 是**构造阶段的硬预算**，不是发送阶段的拒绝条件：
+ * 超了就先削辅助信号（选项文本、邻近标签），再不够才少问几栏，并把削了什么写在 `trim` 里，
+ * 界面能如实说"这次没带选项文本"。以前只有"超了就不发"，而目录一长就必然超 —— 于是整条链路哑掉。
+ */
+export function buildAiRequest({ plan, profile, pageFields, locale = 'zh', limit = 30, maxBytes = AI_MAX_BYTES }) {
+  const eligible = aiEligibleGaps(plan?.gaps || []);
+  const asked = eligible.slice(0, Math.max(1, limit));
+  const slots = aiSlotCatalog(profile);
   const system = [
     '你在帮助填写一份**求职网申表单**。你看不到候选人的任何真实信息，这是刻意的。',
     '你的任务只有一个：为下面每个页面字段，从"可选槽位"里挑出**语义上最匹配的那一个路径**。',
@@ -63,13 +110,55 @@ export function buildAiRequest({ plan, profile, pageFields, locale = 'zh', limit
     '1) 只能使用可选槽位里出现过的 path，一字不改；不确定就返回 null，不要勉强挑。',
     '2) 绝不生成、猜测、改写任何取值；你不掌握取值。',
     '3) 涉及"是否同意/声明/授权/签名/证件号/薪酬期望"的字段一律返回 null（这些必须由本人处理）。',
-    '4) 只输出 JSON：{"matches":[{"index":<数字>,"path":"<槽位path或null>","reason":"<不超过20字>"}]}',
+    // 目录里 work.N.company 这类带 N 的是"同一路径的第几条经历"折叠写法，r 给出可选序号。
+    // 说清这一点，模型才会回填具体序号（work.2.company）；就算它原样交回 N，本地也会补成第一条。
+    '4) 路径里的 N 是"第几条经历"的占位符，r 是可选序号范围：知道是第几条就把 N 换成那个数字，不知道就原样保留 N。',
+    '5) 只输出 JSON：{"matches":[{"index":<数字>,"path":"<槽位path或null>","reason":"<不超过20字>"}]}',
   ].join('\n');
 
-  const slotSection = JSON.stringify(slots.map(s => ({ path: s.path, zh: s.zh, group: s.section })));
-  const user = `{"locale":${JSON.stringify(locale)},"fields":${JSON.stringify(questions)},"slots":${slotSection}}`;
+  const slotSection = JSON.stringify(compactSlotCatalog(slots));
+  const bytes = s => new TextEncoder().encode(s).length;
+  const qOf = (g, level) => {
+    const pf = pageFields?.[g.index] || {};
+    const labelCap = [160, 120, 80, 48][level];
+    const optCap = [24, 8, 0, 0][level];
+    const optChars = [40, 24, 0, 0][level];
+    const nearCap = [3, 2, 0, 0][level];
+    const q = {
+      index: g.index,
+      label: String(pf.labelRaw || g.label || '').slice(0, labelCap),
+      kind: pf.kind || g.kind || 'text',
+      required: Boolean(pf.required),
+    };
+    // 选项文本是页面自己的内容，离开本机不涉及隐私；带上它能显著减少"猜错分组"
+    if (optCap) q.options = (pf.options || []).map(o => String(o.text ?? o).slice(0, optChars)).filter(Boolean).slice(0, optCap);
+    if (nearCap) q.nearby = (pf.nearbyLabels || []).slice(0, nearCap);
+    return q;
+  };
+  const textOf = qs => `${system}\n\n{"locale":${JSON.stringify(locale)},"fields":${JSON.stringify(qs)},"slots":${slotSection}}`;
 
-  return { system, text: `${system}\n\n${user}`, payload: { system, user }, gaps, slots, slotSection };
+  const TRIM_WHY = ['带上了页面选项与邻近标签', '选项文本削到 8 条 / 24 字', '省略了选项与邻近标签', '只留标签与前缀'];
+  let trim = { level: 0, why: TRIM_WHY[0], droppedQuestions: 0 };
+  let questions = asked.map(g => qOf(g, 0));
+  let text = textOf(questions);
+  for (let level = 1; bytes(text) > maxBytes && level <= 3; level++) {
+    questions = asked.map(g => qOf(g, level));
+    text = textOf(questions);
+    trim = { level, why: TRIM_WHY[level], droppedQuestions: 0 };
+  }
+  // 削完描述还是装不下（缺口极多 + 标签极长）：才真的少问几栏，并如实报告少了几个
+  while (bytes(text) > maxBytes && questions.length > 1) {
+    questions = questions.slice(0, -1);
+    text = textOf(questions);
+    trim = { ...trim, droppedQuestions: asked.length - questions.length };
+  }
+
+  return {
+    system, text, payload: { system, user: text.slice(text.indexOf('\n\n') + 2) },
+    // gaps 保持"实际问出去的那几栏"的原对象（不是下标数组）：
+    // 调用方用 built.req.gaps.map(g => g.index) 组 askedIndexes，形状一改就会静默把白名单放宽。
+    gaps: asked.slice(0, questions.length), slots, slotSection, trim,
+  };
 }
 
 /**
@@ -194,11 +283,23 @@ export function parseAiResponse(raw, { allowedPaths, askedIndexes }) {
     if (path === null || path === 'null' || path === '' || path === 'none' || path === '不确定') {
       continue;                                        // AI 明确说"不知道"，正常
     }
-    if (!allowedPaths.has(path)) {
-      out.dropped.push({ index, path, reason: 'unknown_path', detail: '这个 path 不在我们的槽位白名单里' });
-      continue;
+    // 目录是归并过的（work.N.company），模型可能原样交回带 N 的路径。
+    // 这里补成该段第一条，并把"序号是我们补的"记在候选上 —— 白名单本身一个字节都没放宽。
+    let finalPath = path;
+    let nExpanded = false;
+    if (!allowedPaths.has(finalPath)) {
+      const exp = expandSlotPath(finalPath, allowedPaths);
+      if (!exp.path) {
+        out.dropped.push({ index, path, reason: 'unknown_path', detail: '这个 path 不在我们的槽位白名单里' });
+        continue;
+      }
+      finalPath = exp.path;
+      nExpanded = exp.expanded;
     }
-    out.candidates.push({ index, path, reason: String(pick(WHY_KEYS) || '').slice(0, 60) });
+    const cand = { index, path: finalPath, reason: String(pick(WHY_KEYS) || '').slice(0, 60) };
+    // 只在真的补过序号时才带这个字段：候选会被 JSON 化传给内容脚本，多一个恒等字段就是多一处噪音
+    if (nExpanded) cand.nExpanded = true;
+    out.candidates.push(cand);
   }
   return out;
 }
@@ -238,7 +339,8 @@ export function applyAiCandidates(plan, profile, candidates = [], opts = {}) {
     added.push({
       index: g.index, path: sf.path, value, profileType: sf.type, sensitive: sf.sensitive,
       score: 0, tier: 'review', aiChosen: true,
-      label: g.label, note: `本地词典没有这个词，AI 按语义建议用「${sf.zh}」${c.reason ? `（${c.reason}）` : ''}，请核对`,
+      label: g.label, note: `本地词典没有这个词，AI 按语义建议用「${sf.zh}」${c.reason ? `（${c.reason}）` : ''}`
+        + (c.nExpanded ? '；这一条属于第几条经历是我们补的（AI 交回的是带 N 的归并路径），不是 AI 定的' : '') + '，请核对',
     });
   }
   return {

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { JSDOM } from 'jsdom';
 
 import { probePageStructure, summarizeProbe } from '../dom/probe.js';
+import { BUILD } from '../core/build.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const html = fs.readFileSync(path.join(root, 'test-forms/plain-cn.html'), 'utf8');
@@ -70,7 +71,7 @@ test('导出物自带探针版本与子框地图（SF/汇丰 靠它定位表单�
   const inner = doc.querySelector('iframe[name="app"]').contentDocument;
   inner.body.innerHTML = '<input name="a"><input name="b"><select name="c"></select>';
   const out = probePageStructure(doc, win.location.href, win);
-  assert.equal(typeof out.probeBuild, 'string', '探针必须自带版本号');
+  assert.equal(out.probeBuild, BUILD, '探针版本必须与全局构建号同一个来源（core/build.js）——两处各写一个日期就会对不上号');
   assert.equal(out.isTopFrame, true);
   assert.equal(out.iframeMap.length, 2);
   const first = out.iframeMap.find(x => x.frameName === 'app');

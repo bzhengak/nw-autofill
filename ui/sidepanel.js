@@ -6,6 +6,7 @@ import { gapReasonLabel } from '../core/matcher.js';
 // 真正的把关在 background（哪怕这个文件被改成永远不校验，请求也发不出去）。
 import { applyExtracted } from '../core/ai-extract.js';
 import { normalizeBaseUrl, sanityCheckKey, findLeaksInExport, clampTimeoutSec, effectiveTimeoutSec, AI_TIMEOUT_DEFAULT_SEC } from '../core/ai-security.js';
+import { BUILD } from '../core/build.js';
 
 const $ = id => document.getElementById(id);
 let tabId = null;
@@ -34,12 +35,33 @@ async function activeTab() {
   return tab;
 }
 
+/**
+ * 顶栏那行版本号不是装饰：MV3 重载扩展后，旧的 service worker 不一定立刻退场
+ * （还挂着连接时它照样回消息），表现就是"我明明重载了，怎么还是老 behaviour"。
+ * 界面与后台各处报一个号，不一致就直接讲人话，别再靠对话去猜。
+ */
+function stampVersions(state) {
+  const sw = state?.build || '';
+  const el = $('buildStamp');
+  if (!el) return;
+  const stale = sw !== BUILD;
+  // 修法直接写在文字里，不藏进 title：侧边栏那么窄，悬停提示等于没有
+  el.textContent = stale
+    ? `界面 ${BUILD} · 后台 ${sw || '没有版本自述（更旧的版本）'} — 后台没跟上：去 chrome://extensions 把本扩展关掉再打开，然后重开侧边栏`
+    : `构建 ${BUILD}`;
+  el.className = stale ? 'banner' : 'note';
+  el.title = stale
+    ? '侧边栏是新的、后台 service worker 还是旧的：去 chrome://extensions 把本扩展的开关关掉再打开（或点「Service Worker」→ 停止），然后关掉侧边栏重开。'
+    : '界面与后台是同一份构建';
+}
+
 async function refresh() {
   const tab = await activeTab();
   tabId = tab?.id ?? null;
   const state = await chrome.runtime.sendMessage({ type: 'nw:getState', tabId });
   lastState = state;
   const profile = state?.profile;
+  stampVersions(state);
   $('fillSensitive').checked = Boolean(state?.settings?.fillSensitive);
   $('allowCustomSelect').checked = Boolean(state?.settings?.allowCustomSelect);
   $('enZhFallback').checked = state?.settings?.enMissingMode === 'zh_yellow';
@@ -330,6 +352,9 @@ const AI_ERROR_ZH = {
   fetch_failed: '请求没出这台机器，或被网络层拒了（DNS / 代理 / 防火墙 / CORS 预检都会这样）。点「测一下连接」区分是域名连不上还是 POST 被拦',
   redirect_blocked: '这个地址把请求重定向到别处了 —— 禁跟跳转是故意的（不然 Key 会跟着跳到别的域）。请把 Base URL 填成最终地址本身',
   cancelled: '已取消等待，请求中止了',
+  // 侧边栏认识这条消息、后台说不认识 = 后台还是旧构建（重载没生效）
+  unknown_message: '后台不认这条消息：侧边栏是新版本、service worker 还是旧版本。'
+    + '去 chrome://extensions 把本扩展开关关掉再打开（或点「Service Worker」→ 停止），然后关掉侧边栏重开',
   // 上游回得"没内容"的几种，各自成因不同、修法也不同
   reasoning_only: '模型只输出了"思考过程"，正文是空的 —— 换个非 reasoning 模型（或把它关掉）再来',
   truncated: '答案被长度上限砍断，JSON 不完整 —— 先少问几栏',
@@ -598,6 +623,8 @@ function formatTiming(t) {
 function pingVerdictText(res) {
   const where = `地址 ${res?.endpoint || res?.origin || '（未配置）'}`;
   const timing = formatTiming(res?.timing) ? `（${formatTiming(res.timing)}）` : '';
+  // 后台答不上这句 = 它压根没有自检这个功能 = 浏览器里跑的还是旧 worker
+  if (res?.error === 'unknown_message' || res?.verdict === 'unknown_message') return AI_ERROR_ZH.unknown_message;
   const V = {
     ok: `通了：${timing}。那"问 AI"卡住就不是连接问题，而是模型生成得慢 —— 少问几栏、把上限调大，或换非 reasoning 模型。`,
     key_rejected: `连上了，但 Key 被拒（HTTP ${res?.status}）${timing}。被拒的请求一般不进用量记录，所以"用量为 0"与此一致 —— 重新录 Key。`,

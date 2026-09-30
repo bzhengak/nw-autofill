@@ -152,3 +152,20 @@ test('AI 出网只有 core/ai-endpoint.js 一处：service worker 里不许再�
   assert.match(ep, /redirect:\s*'error'/, '禁跟跳转是 Key 不外泄的一条实闸');
   assert.match(ep, /authorization: 'Bearer '/, '请求头形状变了');
 });
+
+/**
+ * 版本号只能有一处定义。以前探针自己写一个日期、页面另写一个，
+ * 用户报"我重载了"时我们无从判断他跑的到底是哪一份 —— 现在两侧对撞同一个常量。
+ */
+test('构建号只在 core/build.js 里定义，其他层一律 import 它', () => {
+  const src = read('../core/build.js');
+  assert.match(src, /export const BUILD = '\d{4}-\d{2}-\d{2}-\d+';/, 'BUILD 的形状是 日期-序号');
+  for (const f of ['dom/probe.js', 'background/service-worker.js', 'ui/sidepanel.js']) {
+    const s = read(`../${f}`);
+    assert.match(s, /from '[^']*core\/build\.js'/, `${f} 没有 import 构建号`);
+    assert.ok(!/=\s*['\"]20\d\d-\d\d-\d\d(-\d+)?['\"]/.test(s), `${f} 里又写了一个自己的日期版本号`);
+  }
+  // 后台要把版本号带回界面，界面才可能发现"重载没生效"
+  const sw = read('../background/service-worker.js');
+  assert.match(sw, /build: BUILD/, 'getState/unknown_message 的回包没带构建号');
+});

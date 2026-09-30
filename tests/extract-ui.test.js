@@ -402,3 +402,31 @@ test('长时间等待期间「取消等待」是亮的，一结束就灰掉', as
   await new Promise(r => setTimeout(r, 150));
   assert.equal(doc.getElementById('btnAiAbort').disabled, true, '请求结束了按钮还开着');
 });
+
+// 用户报"我明明重载了扩展，怎么还是老样子"——MV3 里旧 service worker 不一定立刻退场。
+// 这种问题不能靠对话猜：两侧各报一个号，不一致就直接讲人话。
+test('后台版本落后于界面时，顶栏要当场说出来（而不是让人去猜"我到底重载没有"）', async () => {
+  const { doc } = bootExtract(() => ({ ok: true, profile: {}, settings: {}, tabId: 1, build: '2020-01-01-9' }));
+  await load();
+  const stamp = doc.getElementById('buildStamp');
+  assert.match(stamp.textContent, /后台 2020-01-01-9/, `顶栏没报出后台版本：${stamp.textContent}`);
+  assert.match(stamp.textContent, /后台没跟上/);
+  assert.match(stamp.textContent, /chrome:\/\/extensions|Service Worker/, '没说清怎么修');
+});
+
+test('两边是同一份构建时不报警（否则这行提示就成了噪音，真出问题没人看）', async () => {
+  const { BUILD } = await import('../core/build.js');
+  const { doc } = bootExtract(() => ({ ok: true, profile: {}, settings: {}, tabId: 1, build: BUILD }));
+  await load();
+  assert.equal(doc.getElementById('buildStamp').textContent, `构建 ${BUILD}`);
+});
+
+test('自检遇到 unknown_message：结论要落在"后台是旧构建"，不是"没见过的结果"', async () => {
+  const { doc } = bootExtract(m => (m.type === 'nw:aiPing' ? { ok: false, error: 'unknown_message' } : AI_READY));
+  await load();
+  await click(doc, 'btnAiPing');
+  await new Promise(r => setTimeout(r, 60));
+  const txt = doc.getElementById('aiPingState').textContent;
+  assert.match(txt, /后台|service worker/i, `没指出是后台的问题：${txt}`);
+  assert.match(txt, /重载|关掉再打开|停止/, '没给出自愈步骤');
+});

@@ -10,6 +10,7 @@
 //     出网本身在 core/ai-endpoint.js，本文件只做"读设置 + 调一次 + 把结果带回侧边栏"。
 
 import { compileAdapters } from '../core/adapters.js';
+import { BUILD } from '../core/build.js';
 import { buildAiRequest, assertNoProfileValues, parseAiResponse, aiSlotCatalog, AI_MAX_BYTES } from '../core/ai.js';
 import { extractFragments, buildExtractRequest, parseExtractResponse } from '../core/ai-extract.js';
 import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, findLeaksInExport, SECRETS_BUCKET, consentAfterSettingsPatch, effectiveTimeoutSec, AI_TIMEOUT_DEFAULT_SEC, chatEndpointCandidates } from '../core/ai-security.js';
@@ -230,6 +231,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         ok: true, profile: profile || null, settings: settings || {},
         hasAiKey: Boolean(sess.key), aiKeyLength: sess.key ? sess.key.length : 0,
         aiKeyOrigin: sess.keyOrigin, aiKeyPersisted: sess.persisted,
+        // 面板拿这个和自己的版本号对：不一致就是"重载没生效"，别再互相猜
+        build: BUILD,
         tabId,
       });
     } else if (msg.type === 'nw:aiPreview' || msg.type === 'nw:aiAsk') {
@@ -427,7 +430,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (msg.type === 'nw:scan' && res && typeof res === 'object') res.adapterInfo = adapterDiagnostics();
       sendResponse(res);
     } else {
-      sendResponse({ ok: false, error: 'unknown_message' });
+      sendResponse({ ok: false, error: 'unknown_message', build: BUILD });
     }
   })();
   return true;

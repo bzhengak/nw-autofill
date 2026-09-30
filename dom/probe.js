@@ -3,13 +3,15 @@
 // 与 core/matching.js 一样是纯 DOM 函数，可在 jsdom 下单测。
 
 import { core, normalize } from '../core/matching.js';
+import { BUILD } from '../core/build.js';
 import { labelFor } from './scanner.js';
+
+// 探针导出的 JSON 必须自证版本：用户早上导出的那份结构和下午的代码对不上号时，
+// 这一行就是唯一的线索。版本号只有一个来源（core/build.js），别在这里另写一个日期。
+const PROBE_BUILD = BUILD;
 
 const CONTROL_SELECTOR = 'input, textarea, select, [contenteditable="true"], [role="combobox"], [role="spinbutton"], [role="listbox"]';
 const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
-// 导出物自带版本号：用户贴回来的 JSON 能直接证明"他浏览器里跑的是哪一版探针"，
-// 不用再靠"你是不是重载了扩展"这种对话去猜。
-const PROBE_BUILD = '2026-09-29-5';
 
 function escapeId(id) {
   return (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(id) : String(id).replace(/([^\w-])/g, '\\$1');

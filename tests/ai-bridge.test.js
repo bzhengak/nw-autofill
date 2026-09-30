@@ -207,3 +207,13 @@ test('「取消等待」真的中止在飞的那次请求，而且报成 cancell
   assert.equal(res.ok, false);
   assert.equal(res.error, 'cancelled', '取消被报成了别的东西，用户会以为是超时');
 });
+
+test('后台把构建号带回侧边栏：不一致时界面才可能发现"重载没生效"', async () => {
+  const { send } = await bootSw([okJson('[]')]);
+  const state = await send({ type: 'nw:getState', tabId: 1 });
+  const { BUILD } = await import('../core/build.js');
+  assert.equal(state.build, BUILD, 'getState 没带 build —— 面板无从判断后台是不是旧的');
+  const unknown = await send({ type: 'nw:notARealMessage' });
+  assert.equal(unknown.error, 'unknown_message');
+  assert.equal(unknown.build, BUILD, '连兜底回包都不带版本号，unknown_message 就没法自证是哪一版');
+});

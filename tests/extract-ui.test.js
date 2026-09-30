@@ -342,3 +342,63 @@ test('换到第二个候选才成功：界面提示 Base URL 该怎么写', asyn
   assert.match(txt, /第一个地址回了 404/, `成功就没下文了：${txt}`);
   assert.match(txt, /把 Base URL 直接写成 https:\/\/api\.example\.test/, '没告诉用户地址该怎么写');
 });
+
+// ── 「测一下连接」与「取消等待」：长时间干等时必须有人话结论和中途出口 ──────
+const AI_READY = {
+  ok: true, tabId: 1, profile: { basics: {}, education: [], work: [] },
+  settings: { aiBaseUrl: 'https://api.example.test/v1', aiModel: 'm', aiConsentOrigin: 'https://api.example.test' },
+  hasAiKey: true, aiKeyOrigin: 'https://api.example.test', aiKeyPersisted: false, aiKeyLength: 24,
+};
+
+test('自检按钮与「问 AI」同一道闸：没勾确认就不给点（它也要带 Key 出门）', async () => {
+  const { doc } = bootExtract(() => ({ ok: true, profile: {}, settings: {}, tabId: 1, hasAiKey: false, aiKeyOrigin: '', aiKeyPersisted: false, aiKeyLength: 0 }));
+  await load();
+  assert.equal(doc.getElementById('btnAiPing').disabled, true, '未配置/未确认时自检竟然可点');
+  const ready = bootExtract(() => AI_READY);
+  await load();
+  assert.equal(ready.doc.getElementById('btnAiPing').disabled, false, '配置齐全时自检按钮还锁着');
+});
+
+test('自检结论要说清下一步：连不上 ≠ Key 错 ≠ 模型慢', async () => {
+  const CASES = [
+    ['unreachable', /连不上|代理|DNS/, '域名都到不了，还谈什么 Key'],
+    ['post_blocked', /POST 被拒|被拦/, '域名通、POST 不通，得说清是后者'],
+    ['no_first_byte', /响应字节|没开始回话/, '连上了但对方不回话'],
+    ['key_rejected', /Key/, 'Key 被拒要说 Key'],
+    ['path_not_found', /端点|路径/, '路径没对上要说路径'],
+    ['ok', /通了/, '成功也要说一句'],
+  ];
+  for (const [verdict, want, why] of CASES) {
+    const { doc } = bootExtract(m => (m.type === 'nw:aiPing'
+      ? { ok: verdict === 'ok', verdict, endpoint: 'https://api.example.test/v1/chat/completions', origin: 'https://api.example.test', status: verdict === 'key_rejected' ? 401 : verdict === 'path_not_found' ? 404 : null, timing: { upBytes: 90, headersMs: 12, bodyMs: 30, limitMs: 15000 }, originReachable: true, originMs: 8 }
+      : AI_READY));
+    await load();
+    await click(doc, 'btnAiPing');
+    await new Promise(r => setTimeout(r, 60));
+    const txt = doc.getElementById('aiPingState').textContent;
+    assert.match(txt, want, `${verdict} 的结论不合格（${why}）：${txt}`);
+    assert.match(txt, /api\.example\.test|连不上|域名/, `${verdict} 没给出地址或域名线索`);
+  }
+});
+
+test('长时间等待期间「取消等待」是亮的，一结束就灰掉', async () => {
+  let release;
+  const gate = new Promise(r => { release = r; });
+  const { doc } = bootExtract(async m => {
+    if (m.type === 'nw:extractRun') { await gate; return { ok: false, error: 'cancelled', detail: '已取消' }; }
+    if (m.type === 'nw:extractPreview') return { ...PREVIEW_RES };
+    return AI_READY;
+  });
+  doc.defaultView.confirm = () => true;
+  await load();
+  doc.getElementById('mdText').value = MD;
+  await click(doc, 'btnImportMd');
+  await click(doc, 'btnExtractPreview');
+  assert.equal(doc.getElementById('btnAiAbort').disabled, true, '没在飞请求时「取消等待」却是亮的');
+  doc.getElementById('btnExtractRun').click();
+  await new Promise(r => setTimeout(r, 80));
+  assert.equal(doc.getElementById('btnAiAbort').disabled, false, '干等的时候没有出口');
+  release();
+  await new Promise(r => setTimeout(r, 150));
+  assert.equal(doc.getElementById('btnAiAbort').disabled, true, '请求结束了按钮还开着');
+});

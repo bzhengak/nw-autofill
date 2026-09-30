@@ -169,3 +169,104 @@ test('Base URL 不合法时一个字节都不发', async () => {
   assert.match(res.error, /^endpoint_/);
   assert.equal(f.calls.length, 0);
 });
+
+// ── 连接自检：把"没出门 / 出门被打回 / 出门了在慢慢答"分开 ─────────────────
+import { pingAiEndpoint, classifyPing, PING_TEXT, classifyFetchError } from '../core/ai-endpoint.js';
+
+test('自检的正文是写死的 "ping"：不含槽位表、不含页面标签，也就无处带取值', async () => {
+  const f = fakeFetch(ok('Pong'));
+  const res = await pingAiEndpoint({ baseUrl: 'https://api.x.test/v1', model: 'm', key: KEY, fetchImpl: f });
+  assert.equal(res.verdict, 'ok');
+  const body = JSON.parse(f.calls[0].body);
+  assert.equal(body.messages[0].content, PING_TEXT);
+  assert.equal(PING_TEXT, 'ping');
+  assert.ok(f.calls[0].body.length < 200, `自检正文 ${f.calls[0].body.length} 字节，不像只发了一个词`);
+  assert.match(f.calls[0].url, /^https:\/\/api\.x\.test\/v1\/chat\/completions$/);
+});
+
+test('自检带时间线：上行字节数与"多久收到响应头"都要有，没收到时要能看出来', async () => {
+  const f = fakeFetch(ok('Pong'));
+  const res = await pingAiEndpoint({ baseUrl: 'https://api.x.test/v1', model: 'm', key: KEY, fetchImpl: f });
+  assert.ok(res.timing.upBytes > 20, '上行字节数没记');
+  assert.equal(typeof res.timing.headersMs, 'number', '收到响应头了却没记耗时');
+  const f2 = fakeFetch(http(401, 'invalid api key'));
+  const r2 = await pingAiEndpoint({ baseUrl: 'https://api.x.test/v1', model: 'm', key: KEY, fetchImpl: f2 });
+  assert.equal(r2.verdict, 'key_rejected');
+  assert.match(JSON.stringify(r2.attempted), /401/);
+});
+
+test('POST 被网络层拒了但域名连得上 → 判成"POST 被拦"，对照探测不带任何凭据', async () => {
+  const calls = [];
+  const impl = async (url, init) => {
+    calls.push({ url, init });
+    if (init?.method === 'POST') { const e = new TypeError('Failed to fetch'); throw e; }
+    return { ok: true, status: 200, text: async () => '', json: async () => ({}) };
+  };
+  const res = await pingAiEndpoint({ baseUrl: 'https://api.x.test/v1', model: 'm', key: KEY, fetchImpl: impl });
+  assert.equal(res.verdict, 'post_blocked');
+  assert.equal(res.originReachable, true);
+  assert.equal(calls.length, 2, '该做两次探测（POST + 对照 GET）');
+  const get = calls[1];
+  assert.equal(get.init.method, 'GET');
+  assert.ok(!get.init.headers, '对照探测居然带了头部 —— Key 绝不能跟着自检走到别处');
+  assert.equal(new URL(get.url).origin, 'https://api.x.test');
+});
+
+test('连 GET 都不通 → 判成"这台机器连不上这个域"，这才是用量为 0 的那种', async () => {
+  const impl = async () => { throw new TypeError('Failed to fetch'); };
+  const res = await pingAiEndpoint({ baseUrl: 'https://api.x.test/v1', model: 'm', key: KEY, fetchImpl: impl });
+  assert.equal(res.verdict, 'unreachable');
+  assert.equal(res.originReachable, false);
+});
+
+// 判定表是这段代码的全部价值，直接当纯函数测：不靠计时器，也就不会慢、不会飘。
+test('自检判定表：同一句"一直在等"要拆得开 —— 连不上 / 没首字节 / 流挂住 / 正文不对 / 被取消', () => {
+  const V = classifyPing;
+  assert.equal(V({ status: 200 }), 'bad_body');                                 // 200 但正文不可用
+  assert.equal(V({ status: 200, error: 'timeout' }), 'streaming_stalled');      // 头到了、正文没写完
+  assert.equal(V({ status: 401 }), 'key_rejected');
+  assert.equal(V({ status: 403 }), 'key_rejected');
+  assert.equal(V({ status: 404 }), 'path_not_found');
+  assert.equal(V({ status: 429 }), 'rate_limited');
+  assert.equal(V({ status: 503 }), 'upstream_error');
+  assert.equal(V({ status: 418 }), 'http_error');
+  assert.equal(V({ error: 'timeout', headersMs: null, originReachable: true }), 'no_first_byte');
+  assert.equal(V({ error: 'timeout', headersMs: 12, originReachable: true }), 'streaming_stalled');
+  assert.equal(V({ error: 'timeout', headersMs: null, originReachable: false }), 'unreachable');
+  assert.equal(V({ error: 'fetch_failed', originReachable: true }), 'post_blocked');
+  assert.equal(V({ error: 'fetch_failed', originReachable: false }), 'unreachable');
+  assert.equal(V({ error: 'redirect_blocked' }), 'redirect_blocked');
+  assert.equal(V({ error: 'cancelled' }), 'cancelled');
+  assert.equal(V({ error: 'upstream_model_not_found' }), 'upstream_error');
+});
+
+test('取消不是超时：外部信号一中止就报 cancelled，并且不再发下一个候选', async () => {
+  const ctrl = new AbortController();
+  const calls = [];
+  const impl = (url, init) => {
+    calls.push(url);
+    return new Promise((_resolve, reject) => {
+      const sig = init?.signal;
+      sig?.addEventListener('abort', () => { const e = new Error('aborted'); e.name = 'AbortError'; reject(e); });
+    });
+  };
+  const p = callChatEndpoint({ baseUrl: 'https://api.x.test/gateway', model: 'm', key: KEY, text: 'q', timeoutSec: 60, fetchImpl: impl, signal: ctrl.signal });
+  await new Promise(r => setTimeout(r, 10));
+  ctrl.abort();
+  const res = await p;
+  assert.equal(res.error, 'cancelled');
+  assert.equal(res.timing.cancelled, true);
+  assert.equal(calls.length, 1, '取消后又去发第二个候选了');
+
+  // 一开始就已经取消：一个字节都不发
+  const dead = new AbortController(); dead.abort();
+  const r2 = await callChatEndpoint({ baseUrl: 'https://api.x.test/gateway', model: 'm', key: KEY, text: 'q', fetchImpl: impl, signal: dead.signal });
+  assert.equal(r2.error, 'cancelled');
+});
+
+test('网络层错误的分类：redirect 单独一类（它意味着 Key 会跟到别的域）', () => {
+  assert.equal(classifyFetchError(new TypeError('Failed to fetch')).error, 'fetch_failed');
+  assert.equal(classifyFetchError(Object.assign(new Error('manual redirect'), { name: 'ResponseError' })).error, 'redirect_blocked');
+  const e = new Error('x'); e.name = 'AbortError';
+  assert.equal(classifyFetchError(e).error, 'timeout');
+});

@@ -48,6 +48,7 @@ async function bootSw(replies) {
   globalThis.fetch = async (url, init) => {
     calls.push({ url, init });
     const r = replies[calls.length - 1] ?? replies.at(-1);
+    if (typeof r === 'function') return r(url, init);
     if (r instanceof Error) throw r;
     return r;
   };
@@ -158,4 +159,51 @@ test('导入侧同样带上 attempted：两条 AI 链路不能一条修好一条
   assert.equal(res.error, 'http_404');
   assert.equal(res.attempted.length, 2, '导入侧没带回试过的地址');
   assert.equal(calls.length, 2);
+});
+
+// ── 自检与取消：这两条链路只有真跑 SW 才看得到闸门与载荷 ────────────────────
+test('自检走同一道闸：没勾确认就不发，勾了也只发写死的 "ping"', async () => {
+  const noConsent = await bootSw([okJson('Pong')]);
+  await configure(noConsent.send, null, { baseUrl: BASE, consent: false });
+  const blocked = await noConsent.send({ type: 'nw:aiPing', timeoutSec: 5 });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.verdict, 'gate_needs_consent', '自检绕过了确认闸');
+  assert.equal(noConsent.calls.length, 0, '没确认却还是发了');
+
+  const { send, calls } = await bootSw([okJson('Pong')]);
+  await configure(send, null, { baseUrl: BASE });
+  const res = await send({ type: 'nw:aiPing', timeoutSec: 5 });
+  assert.equal(res.verdict, 'ok');
+  assert.equal(calls.length, 1, '成功了还多做了一次对照探测');
+  assert.equal(JSON.parse(calls[0].init.body).messages[0].content, 'ping', '自检不该发别的东西');
+  assert.ok(!JSON.stringify(res).includes(KEY), '自检回包带出了 Key');
+});
+
+test('自检发现"域名连不上"时，结论要落在网络上而不是 Key 上', async () => {
+  const { send, calls } = await bootSw([new TypeError('Failed to fetch')]);
+  await configure(send, null, { baseUrl: BASE });
+  const res = await send({ type: 'nw:aiPing', timeoutSec: 5 });
+  assert.equal(res.verdict, 'unreachable', JSON.stringify(res));
+  // 两次：POST 一次 + 不带凭据的对照 GET 一次
+  assert.deepEqual(calls.map(c => c.init.method), ['POST', 'GET']);
+  assert.ok(!calls[1].init.headers, '对照 GET 不该带任何头部（Key 绝不能跟着走）');
+});
+
+test('「取消等待」真的中止在飞的那次请求，而且报成 cancelled 不是 timeout', async () => {
+  // 假 fetch 必须像真 fetch 一样"信号一来就 reject"，否则测的是我自己的桩而不是中止行为
+  const neverResolves = (url, init) => new Promise((_resolve, reject) => {
+    const sig = init?.signal;
+    if (sig?.aborted) { const e = new Error('aborted'); e.name = 'AbortError'; reject(e); return; }
+    sig?.addEventListener('abort', () => { const e = new Error('aborted'); e.name = 'AbortError'; reject(e); });
+  });
+  const { send } = await bootSw([neverResolves]);
+  await configure(send, null, { baseUrl: BASE });
+  const pending = send(ASK_MSG);
+  await new Promise(r => setTimeout(r, 30));                       // 让 fetch 真的在飞
+  const abort = await send({ type: 'nw:aiAbort' });
+  assert.equal(abort.ok, true);
+  assert.equal(abort.aborted, true, '后台说没有在飞的请求');
+  const res = await pending;
+  assert.equal(res.ok, false);
+  assert.equal(res.error, 'cancelled', '取消被报成了别的东西，用户会以为是超时');
 });

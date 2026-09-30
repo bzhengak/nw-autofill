@@ -203,8 +203,19 @@
     <div class="row">
       <button id="btnAiPreview">预览将发送的内容</button>
       <button id="btnAiAsk" disabled>问 AI 补全缺口</button>
+      <button id="btnAiAbort" disabled>取消等待</button>
       <span id="aiStatus" class="hint"></span>
     </div>
+    <div class="row">
+      <button id="btnAiPing">测一下连接（15 秒，正文是写死的 "ping"）</button>
+      <span id="aiPingState" class="hint"></span>
+    </div>
+    <p class="hint">
+      「测一下连接」不发任何简历内容，也不问真正的缺口 —— 它存在的唯一理由是把三件事分开：
+      <b>请求没出这台机器</b>（域名连不上 / 代理 / DNS）、<b>出去了但被打回</b>（Key / 路径 / 限流），
+      和<b>出去了、对方在慢慢生成</b>。这三种的修法完全不同，而"我一直在等"看不出区别。
+      如果你那边"用量记录是 0"，先看这里：连不通的话，API 那边本来就不会有用量。
+    </p>
     <pre id="aiPreviewText" class="hint" hidden></pre>
   </details>
 

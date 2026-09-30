@@ -326,6 +326,10 @@ const AI_ERROR_ZH = {
   origin_mismatch: 'Key 是在别的地址下录的，不会跟着发到这里：在当前 Base URL 下重新保存 Key',
   no_endpoint: '还没填 Base URL（应形如 https://…/v1）',
   no_key: '还没保存 Key（会话 Key 重启浏览器就失效，需要重录）',
+  // 网络层：这三种都不是"模型慢"，等多久都不会变好，所以说清下一步查哪儿
+  fetch_failed: '请求没出这台机器，或被网络层拒了（DNS / 代理 / 防火墙 / CORS 预检都会这样）。点「测一下连接」区分是域名连不上还是 POST 被拦',
+  redirect_blocked: '这个地址把请求重定向到别处了 —— 禁跟跳转是故意的（不然 Key 会跟着跳到别的域）。请把 Base URL 填成最终地址本身',
+  cancelled: '已取消等待，请求中止了',
   // 上游回得"没内容"的几种，各自成因不同、修法也不同
   reasoning_only: '模型只输出了"思考过程"，正文是空的 —— 换个非 reasoning 模型（或把它关掉）再来',
   truncated: '答案被长度上限砍断，JSON 不完整 —— 先少问几栏',
@@ -369,7 +373,9 @@ function aiErrorText(res) {
   const lines = tried.length ? tried : (res?.endpoint ? [String(res.endpoint)] : []);
   // 已经知道是 HTTP 类错误时 detail 已经并进 base 了，别再念一遍
   const tail = !known && /^http_/.test(code) ? '' : (res?.detail ? `\n${res.detail}` : '');
-  return base + (lines.length ? `\n实际请求的地址：\n${lines.join('\n')}` : '') + tail;
+  // 时间线（上行字节 / 多久收到响应头）是判"出没出去"的直接证据，失败时一并念出来
+  const when = formatTiming(res?.timing) ? `\n本次时间线：${formatTiming(res.timing)}` : '';
+  return base + (lines.length ? `\n实际请求的地址：\n${lines.join('\n')}` : '') + tail + when;
 }
 
 /** 设置里生效的等待上限（秒）。与后台用同一个 clamp 规则，避免两边算出两个数。 */
@@ -393,6 +399,9 @@ function startAiWait(statusEl, label) {
   };
   paint();
   const tick = setInterval(paint, 1000);
+  // 长等待必须能中途停下：300 秒的计时器没有出口，等于把人锁在界面上
+  const abortBtn = $('btnAiAbort');
+  if (abortBtn) abortBtn.disabled = false;
   const beat = () => {
     // 心跳本身失败不该打扰用户：最坏情况就是回到"没心跳"的老行为
     Promise.resolve(chrome.runtime.sendMessage({ type: 'nw:keepAlive' })).catch(() => {});
@@ -401,7 +410,10 @@ function startAiWait(statusEl, label) {
   // 等 15 秒才拍第一下手，正好可能落在它已经被杀了之后
   beat();
   const timer2 = setInterval(beat, 15000);
-  return () => { clearInterval(tick); clearInterval(timer2); };
+  return () => {
+    clearInterval(tick); clearInterval(timer2);
+    if (abortBtn) abortBtn.disabled = true;   // 计时一停，「取消等待」就该灰掉
+  };
 }
 
 function aiUiSync() {
@@ -416,6 +428,9 @@ function aiUiSync() {
   }
   const ready = base.ok && aiConsentStored === base.origin && aiKeyPresent && aiKeyBoundOrigin === base.origin && Boolean($('aiModel').value.trim());
   $('btnAiAsk').disabled = !ready;
+  // 自检也带 Key 出门，闸门与「问 AI」一模一样：不能让「只是测一下」绕过确认
+  $('btnAiPing').disabled = !ready;
+  $('btnAiPing').title = ready ? '' : '同样需要：合法 https Base URL + Key + 模型名 + 勾上「确认发往该地址」（自检会把 Key 发出去）';
   $('btnAiAsk').title = ready ? '' : '需要：合法 https Base URL + 已保存的 Key + 模型名 + 勾上「确认发往该地址」';
 }
 $('aiBaseUrl').oninput = () => { aiUiSync(); };
@@ -561,11 +576,73 @@ $('btnAiAsk').onclick = async () => {
       return;
     }
     await run('preview', { aiCandidates: res.candidates });
-    $('aiStatus').textContent = `AI 补齐 ${res.candidates.length} 栏（全部黄字待你核对）；已用「只预演」应用，确认后点「扫描并填写」写入`
+    $('aiStatus').textContent = `AI 补齐 ${res.candidates.length} 栏（全部黄字待你核对）；${formatTiming(res.timing) ? formatTiming(res.timing) + '；' : ''}已用「只预演」应用，确认后点「扫描并填写」写入`
       + (res.finishReason === 'length' ? ' —— 注意：这次回答被长度上限截断了，可能还有缺口没给出，再点一次问剩下的' : '')
       + endpointNote(res);
   } finally { stopWait(); }   // 任何一条出口都得停掉计时与心跳，不能让它在后台一直跳
 };
+/** 一次请求的时间线，念成人话：上行多少字节、多久收到响应头、多久收到正文。 */
+function formatTiming(t) {
+  if (!t) return '';
+  const parts = [`上行 ${t.upBytes || 0} 字节`];
+  if (t.headersMs != null) parts.push(`响应头 ${t.headersMs}ms`);
+  else parts.push('没收到响应头');
+  if (t.bodyMs != null) parts.push(`正文 ${t.bodyMs}ms`);
+  return parts.join(' · ');
+}
+
+/**
+ * 「测一下连接」的结论。每种判定都给"下一步查哪儿"，
+ * 因为用户看到的都是同一句"在等"，而三种成因的修法互不相干。
+ */
+function pingVerdictText(res) {
+  const where = `地址 ${res?.endpoint || res?.origin || '（未配置）'}`;
+  const timing = formatTiming(res?.timing) ? `（${formatTiming(res.timing)}）` : '';
+  const V = {
+    ok: `通了：${timing}。那"问 AI"卡住就不是连接问题，而是模型生成得慢 —— 少问几栏、把上限调大，或换非 reasoning 模型。`,
+    key_rejected: `连上了，但 Key 被拒（HTTP ${res?.status}）${timing}。被拒的请求一般不进用量记录，所以"用量为 0"与此一致 —— 重新录 Key。`,
+    path_not_found: `连上了，但这个地址上没有聊天端点（HTTP ${res?.status}）：${where}。看下面是试过的地址，Base URL 通常应填到 /v1 为止。`,
+    rate_limited: `连上了，但被限流（429）${timing}：等一会儿再试，或换模型/额度。`,
+    upstream_error: `连上了，但对端自己报错（HTTP ${res?.status || res?.error}）${timing}：这不是插件的问题，看服务商状态页或稍后再试。`,
+    unreachable: `这台电脑连不上 ${res?.origin || ''} —— 连不带凭据的 GET 都没回来。所以用量必然是 0：请求根本没出门。查代理 / VPN / DNS / 防火墙（公司网络常拦境外 API 域）。`,
+    post_blocked: `${res?.origin || ''} 连得上（GET ${res?.originMs}ms，HTTP ${res?.originStatus}），但 POST 被拒 —— 多半是代理/防火墙只放行简单请求，或 CORS 预检没过去。把这条结果发我。`,
+    no_first_byte: `域名连得上，但 ${res?.timing?.limitMs ? Math.round(res.timing.limitMs / 1000) : 15} 秒内一个响应字节都没回来（GET 却用了 ${res?.originMs}ms 就通）。请求出门了、对端没回话 —— 换成用量页能看到这次记录才算真通。`,
+    streaming_stalled: `响应头 ${res?.timing?.headersMs}ms 就到了，但正文一直没写完 —— 生成中途挂住，通常是模型侧或中间代理缓冲。`,
+    redirect_blocked: `这个地址会把请求重定向到别处（我们禁止跟跳转，否则 Key 会跟着跑到别的域）。请把 Base URL 填成最终地址本身。`,
+    bad_body: `对方回了 HTTP 200，但正文不是一份能用的 JSON 响应${timing} —— 通常是中间有个"网页版"网关或 Base URL 指错了服务，不是连不上的问题。`,
+    http_error: `对方回了没见过的状态码 HTTP ${res?.status}${timing}：按服务商的报错页处理。`,
+    bad_endpoint: `Base URL 不合法：${res?.detail || ''}。应形如 https://…/v1，不要带 ?query。`,
+    not_configured: `还没配好模型名或 Key，自检也没法发。`,
+    gate_needs_consent: `没勾「我确认把 Key 与字段名发往 …」：自检也要带 Key，所以同样要勾。`,
+    gate_origin_changed: `Base URL 改过了，之前对旧地址的确认已作废：重新勾一次。`,
+    gate_origin_mismatch: `Key 是在别的地址下录的，不会跟着发到这里：在当前 Base URL 下重新保存 Key。`,
+  };
+  const v = V[res?.verdict];
+  const tried = (res?.attempted || []).map(a => a.url).filter(u => u && u !== res?.endpoint);
+  // 结论后面永远附上打的是哪个地址：截图报障时这一行就是全部上下文
+  const addr = `\n请求地址：${res?.endpoint || res?.origin || '（未配置）'}`
+    + (tried.length ? `\n还试过：\n${tried.join('\n')}` : '');
+  return (v || `自检回了个没见过的结果：${JSON.stringify({ verdict: res?.verdict, error: res?.error, status: res?.status })}`) + addr;
+}
+
+$('btnAiPing').onclick = async () => {
+  const el = $('aiPingState');
+  el.textContent = '正在自检（15 秒内）…';
+  $('btnAiPing').disabled = true;
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'nw:aiPing', timeoutSec: 15 });
+    el.textContent = pingVerdictText(res);
+  } finally {
+    $('btnAiPing').disabled = false;
+  }
+};
+
+$('btnAiAbort').onclick = async () => {
+  $('btnAiAbort').disabled = true;
+  await chrome.runtime.sendMessage({ type: 'nw:aiAbort' }).catch(() => {});
+  $('aiStatus').textContent = '已请求取消：等这一条回包中止（不会真的把答案应用上）';
+};
+
 $('btnUndo').onclick = async () => { await chrome.runtime.sendMessage({ type: 'nw:undo', tabId }); render({ stats: {}, results: [], gaps: [] }); };
 $('btnClear').onclick = () => chrome.runtime.sendMessage({ type: 'nw:clearMarks', tabId });
 $('btnEdit').onclick = () => $('editor').classList.toggle('on');

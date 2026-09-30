@@ -13,7 +13,7 @@ import { compileAdapters } from '../core/adapters.js';
 import { buildAiRequest, assertNoProfileValues, parseAiResponse, aiSlotCatalog, AI_MAX_BYTES } from '../core/ai.js';
 import { extractFragments, buildExtractRequest, parseExtractResponse } from '../core/ai-extract.js';
 import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, findLeaksInExport, SECRETS_BUCKET, consentAfterSettingsPatch, effectiveTimeoutSec, AI_TIMEOUT_DEFAULT_SEC, chatEndpointCandidates } from '../core/ai-security.js';
-import { callChatEndpoint } from '../core/ai-endpoint.js';
+import { callChatEndpoint, pingAiEndpoint } from '../core/ai-endpoint.js';
 
 // 默认等 180 秒：reasoning 模型 + 几十个缺口的 JSON 回答，旧的 20 秒几乎必然超时，
 // 而超时是最难归因的失败——用户只看到"没反应"，其实是模型还没答完。
@@ -59,13 +59,22 @@ async function buildAiCall(profile, plan, pageFields) {
 /**
  * 出网就这一个函数，实现放在 core/ai-endpoint.js（那里能用假 fetch 离线测：
  * 端点形状错、只重试 404、错误体脱敏，这些在 service worker 里都没法断言）。
- * 这里只补上"每次调用现取上限"这一条：用户在设置里改了等待秒数要立刻生效，而不是等扩展重载。
+ * 这里只补两件事：① 每次调用现取上限（用户改了"等待秒数"要立刻生效，而不是等扩展重载）；
+ * ② 留一个在飞的 AbortController，让「取消等待」真的能停 —— 300 秒的干等没有出口是很难受的。
  */
+let activeAiAbort = null;
 async function callAiEndpoint({ baseUrl, model, key, text, timeoutSec }) {
-  return callChatEndpoint({
-    baseUrl, model, key, text,
-    timeoutSec: Number(timeoutSec) > 0 ? Number(timeoutSec) : AI_TIMEOUT_DEFAULT_SEC,
-  });
+  const ctrl = new AbortController();
+  activeAiAbort = ctrl;
+  try {
+    return await callChatEndpoint({
+      baseUrl, model, key, text,
+      timeoutSec: Number(timeoutSec) > 0 ? Number(timeoutSec) : AI_TIMEOUT_DEFAULT_SEC,
+      signal: ctrl.signal,
+    });
+  } finally {
+    if (activeAiAbort === ctrl) activeAiAbort = null;
+  }
 }
 
 const CHANNEL = 'nw-autofill';
@@ -258,7 +267,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // detail / finishReason / attempted 一并带回：用户报"空输出"或"调用失败"时，
         // 这几个字段就能区分是路径没对上（404 + 试过哪几个地址）、上游 4xx、
         // reasoning 模型没正文、还是答案被 max_tokens 截断
-        sendResponse({ ok: false, error: call.error, detail: call.detail, finishReason: call.finishReason, reasoningChars: call.reasoningChars, attempted: call.attempted, endpoint: call.endpoint });
+        sendResponse({ ok: false, error: call.error, detail: call.detail, finishReason: call.finishReason, reasoningChars: call.reasoningChars, attempted: call.attempted, endpoint: call.endpoint, timing: call.timing });
         return;
       }
       const parsed = parseAiResponse(call.content, {
@@ -272,6 +281,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         candidates: parsed.candidates.map(c => ({ ...c, label: labelOf.get(c.index) || '' })),
         dropped: parsed.dropped,
         endpoint: call.endpoint || target.url,
+        timing: call.timing,
         // 换了第二个候选才通 = 用户粘的 Base URL 形状不对，这个信息要留给界面说一句
         attempted: call.attempted,
         rawChars: String(call.content || '').length,
@@ -309,18 +319,48 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const xGate = maySendKey({ keyOrigin: xSess.keyOrigin, targetOrigin: xTarget.origin, consentOrigin: xSettings.aiConsentOrigin });
       if (!xGate.ok) { sendResponse({ ok: false, error: xGate.error }); return; }
       const call = await callAiEndpoint({ baseUrl: xSettings.aiBaseUrl, model: xSettings.aiModel, key: xSess.key, text: built.text, timeoutSec: effectiveTimeoutSec(xSettings) });
-      if (!call.ok) { sendResponse({ ok: false, error: call.error, detail: call.detail, finishReason: call.finishReason, reasoningChars: call.reasoningChars, attempted: call.attempted, endpoint: call.endpoint }); return; }
+      if (!call.ok) { sendResponse({ ok: false, error: call.error, detail: call.detail, finishReason: call.finishReason, reasoningChars: call.reasoningChars, attempted: call.attempted, endpoint: call.endpoint, timing: call.timing }); return; }
       const parsed = parseExtractResponse(call.content, { fragments: built.fragments, profile: msg.profile });
       sendResponse({
         ok: true,
         accepted: parsed.accepted,
         rejected: parsed.rejected,
         endpoint: call.endpoint || xTarget.url,
+        timing: call.timing,
         attempted: call.attempted,
         rawChars: String(call.content || '').length,
         snippet: parsed.accepted.length ? undefined : call.snippet,
         finishReason: call.finishReason,
       });
+    } else if (msg.type === 'nw:aiPing') {
+      // 连接自检：走的仍是"合法 https + Key 同 origin + 用户勾过确认"那三道闸，
+      // 唯一区别是正文是 core 里写死的 'ping'（不含页面标签、不含槽位表、更不含取值）。
+      const pSettings = (await chrome.storage.local.get('settings')).settings || {};
+      const pTarget = normalizeBaseUrl(pSettings.aiBaseUrl);
+      if (!pTarget.ok) { sendResponse({ ok: false, verdict: 'bad_endpoint', detail: 'endpoint_' + pTarget.error }); return; }
+      const pSess = await readAiSession();
+      if (!pSettings.aiModel || !pSess.key) { sendResponse({ ok: false, verdict: 'not_configured', error: 'ai_not_configured' }); return; }
+      const pGate = maySendKey({ keyOrigin: pSess.keyOrigin, targetOrigin: pTarget.origin, consentOrigin: pSettings.aiConsentOrigin });
+      if (!pGate.ok) { sendResponse({ ok: false, verdict: 'gate_' + pGate.error, error: pGate.error }); return; }
+      // 自检也带 Key 出门，闸门与「问 AI」一模一样
+      const pingCtrl = new AbortController();
+      activeAiAbort = pingCtrl;
+      let ping;
+      try {
+        ping = await pingAiEndpoint({
+          baseUrl: pSettings.aiBaseUrl, model: pSettings.aiModel, key: pSess.key,
+          timeoutSec: Number(msg.timeoutSec) > 0 ? Number(msg.timeoutSec) : 15,
+          signal: pingCtrl.signal,
+        });
+      } finally {
+        if (activeAiAbort === pingCtrl) activeAiAbort = null;
+      }
+      sendResponse({ ...ping, model: pSettings.aiModel });
+    } else if (msg.type === 'nw:aiAbort') {
+      // 「取消等待」：让在飞的那次 fetch 立刻断掉，别让用户对着一个 300 秒的计时器干等
+      const had = Boolean(activeAiAbort);
+      try { activeAiAbort?.abort(); } catch { /* 已经结束了 */ }
+      sendResponse({ ok: true, aborted: had });
     } else if (msg.type === 'nw:saveAiKey') {
       // Key 只进 session 或独立的 local.aiSecrets 桶；传空串就是"两个桶都清掉"
       const key = String(msg.key || '').trim();

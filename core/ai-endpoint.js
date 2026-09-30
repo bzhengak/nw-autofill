@@ -16,13 +16,31 @@ import { interpretAiReply } from './ai.js';
 
 const MAX_BYTES_BODY = 200_000;   // 上游回的东西不该很大；只是防御性上限，不参与业务判断
 
+/** 自检请求的固定正文：写死在这里，不拼任何页面文字或资料 —— 它能漏出去的东西只有"ping"这个词。 */
+export const PING_TEXT = 'ping';
+
+/** 一次请求的时间线：用来把"连不上"和"连上了但模型没答完"分开 —— 这两件事的修法完全不同。 */
+function nowMs() { return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now(); }
+
+/**
+ * fetch 被拒绝时的分类。浏览器在这里非常含糊（一律 TypeError: Failed to fetch），
+ * 所以判定要靠"同一时间做一次不带凭据的 GET"来对照，见 pingAiEndpoint。
+ */
+export function classifyFetchError(err) {
+  const name = String(err?.name || '');
+  const msg = String(err?.message || '');
+  if (name === 'AbortError') return { error: 'timeout', errName: name };
+  if (/redirect/i.test(msg) || name === 'ResponseRedirectedError') return { error: 'redirect_blocked', errName: name };
+  return { error: 'fetch_failed', errName: name || 'Error' };
+}
+
 /**
  * @param {object} p
  * @param {(url: string, init: object) => Promise<any>} [p.fetchImpl] 注入点是给测试用的；运行时用全局 fetch
  * @returns {Promise<object>} 成功 { ok:true, content, finishReason, rawChars, snippet, endpoint, attempted }
  *                            失败 { ok:false, error, detail?, status?, endpoint, attempted }
  */
-export async function callChatEndpoint({ baseUrl, model, key, text, timeoutSec = 180, fetchImpl }) {
+export async function callChatEndpoint({ baseUrl, model, key, text, timeoutSec = 180, fetchImpl, signal }) {
   const doFetch = fetchImpl || globalThis.fetch;
   const cand = chatEndpointCandidates(baseUrl);
   if (!cand.ok || !cand.candidates.length) {
@@ -38,44 +56,64 @@ export async function callChatEndpoint({ baseUrl, model, key, text, timeoutSec =
     if (last && left < 1000) {                      // 预算见底：把上一次的失败原样交回去，不再发
       return { ...last, endpoint: attempted.at(-1)?.url || '', attempted };
     }
-    const res = await oneCall({ doFetch, url, model, key, text, timeoutMs: left });
+    if (signal?.aborted) {                          // 用户点了「取消等待」：不再发下一个候选
+      return { ok: false, error: 'cancelled', endpoint: url, attempted, detail: '已取消，没有再发下一个地址' };
+    }
+    const res = await oneCall({ doFetch, url, model, key, text, timeoutMs: left, outerSignal: signal });
     attempted.push({ url, status: res.status ?? null, error: res.error || '' });
     if (res.ok) return { ...res, endpoint: url, attempted };
+    if (res.error === 'cancelled') return { ...res, endpoint: url, attempted };
     if (!shouldRetryNextEndpoint(res.status)) return { ...res, endpoint: url, attempted };
     last = res;
   }
   return { ...(last || { ok: false, error: 'network_error' }), endpoint: attempted.at(-1)?.url || '', attempted };
 }
 
-async function oneCall({ doFetch, url, model, key, text, timeoutMs }) {
+async function oneCall({ doFetch, url, model, key, text, timeoutMs, outerSignal }) {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), Math.max(1000, timeoutMs));
+  const t0 = nowMs();
+  // 外部信号 = 用户点「取消等待」。与内部超时分开：一个是"我不等了"，一个是"它没答完"，
+  // 混成一条的话界面会把取消说成超时。
+  let byUser = false;
+  const onOuterAbort = () => { byUser = true; ctrl.abort(); };
+  if (outerSignal) {
+    if (outerSignal.aborted) onOuterAbort();
+    else outerSignal.addEventListener?.('abort', onOuterAbort, { once: true });
+  }
+  const watch = setTimeout(() => ctrl.abort(), Math.max(1000, timeoutMs));
+  // 时间线是给"用量为 0 却一直在等"这种问题准备的：没有它，用户只能猜请求出没出去
+  const timing = { upBytes: 0, headersMs: null, bodyMs: null, aborted: false, cancelled: false, limitMs: Math.max(1000, timeoutMs) };
   try {
+    const bodyJson = JSON.stringify({
+      model,
+      temperature: 0,
+      // 几十个缺口的 JSON 答案很容易超过 800 token：截断后解析不出来，
+      // 用户看到的就成了"AI 没给建议"，其实是回答被砍断了。
+      max_tokens: 2000,
+      messages: [{ role: 'user', content: text }],
+    });
+    timing.upBytes = new TextEncoder().encode(bodyJson).length;
     const res = await doFetch(url, {
       method: 'POST',
       redirect: 'error',
       headers: { 'content-type': 'application/json', authorization: 'Bearer ' + key },
       signal: ctrl.signal,
-      body: JSON.stringify({
-        model,
-        temperature: 0,
-        // 几十个缺口的 JSON 答案很容易超过 800 token：截断后解析不出来，
-        // 用户看到的就成了"AI 没给建议"，其实是回答被砍断了。
-        max_tokens: 2000,
-        messages: [{ role: 'user', content: text }],
-      }),
+      body: bodyJson,
     });
+    timing.headersMs = Math.round(nowMs() - t0);
     if (!res.ok) {
       const bodyText = String(await res.text().catch(() => '')).slice(0, MAX_BYTES_BODY);
+      timing.bodyMs = Math.round(nowMs() - t0);
       // 上游错误体常带模型名/额度信息，对用户有用；也可能回显请求内容，一律先过 redact
-      return { ok: false, status: res.status, error: `http_${res.status}`, detail: redact(bodyText.slice(0, 300), key) };
+      return { ok: false, status: res.status, error: `http_${res.status}`, detail: redact(bodyText.slice(0, 300), key), timing };
     }
     const json = await res.json().catch(() => null);
+    timing.bodyMs = Math.round(nowMs() - t0);
     if (json?.error) {
       return {
         ok: false, status: res.status,
         error: 'upstream_' + String(json.error.code || json.error.type || 'error'),
-        detail: redact(String(json.error.message || '').slice(0, 300), key),
+        detail: redact(String(json.error.message || '').slice(0, 300), key), timing,
       };
     }
     // 正文/思考/截断的判定全在 core/ai.js 的纯函数里（那才是"空输出"最容易出事的环节）
@@ -83,7 +121,7 @@ async function oneCall({ doFetch, url, model, key, text, timeoutMs }) {
     if (!got.ok) {
       return {
         ok: false, status: res.status, error: got.error,
-        detail: redact(got.detail || '', key), finishReason: got.finishReason, reasoningChars: got.reasoningChars,
+        detail: redact(got.detail || '', key), finishReason: got.finishReason, reasoningChars: got.reasoningChars, timing,
       };
     }
     return {
@@ -93,13 +131,116 @@ async function oneCall({ doFetch, url, model, key, text, timeoutMs }) {
       rawChars: got.rawChars,
       // 回显兜底：上游要是把 Key 印进正文里（见过这种代理），也不能带进界面
       snippet: redact(got.snippet, key),
+      timing,
     };
   } catch (err) {
-    const name = String(err?.name || '');
-    if (name === 'AbortError') {
-      return { ok: false, error: 'timeout', detail: `等待 ${Math.round(timeoutMs / 1000)} 秒后中止`, waitedSec: Math.round(timeoutMs / 1000) };
+    timing.aborted = String(err?.name || '') === 'AbortError';
+    // 「取消」不能报成「超时」：前者是你不干了，后者是服务端没答完，两句结论完全不同
+    if (byUser) {
+      timing.cancelled = true;
+      return { ok: false, error: 'cancelled', timing, detail: '你点了「取消等待」，请求已中止（没再发下一个地址）' };
+    }
+    const kind = classifyFetchError(err);
+    if (kind.error === 'timeout') {
+      const sec = Math.round(timing.limitMs / 1000);
+      // 关键区分：等了这么久，**收到响应头没有**？没收到 = 服务端连开始回包都没有
+      return { ok: false, error: 'timeout', waitedSec: sec, timing, detail: timing.headersMs == null
+        ? `等了 ${sec} 秒，连响应头都没回来（请求发出去了，服务端没开始回话）`
+        : `等了 ${sec} 秒，响应头 ${timing.headersMs}ms 就到了，但正文一直没写完` };
     }
     // 错误文本可能带上请求 URL 甚至 Header，一律脱敏后再返回
-    return { ok: false, error: redact(String(err?.message || 'network_error'), key) };
-  } finally { clearTimeout(timer); }
+    return { ok: false, error: kind.error, errName: kind.errName, timing,
+      detail: redact(String(err?.message || 'network_error'), key) };
+  } finally { clearTimeout(watch); }
+}
+
+/**
+ * 连接自检：用一次**固定正文、不含任何用户数据**的请求，回答"到底有没有出这台机器"。
+ *
+ * 存在的理由：模型 300 秒不回来时，光看插件界面分不清三件事 ——
+ * ① 请求根本没出门（DNS / 代理 / 防火墙 / 域名被墙）；② 出门了但被打回（Key、路径、限流）；
+ * ③ 出门了、对方在慢慢生成。三者修法完全不同，而 ①② 都会表现成"用量记录是 0"。
+ *
+ * 走的是与真请求**完全同一条** callChatEndpoint（同样的候选顺序、同样的头部、同样的闸门），
+ * 只是正文是写死的 `PING_TEXT`：不拼页面标签、不拼槽位表、不拼资料。
+ * 网络层失败时再补一次**不带凭据的 GET**（同一 origin 的根路径），
+ * 用来把"域名根本连不上"和"能连上但 POST 被拦"分开 —— 那是两种不同的修法。
+ */
+/**
+ * 自检结论的判定表。单独抽成纯函数，是因为"该判成哪一种"就是这段代码的全部价值，
+ * 而它不该只能靠造计时器、造 abort 才测得到（那类测试慢、脆，而且一慢就说不清是哪步错了）。
+ *
+ * 五种互斥的情形：
+ *   没拿到 HTTP 状态 → 连不上 / POST 被拦 / 没第一个字节 / 流挂住 / 跳转被拦 / 被取消
+ *   拿到状态        → 按状态码归类；200 但正文不可用是另一种（bad_body），不是连不上
+ */
+export function classifyPing({ status, error, headersMs, originReachable }) {
+  const code = Number(status);
+  if (Number.isFinite(code)) {
+    if (code === 401 || code === 403) return 'key_rejected';
+    if (code === 404 || code === 405) return 'path_not_found';
+    if (code === 429) return 'rate_limited';
+    if (code >= 500) return 'upstream_error';
+    // 200 却没拿到能用的正文：既不是"连不上"也不是"被打回"，别混进 POST 被拦那一类
+    if (code === 200 || code === 201) return error === 'timeout' ? 'streaming_stalled' : 'bad_body';
+    return 'http_error';
+  }
+  if (/^upstream_/.test(String(error || ''))) return 'upstream_error';
+  if (error === 'redirect_blocked') return 'redirect_blocked';
+  if (error === 'cancelled') return 'cancelled';
+  if (originReachable === false) return 'unreachable';          // GET 都不通：这台机器到不了那个域
+  if (error === 'timeout') return headersMs == null ? 'no_first_byte' : 'streaming_stalled';
+  return 'post_blocked';                                        // 域名通、POST 被拒：代理/防火墙/CORS 预检
+}
+
+/**
+ * 连接自检：用一次**固定正文、不含任何用户数据**的请求，回答"到底有没有出这台机器"。
+ *
+ * 存在的理由：模型 300 秒不回来时，光看插件界面分不清三件事 ——
+ * ① 请求根本没出门（DNS / 代理 / 防火墙 / 域名被墙）；② 出门了但被打回（Key、路径、限流）；
+ * ③ 出门了、对方在慢慢生成。三者修法完全不同，而 ①② 都会表现成"用量记录是 0"。
+ *
+ * 走的是与真请求**完全同一条** callChatEndpoint（同样的候选顺序、同样的头部、同样的闸门），
+ * 只是正文是写死的 `PING_TEXT`：不拼页面标签、不拼槽位表、不拼资料。
+ * 只有"一个 HTTP 状态都没拿到"时才补一次**不带任何头部与凭据的 GET**（同一 origin 的根路径），
+ * 用来把"域名根本连不上"和"能连上但 POST 被拦"分开 —— 那是两种不同的修法。
+ */
+export async function pingAiEndpoint({ baseUrl, model, key, fetchImpl, timeoutSec = 15, signal }) {
+  const cand = chatEndpointCandidates(baseUrl);
+  if (!cand.ok || !cand.candidates.length) {
+    return { ok: false, verdict: 'bad_endpoint', detail: 'endpoint_' + (cand.error || 'empty'), endpoint: '' };
+  }
+  const sec = Math.min(30, Math.max(1, Number(timeoutSec) > 0 ? Number(timeoutSec) : 15));
+  const doFetch = fetchImpl || globalThis.fetch;
+  const post = await callChatEndpoint({ baseUrl, model, key, text: PING_TEXT, timeoutSec: sec, fetchImpl: doFetch, signal });
+  const base = {
+    ok: post.ok, verdict: post.ok ? 'ok' : '', endpoint: post.endpoint, attempted: post.attempted,
+    status: post.status ?? null, timing: post.timing, origin: cand.origin,
+    detail: post.detail || '', error: post.error || '', finishReason: post.finishReason ?? null,
+  };
+  if (post.ok) return base;
+
+  if (!Number.isFinite(Number(post.status))) {          // 没拿到状态才需要对照探测，别多打一次网络
+    const probe = await probeOrigin(doFetch, cand.origin, sec * 1000);
+    base.originReachable = probe.reachable;
+    base.originStatus = probe.status;
+    base.originMs = probe.ms;
+  }
+  return { ...base, verdict: classifyPing({
+    status: post.status, error: post.error,
+    headersMs: post.timing?.headersMs, originReachable: base.originReachable,
+  }) };
+}
+
+/** 不带任何头部与凭据的 HEAD/GET：只回答"这个 origin 连不连得上" */
+async function probeOrigin(doFetch, origin, timeoutMs) {
+  const ctrl = new AbortController();
+  const watch = setTimeout(() => ctrl.abort(), Math.max(1000, timeoutMs));
+  const t0 = nowMs();
+  try {
+    const res = await doFetch(origin + '/', { method: 'GET', redirect: 'error', signal: ctrl.signal });
+    return { reachable: true, status: res.status, ms: Math.round(nowMs() - t0) };
+  } catch {
+    return { reachable: false, status: null, ms: Math.round(nowMs() - t0) };
+  } finally { clearTimeout(watch); }
 }

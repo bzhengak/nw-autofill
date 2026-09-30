@@ -456,3 +456,18 @@ test('「回答长度上限」：合法值进设置、非法值保住原状并�
   await new Promise(r => setTimeout(r, 60));
   assert.equal(sent.filter(m => m.type === 'nw:saveSettings').pop().settings.aiMaxOutput, '', '清空应回到默认而不是存个 0');
 });
+
+test('流式接收这个勾：默认是开的，跟着存储走，改动要落进 settings', async () => {
+  const a = bootExtract(() => ({ ok: true, profile: {}, settings: {}, tabId: 1 }));
+  await load();
+  assert.equal(a.doc.getElementById('aiStream').checked, true, '没配过时默认该是开（非流式分不清慢与不通）');
+
+  const b = bootExtract(() => ({ ok: true, profile: {}, settings: { aiStream: false }, tabId: 1 }));
+  await load();
+  const box = b.doc.getElementById('aiStream');
+  assert.equal(box.checked, false, '存储里关着，界面却显示开着');
+  box.checked = true;
+  box.dispatchEvent(new b.doc.defaultView.Event('change', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 60));
+  assert.equal(b.sent.filter(m => m.type === 'nw:saveSettings').pop().settings.aiStream, true, '勾选没落到设置');
+});

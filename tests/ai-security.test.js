@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, redact, SETTING_KEYS, SECRETS_BUCKET, findLeaksInExport, consentAfterSettingsPatch, clampTimeoutSec, effectiveTimeoutSec, AI_TIMEOUT_DEFAULT_SEC, clampMaxTokens, effectiveMaxTokens, AI_MAX_TOKENS_DEFAULT } from '../core/ai-security.js';
+import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, redact, SETTING_KEYS, SECRETS_BUCKET, findLeaksInExport, consentAfterSettingsPatch, clampTimeoutSec, effectiveTimeoutSec, AI_TIMEOUT_DEFAULT_SEC, clampMaxTokens, effectiveMaxTokens, AI_MAX_TOKENS_DEFAULT, effectiveStream } from '../core/ai-security.js';
 
 test('持久化 Key 只能进独立桶：SECRETS_BUCKET 不在 settings 白名单里', () => {
   assert.equal(SECRETS_BUCKET, 'aiSecrets');
@@ -174,4 +174,14 @@ test('回答长度上限：边界、非法退回默认，并且键名不能被"�
   // 与端点无关的设置不得擦掉 AI 确认（needs_consent 的老形状）
   const prev = { aiBaseUrl: 'https://api.a.test/v1', aiConsentOrigin: 'https://api.a.test' };
   assert.equal(consentAfterSettingsPatch({ prev, patch: { aiMaxOutput: 6000 } }), 'https://api.a.test');
+});
+
+test('流式开关：默认开、能存住、名字不会被秘密键名闸误杀，也不擦确认', () => {
+  assert.equal(effectiveStream({}), true, '没配过就该是开：非流式分不清"慢"和"不通"');
+  assert.equal(effectiveStream({ aiStream: false }), false);
+  assert.equal(effectiveStream({ aiStream: true }), true);
+  const { clean, dropped } = sanitizeSettings({ aiStream: false });
+  assert.equal(clean.aiStream, false, JSON.stringify(dropped));
+  const prev = { aiBaseUrl: 'https://api.a.test/v1', aiConsentOrigin: 'https://api.a.test' };
+  assert.equal(consentAfterSettingsPatch({ prev, patch: { aiStream: false } }), 'https://api.a.test');
 });

@@ -331,3 +331,156 @@ test('被直接拒掉的 POST（fetch_failed）不再做流式二次探测：那
   assert.equal(res.verdict, 'post_blocked');
   assert.deepEqual(calls, ['POST', 'GET'], '被拒的情况不该再补一发流式');
 });
+
+// ── 流式接收：默认开，且服务商不认时要能自己退回去 ──────────────────────────
+const enc = new TextEncoder();
+/** 把若干 SSE 帧拼成一个响应（每帧可以是字符串或对象；自动补 data: 前缀与换行） */
+function sseResponse(frames, status = 200) {
+  const chunks = frames.map(f => (typeof f === 'string' ? f : `data: ${JSON.stringify(f)}\n\n`)).map(enc.encode.bind(enc));
+  const cancelled = { v: false };
+  return {
+    ok: status >= 200 && status < 300, status,
+    body: { getReader: () => {
+      let i = 0;                                     // 一条新流从第一帧开始读
+      return {
+        read: async () => (i < chunks.length ? { done: false, value: chunks[i++] } : { done: true }),
+        cancel: async () => { cancelled.v = true; },
+      };
+    } },
+    text: async () => '', json: async () => { throw new Error('not json'); },
+    __cancelled: cancelled,
+  };
+}
+const delta = content => ({ choices: [{ delta: { content }, finish_reason: null }] });
+
+test('流式：把 SSE 帧拼回完整正文，第一个字节的耗时相对"请求发出"而不是"响应头到了"', async () => {
+  const t0 = Date.now();
+  const f = async () => { await new Promise(r => setTimeout(r, 15)); return sseResponse([
+    delta('[{"i":0,"p":"ba'), delta('sics.name"}]'), { choices: [{ delta: {}, finish_reason: 'stop' }] }, 'data: [DONE]\n\n',
+  ]); };
+  const res = await callChatEndpoint({ baseUrl: 'https://api.x.test/v1', model: 'm', key: KEY, text: 'q', stream: true, fetchImpl: f });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.content, '[{"i":0,"p":"basics.name"}]', 'SSE 增量没拼回原样');
+  assert.equal(res.finishReason, 'stop');
+  assert.ok(res.firstChunkMs >= 10 && res.firstChunkMs < 3000, `第一个字节耗时不像从请求开始算：${res.firstChunkMs}`);
+  assert.ok(Date.now() - t0 >= 15);
+});
+
+test('流式：只有思考没有正文时报 reasoning_only，不能算"模型没建议"', async () => {
+  const f = async () => sseResponse([
+    { choices: [{ delta: { reasoning_content: '先想想这栏是什么'.repeat(4) }, finish_reason: 'stop' }] }]);
+  const res = await callChatEndpoint({ baseUrl: 'https://api.x.test/v1', model: 'm', key: KEY, text: 'q', stream: true, fetchImpl: f });
+  assert.equal(res.ok, false);
+  assert.equal(res.error, 'reasoning_only');
+  assert.ok(res.reasoningChars > 0, '思考字数没带回来，界面就没法说清"它其实答了"');
+});
+
+test('服务商不认 stream 参数：自动退回普通收法再试一次，并把"退回过"这件事说出来', async () => {
+  const calls = [];
+  const f = async (url, init) => {
+    calls.push(JSON.parse(init.body));
+    if (calls.length === 1) return http(400, 'stream not supported by this deployment');
+    return ok('[]');
+  };
+  const res = await callChatEndpoint({ baseUrl: 'https://api.x.test/v1', model: 'm', key: KEY, text: 'q', stream: true, fetchImpl: f });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.streamFallback, true);
+  assert.equal(calls[0].stream, true, '第一发该走流式');
+  assert.ok(!('stream' in calls[1]), '退回那一发还带着 stream 参数');
+});
+
+test('401 / 超时不重试第二种收法：那不是"流式不被接受"', async () => {
+  let n = 0;
+  const a = await callChatEndpoint({
+    baseUrl: 'https://api.x.test/v1', model: 'm', key: KEY, text: 'q', stream: true,
+    fetchImpl: async () => { n++; return http(401, 'invalid api key'); },
+  });
+  assert.equal(a.error, 'http_401');
+  assert.equal(n, 1, '鉴权失败又换收法重发了一遍');
+
+  n = 0;
+  const b = await callChatEndpoint({
+    baseUrl: 'https://api.x.test/v1', model: 'm', key: KEY, text: 'q', stream: true, timeoutSec: 1,
+    fetchImpl: async (url, init) => {
+      n++;
+      return new Promise((_r, reject) => init.signal.addEventListener('abort', () => {
+        const e = new Error('aborted'); e.name = 'AbortError'; reject(e);
+      }));
+    },
+  });
+  assert.equal(b.error, 'timeout');
+  assert.equal(n, 1, '超时又退回收法重发 = 等待时间翻倍');
+});
+
+test('流式中途被中止：说清"已经开始回话、已收到多少字"，与"一个字节都没有"分开', async () => {
+  const f = async (url, init) => ({
+    ok: true, status: 200,
+    body: {
+      getReader: () => {
+        let i = 0;
+        return {
+          read: () => {
+            i++;
+            if (i === 1) return Promise.resolve({ done: false, value: enc.encode('data: {"choices":[{"delta":{"content":"{\\"i\\":0,"}}') });
+            return new Promise((_r, reject) => init.signal.addEventListener('abort', () => {
+              const e = new Error('aborted'); e.name = 'AbortError'; reject(e);
+            }));
+          },
+          cancel: async () => {},
+        };
+      },
+    },
+    text: async () => '', json: async () => { throw new Error('x'); },
+  });
+  const res = await callChatEndpoint({ baseUrl: 'https://api.x.test/v1', model: 'm', key: KEY, text: 'q', stream: true, timeoutSec: 1, fetchImpl: f });
+  assert.equal(res.ok, false);
+  assert.equal(res.error, 'timeout');
+  assert.match(res.detail, /已经开始回话/, `没说清"其实在回话"：${res.detail}`);
+  assert.match(res.detail, /已收到 \d+ 字/);
+  assert.notEqual(res.firstChunkMs, null);
+});
+
+test('自检那一发只摸第一个字节就撤：不 cancel 就是把整段答案白收了一遍', async () => {
+  let peeked = null;
+  const impl = async (url, init) => {
+    if (init?.method !== 'POST') return { ok: true, status: 200, text: async () => '', json: async () => ({}) };
+    if (String(init.body).includes('"stream":true')) { peeked = sseResponse([delta('x'.repeat(5000)), delta('y'.repeat(5000))]); return peeked; }
+    // 非流式那一发：一直沉默到超时
+    return new Promise((_r, reject) => init.signal.addEventListener('abort', () => {
+      const e = new Error('aborted'); e.name = 'AbortError'; reject(e);
+    }));
+  };
+  const res = await pingAiEndpoint({ baseUrl: 'https://api.x.test/v1', model: 'm', key: KEY, fetchImpl: impl, timeoutSec: 2 });
+  assert.equal(res.verdict, 'holding_response', JSON.stringify(res));
+  assert.equal(res.ok, false, '自检不该把流式那一发当成功返回');
+  assert.ok(!('content' in res), '自检把整段正文收回来了 —— 它只需要知道有没有第一个字节');
+  assert.equal(peeked.__cancelled.v, true, '读完就撤没做：reader 没被 cancel，连接会一直挂着');
+});
+
+test('服务商收了 stream 参数却仍按普通 JSON 回：退回普通收法要能救回来', async () => {
+  const calls = [];
+  const f = async (url, init) => {
+    calls.push(JSON.parse(init.body));
+    // 流式那一发：body 里根本不是 SSE 帧（很多兼容层就这么"忽略"了 stream）
+    if (calls[0].stream) {
+      const chunks = [enc.encode('{"choices":[{"message":{"content":"[]"},"finish_reason":"stop"}]}')];
+      return {
+        ok: true, status: 200,
+        body: { getReader: () => {
+          let k = 0;
+          return {
+            read: async () => (k < chunks.length ? { done: false, value: chunks[k++] } : { done: true }),
+            cancel: async () => {},
+          };
+        } },
+        json: async () => ({ choices: [{ message: { content: '[]' }, finish_reason: 'stop' }] }),
+        text: async () => '',
+      };
+    }
+    return ok('[]');
+  };
+  const res = await callChatEndpoint({ baseUrl: 'https://api.x.test/v1', model: 'm', key: KEY, text: 'q', stream: true, fetchImpl: f });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.streamFallback, true, '退回了却没说出来：下次还以为流式好好的');
+  assert.equal(calls.length, 2);
+});

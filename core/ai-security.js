@@ -5,7 +5,7 @@
 
 /** 可以持久化的设置白名单。Key 不在里面 —— 它只配活在 chrome.storage.session。 */
 export const SETTING_KEYS = ['mode', 'fillSensitive', 'autoSubmitNever', 'allowCustomSelect', 'aiEnabled',
-  'aiBaseUrl', 'aiModel', 'aiMaxGaps', 'aiConsentOrigin', 'aiTimeoutSec', 'aiMaxOutput', 'editorLang', 'enMissingMode'];
+  'aiBaseUrl', 'aiModel', 'aiMaxGaps', 'aiConsentOrigin', 'aiTimeoutSec', 'aiMaxOutput', 'aiStream', 'editorLang', 'enMissingMode'];
 
 const SECRETISH = /(key|token|secret|password|credential|auth)/i;
 
@@ -183,6 +183,19 @@ export function clampMaxTokens(v) {
 export function effectiveMaxTokens(settings) {
   const got = clampMaxTokens(settings?.aiMaxOutput);
   return got.ok ? got.tokens : AI_MAX_TOKENS_DEFAULT;
+}
+
+/**
+ * 要不要用流式收答案。**默认开**。
+ * 理由不是"流式更高级"，而是非流式有一个物理事实：整段答案生成完成之前，服务端一个字节都不发。
+ * 于是"对端在慢慢想"和"路径根本不通"在界面上完全同形 —— 2026-09-30 用户实测就是
+ * 非流式 15 秒零字节、流式立刻开始回话。开了流式还能顺手得到"第一个字节几毫秒"和
+ * "中止时已经收到多少字"这两个以前看不见的事实。
+ * 服务商不认 `stream:true` 时，core/ai-endpoint.js 会自动退回普通收法再试一次（见 shouldRetryWithoutStream），
+ * 所以这个默认值是安全的。
+ */
+export function effectiveStream(settings) {
+  return settings?.aiStream !== false;        // 没配过 = 开；只有显式关掉才不走流式
 }
 
 export function maySendKey({ keyOrigin, targetOrigin, consentOrigin }) {

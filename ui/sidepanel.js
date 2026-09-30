@@ -5,7 +5,7 @@ import { gapReasonLabel } from '../core/matcher.js';
 // 端点/Key 的判定规则与 service worker 用同一份代码：这里只用于即时反馈，
 // 真正的把关在 background（哪怕这个文件被改成永远不校验，请求也发不出去）。
 import { applyExtracted } from '../core/ai-extract.js';
-import { normalizeBaseUrl, sanityCheckKey, findLeaksInExport, clampTimeoutSec, effectiveTimeoutSec, AI_TIMEOUT_DEFAULT_SEC, clampMaxTokens, effectiveMaxTokens, AI_MAX_TOKENS_DEFAULT } from '../core/ai-security.js';
+import { normalizeBaseUrl, sanityCheckKey, findLeaksInExport, clampTimeoutSec, effectiveTimeoutSec, AI_TIMEOUT_DEFAULT_SEC, clampMaxTokens, effectiveMaxTokens, AI_MAX_TOKENS_DEFAULT, effectiveStream } from '../core/ai-security.js';
 import { BUILD } from '../core/build.js';
 
 const $ = id => document.getElementById(id);
@@ -76,6 +76,8 @@ async function refresh() {
   $('aiTimeoutState').textContent = `当前生效：${effectiveTimeoutSec(state?.settings || {})} 秒`;
   $('aiMaxTokens').value = state?.settings?.aiMaxOutput || '';
   $('aiMaxTokensState').textContent = `当前生效：${effectiveMaxTokens(state?.settings || {})} token`;
+  $('aiStream').checked = effectiveStream(state?.settings || {});
+  $('aiStream').checked = effectiveStream(state?.settings || {});
   aiKeyPresent = Boolean(state?.hasAiKey);
   aiKeyBoundOrigin = state?.aiKeyOrigin || '';
   $('aiPersist').checked = Boolean(state?.aiKeyPersisted);
@@ -526,6 +528,14 @@ $('aiMaxTokens').onchange = async e => {
   e.target.value = String(got.tokens);
   $('aiMaxTokensState').textContent = `当前生效：${got.tokens} token`;
 };
+// 流式接收：默认开。关掉只是回到"等整段生成完再一次性收"，不影响发送内容与闸门。
+$('aiStream').onchange = async e => {
+  await chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { aiStream: e.target.checked } });
+  lastState = { ...(lastState || {}), settings: { ...(lastState?.settings || {}), aiStream: e.target.checked } };
+  $('aiStatus').textContent = e.target.checked
+    ? '已开流式：答案边生成边收，能看到第一个字节的耗时。'
+    : '已关流式：会等整段生成完一次性收 —— 那时"慢"和"不通"在界面上分不开，超时也更常见。';
+};
 $('aiConsent').onchange = async e => {
   const base = normalizeBaseUrl($('aiBaseUrl').value);
   if (!e.target.checked) {
@@ -629,7 +639,7 @@ $('btnAiAsk').onclick = async () => {
     await run('preview', { aiCandidates: res.candidates });
     $('aiStatus').textContent = `AI 补齐 ${res.candidates.length} 栏（全部黄字待你核对）；${formatTiming(res.timing) ? formatTiming(res.timing) + '；' : ''}已用「只预演」应用，确认后点「扫描并填写」写入`
       + (res.finishReason === 'length' ? ' —— 注意：这次回答被长度上限截断了，可能还有缺口没给出，再点一次问剩下的' : '')
-      + endpointNote(res);
+      + endpointNote(res) + streamNote(res);
   } finally { stopWait(); }   // 任何一条出口都得停掉计时与心跳，不能让它在后台一直跳
 };
 /** 一次请求的时间线，念成人话：上行多少字节、多久收到响应头、多久收到正文。 */
@@ -638,8 +648,16 @@ function formatTiming(t) {
   const parts = [`上行 ${t.upBytes || 0} 字节`];
   if (t.headersMs != null) parts.push(`响应头 ${t.headersMs}ms`);
   else parts.push('没收到响应头');
+  if (t.firstChunkMs != null) parts.push(`第一个字节 ${t.firstChunkMs}ms`);
   if (t.bodyMs != null) parts.push(`正文 ${t.bodyMs}ms`);
   return parts.join(' · ');
+}
+
+/** 流式这一发到底是怎么通的：自动退回过要讲，正常流式也值得报第一个字节。 */
+function streamNote(res) {
+  if (res?.streamFallback) return '　·　这次服务商没接受流式，已自动退回普通收法才拿到答案（可以把「流式接收」关掉省一发）';
+  if (res?.firstChunkMs != null) return `　·　流式：第一个字节 ${res.firstChunkMs}ms 就到了`;
+  return '';
 }
 
 /**
@@ -662,7 +680,7 @@ function pingVerdictText(res) {
     no_first_byte: `域名连得上，但连"只回一个词"的请求都摸不到第一个字节（GET ${res?.originMs}ms 就通）—— 对端确实没回话。`
       + '这通常不是模型慢：查服务商状态页、账号是否被限，或中间是否有网关把 POST 挂住了。',
     holding_response: `路是通的：非流式那一发在 ${res?.timing?.limitMs ? Math.round(res.timing.limitMs / 1000) : 15} 秒内没吐字节，`
-      + `但改成流式后 ${res?.firstChunkMs}ms 就收到了第一个字节。说明对端要等整段生成完才发（reasoning 模型尤其明显）—— `
+      + `但改成流式后，从请求发出算 ${res?.firstChunkMs ?? '?'}ms 就收到了第一个字节。说明对端要等整段生成完才发（reasoning 模型尤其明显）—— `
       + '这是"慢"不是"不通"：把「回答长度上限」调大、一次少问几栏，或换非 reasoning 模型。',
     streaming_stalled: `响应头 ${res?.timing?.headersMs}ms 就到了，但正文一直没写完 —— 生成中途挂住，通常是模型侧或中间代理缓冲。`,
     redirect_blocked: `这个地址会把请求重定向到别处（我们禁止跟跳转，否则 Key 会跟着跑到别的域）。请把 Base URL 填成最终地址本身。`,
@@ -831,7 +849,7 @@ function renderExtractResults(res) {
   const intro = document.createElement('p');
   intro.className = 'hint';
   intro.textContent = `AI 给出 ${res.accepted.length} 条逐字摘录${res.rejected?.length ? `，另有 ${res.rejected.length} 条被规则丢弃` : ''}。只有勾选的会写入。`
-    + endpointNote(res);
+    + endpointNote(res) + streamNote(res);
   host.appendChild(intro);
   const table = document.createElement('table');
   for (const a of res.accepted) {

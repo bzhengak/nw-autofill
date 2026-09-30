@@ -61,11 +61,33 @@ async function bootSw(replies) {
 const http = (status, body = '') => ({
   ok: false, status, text: async () => body, json: async () => { throw new Error('not json'); },
 });
-const okJson = content => ({
-  ok: true, status: 200,
-  json: async () => ({ choices: [{ message: { content }, finish_reason: 'stop' }] }),
-  text: async () => '',
-});
+/**
+ * 一个响应两种形状：后台默认开流式，所以假上游既要有 json()（普通收法走的），
+ * 也要有 body.getReader()（流式走的），并且两边内容一致 ——
+ * 只给 json() 的桩测的是现实中不存在的分支，以前那条链路就是这么"看着通"的。
+ */
+const okJson = content => {
+  const half = Math.ceil(content.length / 2);
+  const frames = [
+    { choices: [{ delta: { content: content.slice(0, half) }, finish_reason: null }] },
+    { choices: [{ delta: { content: content.slice(half) }, finish_reason: 'stop' }] },
+  ];
+  const chunks = [...frames.map(f => `data: ${JSON.stringify(f)}\n\n`), 'data: [DONE]\n\n']
+    .map(s => new TextEncoder().encode(s));
+  return {
+    ok: true, status: 200,
+    json: async () => ({ choices: [{ message: { content }, finish_reason: 'stop' }] }),
+    text: async () => '',
+    // 每次 getReader 都是一条新流：退回普通收法时不该接着上次的读数
+    body: { getReader: () => {
+      let k = 0;
+      return {
+        read: async () => (k < chunks.length ? { done: false, value: chunks[k++] } : { done: true }),
+        cancel: async () => {},
+      };
+    } },
+  };
+};
 
 /** 配好一套"能用 AI"的状态：session Key + Base URL + 模型 + 确认 */
 async function configure(send, chrome, { baseUrl = BASE, consent = true } = {}) {
@@ -238,4 +260,18 @@ test('自检那一发只给 1 token：它测的是通不通，不是模型能想
   const body = JSON.parse(calls[0].init.body);
   assert.equal(body.max_tokens, 1);
   assert.equal(body.messages[0].content, 'ping');
+});
+
+test('流式默认开：真请求那一发带 stream:true；显式关掉才不带', async () => {
+  const on = await bootSw([okJson('[]')]);
+  await configure(on.send, null, { baseUrl: BASE });
+  await on.send(ASK_MSG);
+  assert.equal(JSON.parse(on.calls[0].init.body).stream, true, '默认该走流式：非流式要等整段生成完才发第一个字节');
+
+  const off = await bootSw([okJson('[]')]);
+  await configure(off.send, null, { baseUrl: BASE });
+  await off.send({ type: 'nw:saveSettings', settings: { aiStream: false } });
+  await off.send(ASK_MSG);
+  assert.ok(!('stream' in JSON.parse(off.calls[0].init.body)), '关了还在发 stream 参数');
+  assert.equal(off.calls.length, 1, '关掉流式后不该再多发一发');
 });

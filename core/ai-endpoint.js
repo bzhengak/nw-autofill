@@ -15,13 +15,14 @@ import { chatEndpointCandidates, redact, shouldRetryNextEndpoint, AI_MAX_TOKENS_
 import { interpretAiReply } from './ai.js';
 
 const MAX_BYTES_BODY = 200_000;   // 上游回的东西不该很大；只是防御性上限，不参与业务判断
+const MAX_CHARS_STREAM = 200_000; // 流式累计正文的硬上限：超了说明上游在刷屏或我们把它接错了
 
 /**
- * 读第一个字节就撤。返回毫秒；读不到（超时/没有 body 流）返回 null。
+ * 读第一个字节就撤。返回毫秒（相对**请求发出那一刻**，不是相对响应头 —— 相对响应头会算出
+ * "0ms 就收到第一个字节"这种听起来很厉害其实什么都没说的话）。读不到返回 null。
  * 只看不留：内容不回传、不解析，所以自检的流式探测连"模型说了什么"都不知道。
  */
-async function peekFirstChunk(res, ctrl) {
-  const t0 = nowMs();
+async function peekFirstChunk(res, ctrl, startedAt) {
   let reader = null;
   try {
     reader = res.body?.getReader?.() || null;
@@ -30,12 +31,73 @@ async function peekFirstChunk(res, ctrl) {
       reader.read(),
       new Promise(resolve => setTimeout(() => resolve(null), Math.max(200, timingRemaining(ctrl) || 200))),
     ]);
-    return first ? Math.round(nowMs() - t0) : null;
+    return first ? Math.round(nowMs() - startedAt) : null;
   } catch {
     return null;
   } finally {
     try { await reader?.cancel?.(); } catch { /* 已经关掉了 */ }
     try { ctrl.abort(); } catch { /* 同上 */ }
+  }
+}
+
+/**
+ * 收 SSE：把 `data: {...}` 里的 delta 拼成一份完整正文，再交给和平时同一个 interpretAiReply 判定。
+ *
+ * 为什么要能收流：**非流式响应在整段答案生成完成之前一个字节都不发**。
+ * 于是"对端在慢慢想"和"路径根本不通"在界面上长得一模一样 —— 2026-09-30 实测就是
+ * 非流式 15 秒零字节、改流式立刻开始回话。流式还顺带给了两个以前没有的事实：
+ * 第一个字节的耗时，以及中途被中止时"已经收到多少字"。
+ *
+ * 只认 OpenAI 兼容的形状（choices[0].delta.content / reasoning_content + [DONE]）；
+ * 半行留在 buffer 里等下一块，解析不动的行直接跳过 —— 上游加字段不该让填写失败。
+ */
+async function readSse(res, ctrl, { startedAt, key }) {
+  const out = { ok: false, content: '', reasoning: '', finishReason: null, firstChunkMs: null, charsAtAbort: 0 };
+  let reader = null;
+  try {
+    reader = res.body?.getReader?.() || null;
+    if (!reader) { out.error = 'no_stream_body'; return out; }
+    const dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (out.firstChunkMs == null) out.firstChunkMs = Math.round(nowMs() - startedAt);
+      buf += dec.decode(value, { stream: true });
+      let nl = buf.indexOf('\n');
+      while (nl >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        nl = buf.indexOf('\n');
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === '[DONE]') continue;
+        let j = null;
+        try { j = JSON.parse(payload); } catch { continue; }        // 半行或上游自己的注释
+        if (j?.error) {
+          out.error = 'upstream_' + String(j.error.code || j.error.type || 'error');
+          out.detail = redact(String(j.error.message || '').slice(0, 300), key);
+          return out;
+        }
+        const delta = j?.choices?.[0]?.delta || j?.choices?.[0]?.message || {};
+        if (delta.content) out.content += String(delta.content);
+        if (delta.reasoning_content) out.reasoning += String(delta.reasoning_content);
+        if (j?.choices?.[0]?.finish_reason) out.finishReason = j.choices[0].finish_reason;
+        if (out.content.length + out.reasoning.length > MAX_CHARS_STREAM) {
+          out.error = 'stream_too_large';
+          return out;
+        }
+      }
+    }
+    out.ok = true;
+    return out;
+  } catch (err) {
+    // 中途被时限/用户中止：把"已经收到多少字"带回去，这比"超时了"有用得多
+    out.charsAtAbort = out.content.length + out.reasoning.length;
+    out.error = String(err?.name || '') === 'AbortError' ? 'aborted_mid_stream' : 'stream_read_failed';
+    return out;
+  } finally {
+    try { await reader?.cancel?.(); } catch { /* 已结束 */ }
   }
 }
 
@@ -63,12 +125,39 @@ export function classifyFetchError(err) {
 }
 
 /**
+ * 流式那一发失败后，哪些情况值得**退回普通收法**再试一次。
+ * 只列"这条响应方式本身不被接受"的形状：400/422（很多兼容层对 stream 的处理不一样）、
+ * 拿不到 body 流、SSE 读不动、200 但正文不是响应。
+ * 401/403/404/429/5xx 与超时都不在列 —— 那些换成非流式一样会失败，多打一发只是浪费额度。
+ */
+export function shouldRetryWithoutStream(res) {
+  if (!res || res.ok) return false;
+  const code = Number(res.status);
+  if (code === 400 || code === 422) return true;
+  // empty_content 也在列：有些兼容层收了 stream 参数却仍按普通 JSON 回，
+  // 这时 SSE 解析一行都认不出来，看起来就是"200 但正文为空"
+  return ['no_stream_body', 'stream_read_failed', 'bad_body', 'not_json', 'empty_content'].includes(res.error);
+}
+
+/**
  * @param {object} p
  * @param {(url: string, init: object) => Promise<any>} [p.fetchImpl] 注入点是给测试用的；运行时用全局 fetch
  * @returns {Promise<object>} 成功 { ok:true, content, finishReason, rawChars, snippet, endpoint, attempted }
  *                            失败 { ok:false, error, detail?, status?, endpoint, attempted }
  */
-export async function callChatEndpoint({ baseUrl, model, key, text, timeoutSec = 180, maxTokens, stream = false, fetchImpl, signal }) {
+export async function callChatEndpoint(opts) {
+  const run = stream => callChatOnce({ ...opts, stream });
+  const first = await run(opts.stream);
+  if (opts.stream === true && !first.ok && shouldRetryWithoutStream(first)) {
+    const again = await run(false);
+    // 退回成功了也要留痕：界面得说清"这次是换了收法才通的"，不然下次还以为流式没事
+    if (again.ok) return { ...again, streamFallback: true, firstTry: { error: first.error, status: first.status ?? null } };
+    return { ...again, streamFallback: true };
+  }
+  return first;
+}
+
+async function callChatOnce({ baseUrl, model, key, text, timeoutSec = 180, maxTokens, stream = false, fetchImpl, signal }) {
   const doFetch = fetchImpl || globalThis.fetch;
   const cand = chatEndpointCandidates(baseUrl);
   if (!cand.ok || !cand.candidates.length) {
@@ -119,8 +208,7 @@ async function oneCall({ doFetch, url, model, key, text, timeoutMs, outerSignal,
       // 长度上限由设置决定（默认 4000）：reasoning 模型把思考链也算进 max_tokens，
       // 老实现写死 2000，几十个缺口的 JSON 回答几乎必然被砍断 → 表现成"AI 没建议"。
       max_tokens: Number(maxTokens) > 0 ? Number(maxTokens) : AI_MAX_TOKENS_DEFAULT,
-      // stream 只给自检用：非流式响应在整个答案生成完之前一个字节都不发，
-      // 那时候"对端在慢慢想"和"路径根本不通"在时间线上长得一模一样。
+      // stream：false=普通收法；true=边收边拼（真请求可开）；'peek'=只摸第一个字节就撤（自检用）
       ...(stream ? { stream: true } : {}),
       messages: [{ role: 'user', content: text }],
     });
@@ -133,20 +221,56 @@ async function oneCall({ doFetch, url, model, key, text, timeoutMs, outerSignal,
       body: bodyJson,
     });
     timing.headersMs = Math.round(nowMs() - t0);
-    if (stream) {
+    // 先判状态码：开了流式之后，上游拒绝（400/401/404…）仍是一个普通 JSON 响应，
+    // 不能因为"开了流式"就去摸字节 —— 摸到的会是那段错误正文。
+    if (!res.ok) {
+      const bodyText = String(await res.text().catch(() => '')).slice(0, MAX_BYTES_BODY);
+      timing.bodyMs = Math.round(nowMs() - t0);
+      // 上游错误体常带模型名/额度信息，对用户有用；也可能回显请求内容，一律先过 redact
+      return { ok: false, status: res.status, error: `http_${res.status}`, detail: redact(bodyText.slice(0, 300), key), timing };
+    }
+    if (stream === 'peek') {
       // 自检只看"第一个字节什么时候到"，看到就撤：不等它写完，也不把内容带回来
-      const chunkMs = await peekFirstChunk(res, ctrl);
+      const chunkMs = await peekFirstChunk(res, ctrl, t0);
       timing.firstChunkMs = chunkMs;
       return {
         ok: chunkMs != null, status: res.status,
         error: chunkMs == null ? 'no_first_byte' : 'stream_ok', timing, streamPeek: true,
       };
     }
-    if (!res.ok) {
-      const bodyText = String(await res.text().catch(() => '')).slice(0, MAX_BYTES_BODY);
+    if (stream === true) {
+      const s = await readSse(res, ctrl, { startedAt: t0, key });
+      timing.firstChunkMs = s.firstChunkMs;
       timing.bodyMs = Math.round(nowMs() - t0);
-      // 上游错误体常带模型名/额度信息，对用户有用；也可能回显请求内容，一律先过 redact
-      return { ok: false, status: res.status, error: `http_${res.status}`, detail: redact(bodyText.slice(0, 300), key), timing };
+      if (!s.ok) {
+        return {
+          ok: false, status: res.status,
+          error: s.error === 'aborted_mid_stream' ? (byUser ? 'cancelled' : 'timeout') : (s.error || 'stream_read_failed'),
+          detail: s.error === 'aborted_mid_stream'
+            ? `流式已经开始回话（第一个字节 ${s.firstChunkMs}ms），但没写完就被中止：那时已收到 ${s.charsAtAbort} 字`
+            : redact(String(s.detail || s.error || ''), key),
+          firstChunkMs: s.firstChunkMs, timing,
+        };
+      }
+      // 拼好的正文交给与非流式**同一个**判定函数：空正文/只有思考/截断这些结论不能因为换了收法就分叉
+      const json = { choices: [{ message: { content: s.content, reasoning_content: s.reasoning }, finish_reason: s.finishReason }] };
+      const got = interpretAiReply(json);
+      if (!got.ok) {
+        return {
+          ok: false, status: res.status, error: got.error,
+          detail: redact(got.detail || '', key), finishReason: got.finishReason,
+          reasoningChars: got.reasoningChars, firstChunkMs: s.firstChunkMs, timing,
+        };
+      }
+      return {
+        ok: true, status: res.status,
+        content: got.content,
+        finishReason: got.finishReason,
+        rawChars: got.rawChars,
+        snippet: redact(got.snippet, key),
+        firstChunkMs: s.firstChunkMs,
+        timing,
+      };
     }
     const json = await res.json().catch(() => null);
     timing.bodyMs = Math.round(nowMs() - t0);
@@ -273,7 +397,7 @@ export async function pingAiEndpoint({ baseUrl, model, key, fetchImpl, timeoutSe
     if (probe.reachable && post.error === 'timeout' && !signal?.aborted) {
       // 第 3 发只对"沉默到超时"做：被直接拒掉（fetch_failed）不需要再问一次
       const peek = await callChatEndpoint({
-        baseUrl, model, key, text: PING_TEXT, timeoutSec: sec, maxTokens: 1, stream: true, fetchImpl: doFetch, signal,
+        baseUrl, model, key, text: PING_TEXT, timeoutSec: sec, maxTokens: 1, stream: 'peek', fetchImpl: doFetch, signal,
       });
       base.firstChunkMs = peek.timing?.firstChunkMs ?? null;
       base.streamStatus = peek.status ?? null;

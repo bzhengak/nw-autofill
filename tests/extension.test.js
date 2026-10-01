@@ -169,3 +169,14 @@ test('构建号只在 core/build.js 里定义，其他层一律 import 它', () 
   const sw = read('../background/service-worker.js');
   assert.match(sw, /build: BUILD/, 'getState/unknown_message 的回包没带构建号');
 });
+
+/**
+ * 落库这一道闸也得在装配层钉住：面板里补骨架只影响"这一次显示"，
+ * 真正的老资料（en 是 {}）只有经过 nw:saveProfile 才会被永久补齐。
+ */
+test('资料落库前要过 ensureEnSkeleton：英文骨架不能只活在界面里', () => {
+  const sw = read('../background/service-worker.js');
+  assert.match(sw, /import \{[^}]*\bensureEnSkeleton\b[^}]*\} from '\.\.\/core\/profile-schema\.js'/, '后台没 import 骨架函数');
+  const branch = sw.slice(sw.indexOf("msg.type === 'nw:saveProfile'"));
+  assert.match(branch.slice(0, 400), /ensureEnSkeleton\(/, 'nw:saveProfile 没补骨架就写进 storage');
+});

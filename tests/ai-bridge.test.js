@@ -275,3 +275,23 @@ test('流式默认开：真请求那一发带 stream:true；显式关掉才不�
   assert.ok(!('stream' in JSON.parse(off.calls[0].init.body)), '关了还在发 stream 参数');
   assert.equal(off.calls.length, 1, '关掉流式后不该再多发一发');
 });
+
+/**
+ * 借这条"真 SW"链路验一件事：资料落库前补英文骨架。
+ * 放在这里而不是另起一套假 chrome —— 全仓库只有本文件把 service-worker.js 跑起来过，
+ * 而用户报的"下载下来的 en 是 {}"根因正在落库这一环（面板里补只活一次显示）。
+ */
+test('存资料会把老结构（en 是空对象）补成完整骨架，且不盖掉已写的英文', async () => {
+  const { chrome, send, calls } = await bootSw([]);
+  const r = await send({
+    type: 'nw:saveProfile',
+    profile: { basics: { name: '张伟' }, education: [{ school: '南京大学' }], en: { basics: { name: 'Zhang Wei' } } },
+  });
+  assert.equal(r.ok, true);
+  const stored = chrome.local.profile;
+  assert.equal(stored.en.basics.name, 'Zhang Wei', '补骨架把用户手写的英文值盖掉了');
+  assert.equal(stored.en.education[0].school, '', '缺的英文落点没补上');
+  assert.equal(stored.basics.name, '张伟', '中文侧被改动');
+  assert.equal(stored.en.basics.birthDate, undefined, '中性栏不该出现在骨架里');
+  assert.equal(calls.length, 0, '存资料不该打网络');
+});

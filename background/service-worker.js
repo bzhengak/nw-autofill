@@ -15,6 +15,7 @@ import { buildAiRequest, assertNoProfileValues, parseAiResponse, aiSlotCatalog, 
 import { extractFragments, buildExtractRequest, parseExtractResponse } from '../core/ai-extract.js';
 import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, findLeaksInExport, SECRETS_BUCKET, consentAfterSettingsPatch, effectiveTimeoutSec, effectiveMaxTokens, effectiveStream, AI_TIMEOUT_DEFAULT_SEC, AI_MAX_TOKENS_DEFAULT, chatEndpointCandidates } from '../core/ai-security.js';
 import { callChatEndpoint, pingAiEndpoint } from '../core/ai-endpoint.js';
+import { ensureEnSkeleton } from '../core/profile-schema.js';
 
 // 默认等 180 秒：reasoning 模型 + 几十个缺口的 JSON 回答，旧的 20 秒几乎必然超时，
 // 而超时是最难归因的失败——用户只看到"没反应"，其实是模型还没答完。
@@ -393,7 +394,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         secure: target.secure, persisted: msg.persist === true,
       });
     } else if (msg.type === 'nw:saveProfile') {
-      await chrome.storage.local.set({ profile: msg.profile });
+      // 落库前补齐英文骨架（只补空缺，不覆盖任何已有英文值）：
+      // 这样老资料、导入的 JSON 在界面与导出文件里都能看到同一副完整的框。
+      await chrome.storage.local.set({ profile: ensureEnSkeleton(msg.profile) });
       sendResponse({ ok: true });
     } else if (msg.type === 'nw:saveSettings') {
       // 白名单过滤：以前这里是无脑 merge，谁都能往 settings 里塞任意键。

@@ -421,7 +421,8 @@ export function countFilled(profile) {
   return n;
 }
 
-export function createEmptyProfile() {  const profile = {};
+export function createEmptyProfile() {
+  const profile = {};
   for (const section of SECTIONS) {
     profile[section.k] = section.maxItems
       ? Array.from({ length: section.maxItems }, () => {
@@ -431,14 +432,16 @@ export function createEmptyProfile() {  const profile = {};
       })
       : (() => {
         const obj = {};
-        for (const t of section.fields) obj[t[0]] = t[3] === 'bool' ? '' : '';
+        for (const t of section.fields) obj[t[0]] = '';
         return obj;
       })();
   }
   // 英文取值放这个稀疏子树里（en.education.0.school）。
   // 为什么不给 537 个槽位各加一个 *En 字段：那会把 schema 翻倍，而绝大多数栏位根本不需要英文
   // （日期、数字、邮箱、链接、性别这类"选一项"的控件），它们两种语言下就是同一个值。
-  profile.en = {};
+  // 空白模板也要带完整骨架：用户把 JSON 下载下来手写英文时，得看得见该写在哪 ——
+  // en 是 {} 就等于"界面有框、文件没坑"，手写无处落脚。
+  profile.en = enSkeleton();
   return profile;
 }
 
@@ -476,16 +479,76 @@ export function sectionOf(key) {
 export const EN_BUCKET = 'en';
 export const LANG_NEUTRAL_TYPES = new Set(['date', 'year', 'month', 'num', 'number', 'tel', 'email', 'url', 'file', 'enum', 'bool']);
 
-/** 这一栏是否"两种语言同一个值"（日期/数字/邮箱/下拉选项…，以及本来就要求中文的栏位） */
+/** 这一栏是否"不需要第二份写法"（日期/数字/邮箱/下拉选项…，以及本来就指定了语言的文字栏位） */
 export function isLangNeutral(field) {
   const type = String(field?.type || '').toLowerCase();
   if (LANG_NEUTRAL_TYPES.has(type)) return true;
-  // 「中文姓 / 中文名 / 中文专业名」这类栏位就是给中文用的，再要一份英文值是折磨用户
-  if (/中文|汉语/.test(String(field?.zh || '')) || /Zh$/.test(String(field?.path || '').split('.').pop() || '')) return true;
+  const key = String(field?.path || '').split('.').pop() || '';
+  // 「中文姓 / 中文名」这类栏位就是给中文用的，再要一份英文值是折磨用户
+  if (/中文|汉语/.test(String(field?.zh || '')) || /Zh$/.test(key)) return true;
+  // 「学校英文名 / 英文地址」这类 *En 栏位的取值本身就是英文：
+  // 再套一层 en.education.0.schoolEn 等于要用户在英文栏旁边再写一遍英文，
+  // 更糟的是英文表单会读那个空壳、把已经填好的英文名当成"缺英文"留空。
+  if (/En$/.test(key)) return true;
   return false;
 }
 
 const enPath = path => `${EN_BUCKET}.${path}`;
+
+/**
+ * 英文骨架：把"确实需要另一种文字"的栏位在 en 子树里摆成空串，结构与中文侧一一对应。
+ * 只收非语言中立的栏位（日期 / 数字 / 邮箱 / 下拉这类两种语言同一个值，见 isLangNeutral）：
+ * 全量 537 个槽位里有 210 个根本不需要英文，给它们留一排永远为空的框，
+ * 和 en 是 {} 一样会让人猜"到底该不该填"。
+ * 列表槽位预先补足长度，避免 JSON 里出现 null 洞（稀疏数组序列化就变 [null,null,...]）。
+ */
+export function enSkeleton(fields = buildFields()) {
+  const root = {};
+  for (const f of fields) {
+    if (isLangNeutral(f)) continue;
+    const segs = String(f.path).split('.');
+    let cur = root;
+    for (let i = 0; i < segs.length - 1; i++) {
+      const seg = segs[i];
+      const wantArray = /^\d+$/.test(segs[i + 1]);
+      if (cur[seg] === undefined || cur[seg] === null) cur[seg] = wantArray ? [] : {};
+      if (wantArray && Array.isArray(cur[seg])) {
+        const idx = Number(segs[i + 1]);
+        while (cur[seg].length <= idx) cur[seg].push({});
+      }
+      cur = cur[seg];
+    }
+    cur[segs[segs.length - 1]] = '';
+  }
+  return root;
+}
+
+/** 只补空缺、绝不覆盖：叶子有值（含用户手写的英文）一律留着 */
+function mergeMissing(dst, src) {
+  if (Array.isArray(src)) {
+    const out = Array.isArray(dst) ? dst : [];
+    src.forEach((sv, i) => { out[i] = mergeMissing(out[i], sv); });
+    return out;
+  }
+  if (src && typeof src === 'object') {
+    const out = dst && typeof dst === 'object' && !Array.isArray(dst) ? dst : {};
+    for (const [k, sv] of Object.entries(src)) out[k] = mergeMissing(out[k], sv);
+    return out;
+  }
+  return dst === undefined ? src : dst;
+}
+
+/**
+ * 给一份已有资料补齐英文骨架（就地改并返回它）。
+ * 老资料、从别处导入的 JSON、AI/简历解析的产物里 en 可能是 {} 或只有几栏；
+ * 补齐后界面与导出文件看到的是同一副完整的框。
+ */
+export function ensureEnSkeleton(profile) {
+  if (!profile || typeof profile !== 'object') return profile;
+  const prev = profile.en && typeof profile.en === 'object' && !Array.isArray(profile.en) ? profile.en : {};
+  profile.en = mergeMissing(prev, enSkeleton());
+  return profile;
+}
 
 /**
  * 读某一语言栏位的值。

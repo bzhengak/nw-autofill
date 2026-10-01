@@ -544,6 +544,65 @@ test('「导出资料 JSON」只带走 profile：不确认就不下载，下载�
   }
 });
 
+/**
+ * 用户实测原话："我从 json 下载下来的就是 en{} 为空"。
+ * 界面切到 English 能看到输入框，文件里却没有对应的坑 —— 想手写英文的人无处落脚。
+ * 下面两条钉的是"出门的东西"：模板下载物与资料导出物都得带着完整骨架。
+ */
+test('「下载空白模板」的 JSON 带着完整英文骨架，并把它讲在提示里', async () => {
+  const blobs = [];
+  const names = [];
+  const realCreate = globalThis.URL.createObjectURL;
+  globalThis.URL.createObjectURL = b => { blobs.push(b); return 'blob:t'; };
+  const realAlert = globalThis.alert;
+  const alerts = [];
+  globalThis.alert = m => alerts.push(String(m));
+  const { doc } = bootExtract(() => ({ ok: true, profile: null, settings: {}, tabId: 1 }));
+  doc.defaultView.HTMLAnchorElement.prototype.click = function () { names.push(this.download); };
+  try {
+    await load();
+    await click(doc, 'btnTemplate');
+    assert.deepEqual(names, ['nw-autofill-profile-template.json']);
+    const obj = JSON.parse(await blobs[0].text());
+    assert.ok(obj.en && typeof obj.en === 'object', '模板里没有 en 子树');
+    assert.ok(Object.keys(obj.en).length > 5, `en 只有 ${Object.keys(obj.en).length} 个分组，骨架没铺开`);
+    assert.equal(obj.en.education[0].school, '', '英文校名没有落点');
+    assert.equal(obj.en.others.selfIntro, '', '英文自我介绍没有落点');
+    assert.equal(obj.en.basics?.birthDate, undefined, '日期这种两语同值的栏不该要英文');
+    assert.match(alerts.join('\n'), /en/, '提示没告诉用户英文写在哪');
+  } finally {
+    if (realCreate) globalThis.URL.createObjectURL = realCreate;
+    if (realAlert) globalThis.alert = realAlert; else delete globalThis.alert;
+  }
+});
+
+test('老资料（en 是空对象）在面板里、导出文件里都补出英文落点，且不改动中文值', async () => {
+  const LEGACY = { basics: { name: '张伟', birthDate: '2001-03-15' }, education: [{ school: '南京大学' }], others: {}, en: {} };
+  const mk = () => JSON.parse(JSON.stringify(LEGACY));   // 每次 getState 都给一份"存储里那个旧结构"
+  const blobs = [];
+  const realCreate = globalThis.URL.createObjectURL;
+  globalThis.URL.createObjectURL = b => { blobs.push(b); return 'blob:e'; };
+  const { doc } = bootExtract(() => ({ ok: true, profile: mk(), settings: {}, tabId: 1 }));
+  doc.defaultView.HTMLAnchorElement.prototype.click = () => {};
+  doc.defaultView.confirm = () => true;
+  try {
+    await load();
+    const shown = JSON.parse(doc.getElementById('profileText').value);
+    assert.equal(shown.en.education[0].school, '', 'JSON 编辑框里看不见英文落点');
+    assert.equal(shown.basics.name, '张伟');
+    assert.match(doc.getElementById('profileMeta').textContent, /英文写法[：:]0\/\d+ 栏已补/, '没告诉用户还差几栏英文');
+
+    await click(doc, 'btnExportProfile');
+    assert.equal(blobs.length, 1);
+    const out = JSON.parse(await blobs[0].text());
+    assert.equal(out.en.education[0].school, '', '导出文件里的 en 还是空的');
+    assert.equal(out.en.basics.birthDate, undefined, '中性栏不该冒出来');
+    assert.equal(out.basics.name, '张伟', '补骨架动到中文侧了');
+  } finally {
+    if (realCreate) globalThis.URL.createObjectURL = realCreate;
+  }
+});
+
 test('面板里查得到资料落在哪个文件，并且写明它是明文存储', async () => {
   const { doc } = bootExtract(() => ({ ok: true, profile: {}, settings: {}, tabId: 1 }));
   await load();

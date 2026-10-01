@@ -1,4 +1,4 @@
-import { createEmptyProfile, SECTIONS, buildFields, setValueByPath, getValueByPath, countFilled, writeLang } from '../core/profile-schema.js';
+import { createEmptyProfile, SECTIONS, buildFields, setValueByPath, getValueByPath, countFilled, writeLang, ensureEnSkeleton, englishCoverage, isLangNeutral } from '../core/profile-schema.js';
 import { importMarkdown } from '../core/importers/markdown.js';
 import { auditProfile, editorModel, advice } from '../core/coverage.js';
 import { gapReasonLabel } from '../core/matcher.js';
@@ -62,6 +62,9 @@ async function refresh() {
   const state = await chrome.runtime.sendMessage({ type: 'nw:getState', tabId });
   lastState = state;
   const profile = state?.profile;
+  // 面板里这份副本先补齐英文骨架：存储中可能是老结构（en 只有几栏），
+  // 不补的话「编辑 / 导入 JSON」框里看不见英文该写在哪，导出文件也一样是空的。
+  if (profile) ensureEnSkeleton(profile);
   stampVersions(state);
   $('fillSensitive').checked = Boolean(state?.settings?.fillSensitive);
   $('allowCustomSelect').checked = Boolean(state?.settings?.allowCustomSelect);
@@ -77,7 +80,6 @@ async function refresh() {
   $('aiTimeoutState').textContent = `当前生效：${effectiveTimeoutSec(state?.settings || {})} 秒`;
   $('aiMaxTokens').value = state?.settings?.aiMaxOutput || '';
   $('aiMaxTokensState').textContent = `当前生效：${effectiveMaxTokens(state?.settings || {})} token`;
-  $('aiStream').checked = effectiveStream(state?.settings || {});
   $('aiStream').checked = effectiveStream(state?.settings || {});
   aiKeyPresent = Boolean(state?.hasAiKey);
   aiKeyBoundOrigin = state?.aiKeyOrigin || '';
@@ -95,8 +97,10 @@ async function refresh() {
   $('btnClearKey').disabled = !aiKeyPresent;
   $('aiKey').placeholder = aiKeyPresent ? '重新输入会覆盖本次会话的 Key' : 'API Key（只存本次会话，重启即失效）';
   aiUiSync();
+  const cov = profile ? englishCoverage(profile) : null;
   $('profileMeta').textContent = profile
     ? `已载入：${countFilled(profile)} 个字段有值 / 共 ${buildFields().length} 个可填项`
+      + (cov && cov.need ? `　·　英文写法：${cov.done}/${cov.need} 栏已补（英文值写在 JSON 的 "en" 子树里）` : '')
     : '还没有简历数据，先点「下载空白模板」或「编辑 / 导入 JSON」';
   if (profile) $('profileText').value = JSON.stringify(profile, null, 2);
   else $('profileText').value = JSON.stringify(createEmptyProfile(), null, 2);
@@ -738,7 +742,11 @@ $('btnTemplate').onclick = () => {
   a.href = URL.createObjectURL(blob);
   a.download = 'nw-autofill-profile-template.json';
   a.click();
-  alert(`空白模板含 ${SECTIONS.length} 个分组、${buildFields().length} 个可填项。\n\n用文本编辑器打开这个 JSON，把你简历里没有但网申会问的条目（家庭成员、档案所在地、港企签证合规等）手动补上，再回到这里「编辑 / 导入 JSON」粘贴保存即可。`);
+  const enTotal = buildFields().filter(f => !isLangNeutral(f)).length;
+  alert(`空白模板含 ${SECTIONS.length} 个分组、${buildFields().length} 个可填项；`
+    + `文件末尾的 "en" 子树已经摆好 ${enTotal} 个需要英文写法的栏位（日期/数字/邮箱/选项这些不重复要英文）。\n\n`
+    + '用文本编辑器打开这个 JSON：中文值写在原路径，英文值写在 en 下的同一路径（education → 第 1 条 → school，对应 en → education → 第 1 条 → school），'
+    + '再回到这里「编辑 / 导入 JSON」粘贴保存即可。');
 };
 
 /**
@@ -751,6 +759,7 @@ $('btnExportProfile').onclick = async () => {
   const profile = state?.profile;
   if (!profile) { $('exportNote').textContent = '还没有资料可导出：先导入 Markdown 或展开表单编辑填一份。'; return; }
   const filled = countFilled(profile);
+  ensureEnSkeleton(profile);   // 导出文件里要看得见英文的落点，不能只有几栏旧键
   if (!window.confirm(`将下载一份包含你全部简历资料的 JSON（${filled} 项有值，含证件号/手机号等敏感字段）。\n\n这个文件是明文：下载后请自己保管，别丢进网盘共享目录或聊天窗口。确认下载？`)) {
     $('exportNote').textContent = '已取消，没有写出任何文件。';
     return;
@@ -807,6 +816,7 @@ $('btnVaultSave').onclick = async () => {
   const state = await chrome.runtime.sendMessage({ type: 'nw:getState', tabId });
   const profile = state?.profile;
   if (!profile || !countFilled(profile)) { note.textContent = '资料还是空的，没什么可加密的。'; return; }
+  ensureEnSkeleton(profile);   // 保险箱里也要带着英文落点：从加密文件恢复的人同样要能手写英文
   const passphrase = $('vaultPass').value;
   btn.disabled = true;
   note.textContent = '正在加密（口令派生约 1 秒，别关面板）…';
@@ -838,7 +848,11 @@ $('vaultFile').onchange = async e => {
   const got = await decryptVault({ text, passphrase: $('vaultPass').value });
   if (!got.ok) { note.textContent = VAULT_ERR_ZH[got.error] || ('打不开：' + got.error); return; }
   const state = await chrome.runtime.sendMessage({ type: 'nw:getState', tabId });
-  const delta = profileDelta(state?.profile || {}, got.profile, buildFields());
+  // 比对要把英文值一起算：只看中文路径会把"保险箱里英文写法多一半/少一半"报成"完全一致"，
+  // 而那正是用户载入前最想知道的事。
+  const enFields = buildFields().filter(f => !isLangNeutral(f))
+    .map(f => ({ ...f, path: `en.${f.path}`, zh: `英文·${f.zh || f.path}` }));
+  const delta = profileDelta(state?.profile || {}, got.profile, buildFields().concat(enFields));
   const lost = delta.willLose.length
     ? `\n会被清空的栏（前 ${delta.willLose.length} 个）：${delta.willLose.join('、')}${delta.removed > delta.willLose.length ? ' …' : ''}` : '';
   if (!window.confirm(`载入这份保险箱会覆盖浏览器里现在的工作副本：\n${describeDelta(delta)}${lost}\n\n确认载入？`)) {

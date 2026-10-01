@@ -213,16 +213,44 @@ export function labelFor(el, doc) {
     if (n.tagName === 'FORM' || n.tagName === 'BODY' || n.tagName === 'HTML') break;
     if (!n.matches?.(ITEM_ROW_SELECTOR)) continue;
     let hit = false;
-    for (const k of Array.from(n.children || [])) {
+    const branches = Array.from(n.children || []);
+    // 只有"标签列 + 控件列"这种两列条目才允许把旁支本身当标签：三列以上更可能是卡片布局，
+    // 那里第一个不含控件的分支往往是说明文字而不是这一栏的名字。
+    const twoCol = branches.length === 2;
+    for (const k of branches) {
       if (!k || (k.contains && k.contains(el))) continue;
       if (k.querySelector && k.querySelector(CONTROL_SELECTOR)) continue;
       if (isFieldShell(k)) continue;
       const lab = k.querySelector(':scope > label, :scope > [class*="label"], :scope > [class*="title"], :scope > dt, :scope > th');
-      if (!lab) continue;
-      push(lab, 'item-label', up + 3);
-      hit = true;
+      if (lab) { push(lab, 'item-label', up + 3); hit = true; continue; }
+      // 途普这类自研页把标签写成 <span class="field-label">…</span> 本身，里面不再套 <label>，
+      // 只认嵌套 label 的旧规则对这种形状整片失效。
+      const own = String(k.className || '');
+      const t = textOf(k);
+      if (twoCol && t && t.length <= 24 && /label|title|caption|name|question|field-/i.test(own)) {
+        push(k, 'item-text', up + 4); hit = true;
+      }
     }
     if (hit) break;
+  }
+
+  // 自研门户会把每个字段单独套一层 <form>，标签写在 form **外面**的那一行壳子里。
+  // 真实导出（careersite.tupu360.com/accentureats）的对照很干脆：
+  // 同一页里 input 的 chain 顶到 div.field-group 并在 form 内部就拿到 prev 标签，
+  // 而 div[role=combobox] 的 chain 只到 span.field-value 就没词了 —— 标签在 form 的上一层。
+  // 上面那条循环"遇到 FORM 就 break"是为了不抓页面大标题，代价就是这类页整片判成无标签。
+  // 折中：只往上够**两层**（form 的父元素、再上面一行），且只收"不含控件、不是字段壳子、
+  // 文本 ≤24 字、不是块级标题"的旁支。真实导出没告诉我们标签落在 .field-value 还是 .field-group，
+  // 所以两层都要看；再往上就必然开始捞到页面标题，那就不是找标签而是猜标签了。
+  const formEl = el.closest?.('form');
+  for (let row = formEl && formEl.parentElement, lvl = 0; row && lvl < 2; row = row.parentElement, lvl++) {
+    for (const k of Array.from(row.children || [])) {
+      if (!k || (k.contains && k.contains(el))) continue;
+      if (k.querySelector && k.querySelector(CONTROL_SELECTOR)) continue;
+      if (isFieldShell(k)) continue;
+      const t = textOf(k);
+      if (t && t.length <= 24 && !isBlockTitle(k)) cands.push({ text: t, raw: normRaw(k.textContent), source: 'outside-form', depth: 8 + lvl });
+    }
   }
 
   const ph = clean(el.getAttribute('placeholder'));

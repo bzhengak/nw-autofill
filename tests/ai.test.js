@@ -42,6 +42,40 @@ test('请求文本里不许出现任何已填写的取值：植入了就拒绝�
   assert.match(leaks[0].path, /summary/, `泄漏定位要指到具体槽位，实得 ${leaks[0].path}`);
 });
 
+/**
+ * 真实浏览器里第一次点「问 AI」是被这条闸自己拦死的：
+ * 资料里 `internship.0.durationMonths = '12'`，而页面自己的文本里到处是 12（选项、区间说明、年份）。
+ * 误拦不是"多一步确认"，而是整条 AI 兜底对真实资料永久不可用 —— 所以放行判据必须写清并钉住。
+ */
+test('页面自带词与短数字撞字不算泄漏：放行；真正的身份取值仍然照拦', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'internship.0.durationMonths', '12');
+  setValueByPath(p, 'education.0.enrollDate', '2021-09');
+  setValueByPath(p, 'education.0.gpa', '3.8');
+  setValueByPath(p, 'basics.nationality', 'China');
+  setValueByPath(p, 'basics.name', '张伟');
+  setValueByPath(p, 'contact.phone', '13900002222');
+  const plan = { gaps: [{ index: 0, label: '实习时长（12 个月以内）', reason: 'no_candidate', kind: 'enum' }] };
+  const pageFields = [{
+    index: 0, kind: 'enum', label: '实习时长（12 个月以内）',
+    options: [{ text: 'China' }, { text: '12' }, { text: '6' }], nearbyLabels: ['2021-09'],
+  }];
+  const req = buildAiRequest({ plan, profile: p, pageFields });
+  assert.ok(req.text.includes('12') && req.text.includes('China') && req.text.includes('2021-09'), '构造前提：页面词确实进了待发文本');
+  assert.deepEqual(
+    assertNoProfileValues(req.text, p, { exempt: [req.slotSection], pageTokens: req.pageTokens }), [],
+    '短数字与页面自带词被当成泄漏 —— 这条闸又变成"永远拒绝"了');
+
+  // 同一份资料里，真正构成身份的值仍然必须被抓出来（长数字串与人名不放宽）
+  for (const [path, val] of [['contact.phone', '13900002222'], ['basics.name', '张伟']]) {
+    const leaks = assertNoProfileValues(req.text + '\n备注：' + val, p, { exempt: [req.slotSection], pageTokens: req.pageTokens });
+    assert.ok(leaks.some(l => l.path === path), `${path} 植进待发文本却没被抓到`);
+  }
+  // 少传 pageTokens 时（别的调用方）不会变得更宽松：整串相同的页面词照样算泄漏
+  assert.ok(assertNoProfileValues(req.text, p, { exempt: [req.slotSection] }).some(l => l.path === 'basics.nationality'),
+    '不带 pageTokens 的旧形状应当仍然严格');
+});
+
 test('证件号/签证/薪酬/声明类路径根本不进白名单，AI 连提名机会都没有', () => {
   const paths = aiSlotCatalog(richProfile()).map(s => s.path);
   for (const bad of ['basics.idNumber', 'basics.passportNumber', 'hkGlobal.visaType', 'work.0.salary', 'intent.salary', 'records.noCriminal']) {

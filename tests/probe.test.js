@@ -80,7 +80,9 @@ test('导出物自带探针版本与子框地图（SF/汇丰 靠它定位表单�
   const ad = out.iframeMap.find(x => /adsrvr/.test(x.src));
   assert.equal(ad.sameOrigin, false, '跨源框不得伪报控件数');
   assert.equal(ad.controls, null);
-  assert.ok(!JSON.stringify(out).includes('value'), '子框地图同样不得带出任何填写值');
+  // 钉的是"没有 value 这个键"，不是"整份 JSON 里不许出现 value 这个单词"——
+  // 后者会把说明文字（note 里解释隐私策略时要用这个词）也算成违规，逼着文档说半句话
+  assert.ok(!/"value"\s*:/.test(JSON.stringify(out)), '子框地图里出现了 value 键');
 });
 
 test('0 控件时探针自己说清"下一步做什么"（分步向导要先点填写）', () => {
@@ -208,4 +210,29 @@ test('自定义控件计数要认出挂在 <input> 上的 role=combobox（AntD v
   const out = probePageStructure(dom.window.document, 'https://x.test/', dom.window);
   assert.equal(out.totals.customWidgets, 3, `数到 ${out.totals.customWidgets} 个，用户会以为这页没有需要点开的控件`);
   assert.equal(out.totals.selects, 1);
+});
+
+/**
+ * 真实导出里出现过用户选中的值：途普那张页面的下拉把已选文案渲染在控件节点**之外**
+ * （AntD v3 的 .ant-select-selection-selected-value），而素描的"≤12 字文本原样带出"是给取标签用的。
+ * 两条一撞，'香港特别行政区' 就这么进了导出文件 —— 探针自己的 note 还写着"不含任何已填写内容"。
+ */
+test('已选文案渲染在控件之外时，素描也不许带出它（≤12 字的选中值同样算内容）', () => {
+  const mk = (cls, v) => `<!doctype html><html><body><form>
+    <div class="ant-row ant-form-item"><span class="ant-form-item-children">
+      <div class="searchStyle ant-select ant-select-enabled">
+        <div class="ant-select-selection ant-select-selection--single" role="combobox" aria-haspopup="listbox">
+          <span class="ant-select-selection__rendered"><span class="${cls}">${v}</span></span>
+        </div>
+        <div class="ant-select-dropdown"><ul role="listbox" class="ant-select-dropdown-menu"><li>选项甲</li></ul></div>
+      </div></span></div>
+    <div class="ant-row ant-form-item"><div class="ant-form-item-label"><label>所在地区</label></div><input name="x"></div>
+  </form></body></html>`;
+  for (const cls of ['ant-select-selection-selected-value', 'ant-select-selection-item']) {
+    const out = probeOf(mk(cls, '香港特别行政区'));
+    const j = JSON.stringify(out);
+    assert.ok(!j.includes('香港特别行政区'), `${cls} 的已选文案被带进了导出`);
+    // 但标签那一支必须还在：清空的是值，不是整条素描
+    assert.ok(j.includes('所在地区'), `${cls} 处理过头，把标签也抹了`);
+  }
 });

@@ -296,3 +296,48 @@ test('条目套条目（国聘 iguopin 真实形状）：标签隔了 9~13 层�
   // 标签文字里那段"（最多 20 字，超出部分不显示）"不能进匹配用名
   assert.ok(!/超出部分/.test(by('school').label), '提示文字混进了标签');
 });
+
+/**
+ * 途普 tupu360 真实导出（careersite.tupu360.com/accentureats，2026-10-01）里 41 个控件有 26 个拿不到标签：
+ * 同一行里的 <input> 靠 prev 兄弟拿到了 '*Name'，而 <div role="combobox"> 的 chain 顶到
+ * span.field-value 就断了 —— 它的标签不在这个 AntD 条目里，而是在**包着这个条目的小 <form> 外面**。
+ * 2026-09-29 那版复刻没复现，原因就写在文件头：当时探针不导出兄弟分支，class 名之外的信息一片空白。
+ */
+const tupuRow = (label, cls = 'field-label') => `
+  <div class="field-group">
+    <span class="field-value field-editor">
+      <form class="ant-form ant-form-horizontal specialSelect">
+        <div class="ant-row ant-form-item"><div class="ant-form-item-control-wrapper">
+          <div class="ant-form-item-control has-success"><span class="ant-form-item-children">
+            <div><div class="searchStyle ant-select ant-select-enabled">
+              <div role="combobox" aria-haspopup="listbox" data-nw-test="edu"></div>
+            </div></div>
+          </span></div>
+        </div></div>
+      </form>
+      <${'span'} class="${cls}">${label}</${'span'}>
+    </span>
+  </div>`;
+
+test('标签在字段自带的 <form> 外面（途普真实形状）：combobox 也该拿到它', () => {
+  const f = byKey(scan(tupuRow('最后毕业学校')), 'edu');
+  assert.equal(f.label, '最后毕业学校', `form 外层的标签没够到，实得「${f.label}」`);
+  // 隔壁字段不许串进来：另一行也有标签时，各拿各的
+  const two = `<div class="field-wrap">${tupuRow('最后毕业学校')}
+    <div class="field-group"><span class="field-value field-editor"><form class="ant-form">
+      <div role="combobox" aria-haspopup="listbox" data-nw-test="other"></div></form>
+      <span class="field-label">期望工作城市</span></span></div></div>`;
+  const fs2 = scan(two);
+  const mine = fs2.filter(x => x.el.getAttribute('data-nw-test') === 'other');
+  assert.equal(mine[0]?.label, '期望工作城市', '隔壁条目的标签串过来了，或者第二个字段仍拿不到标签');
+});
+
+test('两列条目里标签分支自己不套 <label>（field-label 裸文本）也算标签', () => {
+  const [f] = scan(`<div class="ant-row ant-form-item">
+    <span class="field-label">是否有亲属在本系统</span>
+    <div class="ant-form-item-control-wrapper"><div class="ant-form-item-control">
+      <span class="ant-form-item-children"><input data-nw-test="rel"></span>
+    </div></div>
+  </div>`);
+  assert.equal(f.label, '是否有亲属在本系统');
+});

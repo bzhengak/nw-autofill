@@ -112,4 +112,39 @@
       <div class="ant-col ant-col-8"><div class="ant-form-explain">必填，请照毕业证填写</div></div>
     </div>
   </form>
+  <!--
+    2026-10-01 真实导出（careersite.tupu360.com/accentureats/resume/applicationView）补上的第二种形状：
+    每个字段自己套一个 <form>，标签写在这个 form **外面**的 field 壳子里。
+    上一版复刻缺的就是这一段，所以探针跑在我们这儿三类字段全部拿到标签、复现失败。
+    对照证据：同一页里 <input> 的 chain 顶到 div.field-group 并在 form 内部拿到 prev 标签，
+    而 <div role=combobox> 的 chain 只到 span.field-value 就没词了。
+  -->
+  <div class="field-group">
+    <span class="field-value field-editor">
+      <form class="ant-form ant-form-horizontal specialSelect">
+        <div class="ant-row ant-form-item"><div class="ant-form-item-control-wrapper">
+          <div class="ant-form-item-control has-success"><span class="ant-form-item-children">
+            <div><div class="searchStyle ant-select ant-select-enabled">
+              <div class="ant-select-selection ant-select-selection--single" role="combobox" aria-haspopup="listbox" data-nw-test="school_outside_form"></div>
+            </div></div>
+          </span></div>
+        </div></div>
+      </form>
+      <span class="field-label">最后毕业学校</span>
+    </span>
+  </div>
+
+  <div class="field-group">
+    <span class="field-value field-editor">
+      <form class="ant-form ant-form-horizontal specialSelect">
+        <div class="ant-row ant-form-item"><div class="ant-form-item-control-wrapper">
+          <div class="ant-form-item-control"><span class="ant-form-item-children">
+            <input type="text" data-nw-test="address_outside_form">
+          </span></div>
+        </div></div>
+      </form>
+      <span class="field-label">通讯地址</span>
+    </span>
+  </div>
+</div>
 </body></html>

@@ -91,10 +91,25 @@ function rawLabelOf(el, doc, note) {
  * 为什么需要它：tupu 真实导出里 chain 只记祖先、且截到 5 层，
  * "标签到底在 DOM 哪儿"（在控件之前还是之后、隔几层）看不出来，
  * 于是修一次就要用户重导一次。素描能把这个问题一次性说清。
- * 隐私：不复制 value；文本超过 12 字（大概是要填/已填的内容）只留字数；
- *      脚本样式整个删掉；每条上限 600 字。
+ * 隐私：不复制 value；已选文案节点（DISPLAYED_VALUE_SELECTOR）整个清空；
+ *      文本超过 12 字（大概是要填/已填的内容）只留字数；脚本样式整个删掉；每条上限 600 字。
+ *      短文本留着是取标签的需要 —— 所以"值渲染在控件之外"的组件必须走上面那条白名单，
+ *      2026-10-01 途普真实导出里就是这么漏出过一个地区名的。
  */
 const SKETCH_KEEP = new Set(['class', 'type', 'role', 'placeholder', 'id', 'name', 'for', 'aria-label', 'data-nw-here']);
+/**
+ * "已选文案"节点：自定义下拉把用户选中的值渲染在**控件节点之外**的旁支里（AntD v3 是
+ * `.ant-select-selection-selected-value`，v4/v5 是 `.ant-select-selection-item`）。
+ * 素描只抹控件本体那一支，够不着这些旁支；而下面那条"≤12 字的文本原样带出"的规则
+ * 正是为取标签服务的 —— 两条一撞，真实导出里就出现了 '香港特别行政区' 这种用户选中的值。
+ * 这些节点要单独清空：类名窄是刻意的，`[class*="value"]` 会连 `span.field-value` 一起抹掉，
+ * 那正是我们取标签要看的那一支。
+ */
+const DISPLAYED_VALUE_SELECTOR = [
+  '.ant-select-selection-selected-value', '.ant-select-selection__rendered', '.ant-select-selection-item',
+  '.ant-select-selection-item-content', '[class*="selection-item"]', '[class*="selected-value"]',
+  '[class*="selection__rendered"]', '[class*="_selected"]', '[class*="chosen-"]',
+].join(',');
 function structureSketch(el) {
   // 取"最外面那一层的条目容器"，不是 closest() 的第一个命中：
   // AntD 里 .ant-form-item-children 也带 form-item 字样，用 closest() 素描出来的
@@ -130,6 +145,10 @@ function structureSketch(el) {
     for (const a of Array.from(n.attributes || [])) if (!SKETCH_KEEP.has(a.name)) n.removeAttribute(a.name);
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') { try { n.value = ''; } catch { /* 忽略 */ } }
   }
+  // 用户选中的值渲染在控件之外的旁支里 → 单独清空（见 DISPLAYED_VALUE_SELECTOR 的注释）
+  try {
+    for (const n of clone.querySelectorAll?.(DISPLAYED_VALUE_SELECTOR) || []) n.textContent = '';
+  } catch { /* 选择器不兼容时宁可少给一条素描，也不带出内容 */ }
   const texts = [];
   const collect = node => { for (const c of node.childNodes || []) { if (c.nodeType === 3) texts.push(c); else if (c.nodeType === 1) collect(c); } };
   collect(clone);
@@ -344,7 +363,8 @@ export function probePageStructure(doc, locationHref = '', win = doc.defaultView
       };
     })(),
     fields: fields.filter(f => f.vis).slice(0, 200),
-    note: '本输出不含任何已填写内容，只有字段结构与站点自带候选项文案。',
+    note: '本输出不含资料里已填写的取值：控件的 value 不读，已选文案节点清空，长文本只留字数。'
+      + '结构素描与候选项文案是页面自己的 DOM 文本（站点把选项/提示写在页面上），不属于资料。',
   };
 }
 

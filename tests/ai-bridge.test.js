@@ -277,7 +277,7 @@ test('流式默认开：真请求那一发带 stream:true；显式关掉才不�
 });
 
 /**
- * 借这条"真 SW"链路验一件事：资料落库前补英文骨架。
+ * 存资料会把老结构（en 是空对象）补成完整骨架。
  * 放在这里而不是另起一套假 chrome —— 全仓库只有本文件把 service-worker.js 跑起来过，
  * 而用户报的"下载下来的 en 是 {}"根因正在落库这一环（面板里补只活一次显示）。
  */
@@ -294,4 +294,30 @@ test('存资料会把老结构（en 是空对象）补成完整骨架，且不�
   assert.equal(stored.basics.name, '张伟', '中文侧被改动');
   assert.equal(stored.en.basics.birthDate, undefined, '中性栏不该出现在骨架里');
   assert.equal(calls.length, 0, '存资料不该打网络');
+});
+
+/**
+ * 2026-10-01 用户在 tupu360 真实页面上点「问 AI」，被自己的取值自检拦下：
+ * 资料里 internship[0].durationMonths = '12'，而页面文本里本来就写着 12。
+ * 这条必须真跑 SW 才测得到 —— 判据在 core、豁免表在 core、但"拦不拦"是 SW 那一行决定的。
+ */
+test('页面文本里的 "12" 与资料撞字时不再误拦：请求真的出网（旧行为是 value_leak 拒发）', async () => {
+  const { send, calls } = await bootSw([okJson('[]')]);
+  await configure(send, null, { baseUrl: 'https://api.example.test/gateway' });
+  const res = await send({
+    type: 'nw:aiAsk',
+    profile: {
+      internship: [{ company: '', title: '', durationMonths: '12' }],
+      basics: { nationality: 'China' },
+      education: [{ enrollDate: '2021-09', gpa: '3.8' }],
+    },
+    gaps: [{ index: 0, label: '实习时长（12 个月以内）', reason: 'no_candidate', kind: 'enum' }],
+    fields: [{
+      index: 0, kind: 'enum', label: '实习时长（12 个月以内）',
+      options: [{ text: 'China' }, { text: '12' }], nearbyLabels: ['2021-09'],
+    }],
+  });
+  assert.equal(res.error, undefined, `还是被自检拦下了：${JSON.stringify(res.leaks || res.error)}`);
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(calls.length, 1, '误拦时一个字节都不该出门，放行后就必须真发');
 });

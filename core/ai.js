@@ -153,31 +153,64 @@ export function buildAiRequest({ plan, profile, pageFields, locale = 'zh', limit
     trim = { ...trim, droppedQuestions: asked.length - questions.length };
   }
 
+  // 页面自己提供的词（标签、选项文本、邻近标签）——自检拿它做"这词不是我们从资料里带出去的"判据。
+  // 在最终 questions（削到某一档之后）上取，别把没发出去的词算成豁免范围。
+  const pageTokens = questions.flatMap(q => [
+    q.label, ...(q.options || []).map(o => (o && o.text) ?? o), ...(q.nearby || []),
+  ]).map(t => String(t ?? '').trim()).filter(Boolean);
+
   return {
     system, text, payload: { system, user: text.slice(text.indexOf('\n\n') + 2) },
     // gaps 保持"实际问出去的那几栏"的原对象（不是下标数组）：
     // 调用方用 built.req.gaps.map(g => g.index) 组 askedIndexes，形状一改就会静默把白名单放宽。
-    gaps: asked.slice(0, questions.length), slots, slotSection, trim,
+    gaps: asked.slice(0, questions.length), slots, slotSection, pageTokens, trim,
   };
 }
 
 /**
- * 运行时自证：待发送文本里只要出现任何一个"资料里已经填过的值"（长度 ≥2），就拒绝发送。
+ * 这串取值值不值得当"身份"来拦。
+ *
+ * 真实浏览器里第一次把它跑通的是误报：资料里 `internship.0.durationMonths = '12'`，
+ * 而页面自己的文本里到处是 12（选项「12 个月」、年份下拉、"Duration: 12"）——
+ * 于是每次「问 AI」都被自己拦下，闸门从"保护"变成"永远拒绝"，等于没有 AI 兜底。
+ *
+ * 判据（放宽的只有"不构成身份"的那一类）：
+ *  - 纯数字/日期形状的短值（≤8 位：'12'、'2021-09'、'3.8'、'175'）不算身份；
+ *  - 长数字串仍然是身份：手机号 11 位、证件号 15~18 位照样拦。
+ *  - 两三个字的中文姓名（'张伟'）是身份，不放宽。
+ */
+const NUMERICISH = /^[\d\s.,:~\-/年月日]+$/;
+export function isIdentifyingValue(s) {
+  const v = String(s ?? '').trim();
+  if (v.length < 2) return false;
+  if (NUMERICISH.test(v) && v.length <= 8) return false;
+  return true;
+}
+
+/**
+ * 运行时自证：待发送文本里只要出现任何一个"资料里已经填过的值"，就拒绝发送。
  *
  * exempt 用来屏蔽"我们自己的词表"：槽位目录里的中文名（掌握程度、与推荐人关系…）是必须发出去的，
  * 而它们会和资料里的短值（'熟练'、'导师'）撞字。不屏蔽的话每次请求都会被自己拦下，
  * 这条闸门就变成"永远拒绝"，等于没有。屏蔽只针对**构造出来的目录文本**，其余区域一律不豁免。
+ *
+ * pageTokens 是"这一词是页面自己说的"：资料值与页面标签/选项**整串相同**时（国籍 'China'
+ * 对上拉里的选项 'China'），这个词不因为我们外发而泄露任何东西 —— 它本来就在页面上。
+ * 只认整串相等，不做子串匹配：真泄漏通常是把值拼进了更长的句子。
  */
-export function assertNoProfileValues(text, profile, { exempt = [] } = {}) {
+export function assertNoProfileValues(text, profile, { exempt = [], pageTokens = [] } = {}) {
   let hay = String(text || '');
   for (const e of exempt) { if (e) hay = hay.split(String(e)).join('【槽位目录】'); }
+  const pageSaid = new Set(pageTokens.map(t => String(t ?? '').trim().toLowerCase()).filter(Boolean));
   const leaks = [];
   const walk = (node, pathSoFar) => {
     if (node == null) return;
     if (Array.isArray(node)) { node.forEach((v, i) => walk(v, `${pathSoFar}[${i}]`)); return; }
     if (typeof node === 'object') { for (const [k, v] of Object.entries(node)) walk(v, pathSoFar ? `${pathSoFar}.${k}` : k); return; }
     const s = String(node).trim();
-    if (s.length >= 2 && hay.includes(s)) leaks.push({ path: pathSoFar, sample: s.slice(0, 6) });
+    if (!isIdentifyingValue(s) || !hay.includes(s)) return;
+    if (pageSaid.has(s.toLowerCase())) return;
+    leaks.push({ path: pathSoFar, sample: s.slice(0, 6) });
   };
   walk(profile, '');
   return leaks;

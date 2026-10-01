@@ -52,7 +52,9 @@ async function writeAiSession(key, keyOrigin, persist) {
 /** 组装请求；把"取值不许外发"的自检放在真正出网之前 */
 async function buildAiCall(profile, plan, pageFields) {
   const req = buildAiRequest({ plan, profile, pageFields, limit: AI_MAX_OUT });
-  const leaks = assertNoProfileValues(req.text, profile, { exempt: [req.slotSection] });
+  // 短数字（'12'、'2021-09'）与"整串就是页面自带词"（国籍 China 对上选项 China）不算泄漏：
+  // 判据在 core/ai.js，误拦过一次真实请求，见那里的注释。
+  const leaks = assertNoProfileValues(req.text, profile, { exempt: [req.slotSection], pageTokens: req.pageTokens });
   if (leaks.length) return { ok: false, error: 'value_leak', leaks: leaks.slice(0, 8) };
   if (new TextEncoder().encode(req.text).length > AI_MAX_BYTES) return { ok: false, error: 'payload_too_large' };
   return { ok: true, req };

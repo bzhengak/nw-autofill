@@ -379,3 +379,27 @@ test('皮肤化的 radio/checkbox（input 被 opacity:0 藏起来）也要被扫
   assert.equal(radios[0].skinned, true, '要标注这是"靠皮肤可见"的控件，导出与判分都靠它分辨');
   assert.match(radios[0].label, /亲属/, '组标签没拿到，字段名会是一串空白');
 });
+
+/**
+ * 途普 Declaration 那一块的真实形状（用户 2026-10-01 补充）：
+ * **整页没有 <label> 元素**，题目写在字段壳子的另一支上，而且还在那个"每字段一个小 form"的外面。
+ * 组标签机制（减掉选项文本看剩什么）在这里什么都不剩 —— 控件扫到了、选项也取得到，
+ * 唯独字段名是空的，等于"能填但不知填哪一栏"。所以组标签要退回单控件标签规则。
+ */
+test('没有 <label> 元素的声明区：题目在 form 外时，radio 组也要有字段名', () => {
+  const html = `<div class="field-group">
+    <span class="field-label">是否有犯罪记录</span>
+    <span class="field-value field-editor">
+      <form class="ant-form ant-form-horizontal specialSelect"><div class="ant-row ant-form-item">
+        <span class="ant-form-item-children">
+          <input type="radio" name="criminal" value="1" style="opacity: 0"><span>是</span>
+          <input type="radio" name="criminal" value="0" style="opacity: 0"><span>否</span>
+        </span></div></form>
+    </span>
+  </div>`;
+  const radios = scan(html).filter(f => f.kind === 'radio');
+  assert.equal(radios.length, 1, '同名 radio 该并成一个组');
+  assert.match(radios[0].label, /犯罪记录/, `组标签取不到题目，实得「${radios[0].label}」`);
+  assert.deepEqual(radios[0].options.map(o => o.text), ['是', '否'], '选项文字取不到');
+  assert.deepEqual(radios[0].options.map(o => o.value), ['1', '0'], '码值取不到');
+});

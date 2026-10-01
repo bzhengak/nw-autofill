@@ -112,7 +112,11 @@ function skinVisible(el, doc) {
   // 皮肤层从**父级**开始找：input 自己的类名就带 radio/checkbox（AntD 的 .ant-radio-input），
   // 用 el.closest() 会第一时间命中它自己，于是"要求皮肤可见"变成"要求那个 opacity:0 的
   // input 可见" —— 恒假，整组控件照样被丢掉。
+  // 找不到"看着像皮肤的父级"时退回父级本身：途普声明区那批 radio/checkbox 干脆没有皮肤 span，
+  // 题目也不在任何 <label> 里；真浏览器里靠"父级要有尺寸"这条把关（整块折叠时 rect 就是 0），
+  // 没有排版的环境（jsdom）才放过。
   const wrap = (el.parentElement && el.parentElement.closest?.('label,[class*="radio"],[class*="checkbox"],[role="radio"],[role="checkbox"]'))
+    || el.parentElement
     || el.closest?.('label');
   if (!wrap) return false;
   const style = (wrap.ownerDocument || doc).defaultView?.getComputedStyle(wrap);
@@ -198,8 +202,8 @@ function isBlockTitle(node) {
  * 导出给 dom/probe.js：探针必须报告"填充路径实际看到的标签"，
  * 否则我在导出里读到的失败可能是探针自己的简化实现，而不是用户界面上的真问题。
  */
-export function labelFor(el, doc) {
-  const cands = [];
+export function labelFor(el, doc, opts = {}) {
+  let cands = [];
   const push = (node, source, depth) => {
     if (!node) return;
     if (node.nodeType === 3) {
@@ -315,12 +319,16 @@ export function labelFor(el, doc) {
       if (k.querySelector && k.querySelector(CONTROL_SELECTOR)) continue;
       if (isFieldShell(k)) continue;
       const t = textOf(k);
-      if (t && t.length <= 24 && !isBlockTitle(k)) cands.push({ text: t, raw: normRaw(k.textContent), source: 'outside-form', depth: 8 + lvl });
+      if (t && t.length <= 24 && !isBlockTitle(k)) cands.push({ text: t, raw: normRaw(k.textContent), source: 'outside-form', depth: 7 + lvl });
     }
   }
 
   const ph = clean(el.getAttribute('placeholder'));
   if (ph) cands.push({ text: ph, raw: ph, source: 'placeholder', depth: 9 });
+  // exclude：单选/复选组找"题目"时用。选项本身（'是'/'否'/'Python'）永远不该当字段名，
+  // 不剔掉就会以近得多的距离赢过真正的题目 —— 打分表里 '是' 7.0 vs '是否有犯罪记录' -0.5。
+  const ex = (opts.exclude || []).map(t => normalize(t)).filter(Boolean);
+  if (ex.length) cands = cands.filter(c => !ex.includes(normalize(c.text)));
   return pickLabelCandidate(cands);
 }
 
@@ -533,11 +541,29 @@ export function scanForm(root = document) {
       if (name) seenGroups.add(gkey);
       const groupEls = name ? Array.from(doc.querySelectorAll(`${kind === 'radio' ? 'input[type="radio"]' : 'input[type="checkbox"]'}[name="${CSS_escape(name)}"]`)) : [el];
       const groupLabel = groupLabelOf(el, groupEls, doc);
+      // 途普 Declaration 那一块的真实形状（用户 2026-10-01 补充）：**整页没有任何 <label> 元素**，
+      // 题目写在字段壳子的另一支上，还在"每字段一个小 form"的外面。
+      // groupLabelOf 是"减掉选项文本后看还剩什么"，遇到题目本身含'是/否'这种字就被削成
+      // '是否' 这种碎片 —— 控件扫到了、选项也取到了，唯独字段名是错的，等于"能填但不知填哪一栏"。
+      // 所以两条路都算，再用同一把标签打分尺比一比，谁更像字段名用谁。
+      const optionWords = groupEls.map(x => normalize(optionTextOf(x))).filter(Boolean);
+      const alone = labelFor(el, doc, { exclude: optionWords });
+      // "组标签"如果只是选项首尾相接（男+女='男女'、未婚+已婚='未婚已婚'、是+否='是否'），
+      // 那不是题目，是 groupLabelOf 减不掉选项时剩下的空壳 —— 这种一律让位给邻近规则。
+      const joined = optionWords.join('');
+      const groupIsJustOptions = !!groupLabel.text && joined.length >= 2 && normalize(groupLabel.text) === joined;
+      const g = groupIsJustOptions ? '' : String(groupLabel.text || '');
+      const a = String(alone.text || '');
+      // 只在"组标签本身就是选项拼起来的"或"组标签为空"时改用手近的邻近规则，不做打分比武：
+      // 打分比武会让 SF 的区块标题 'Work Authorization' 抢走真正的问题
+      // 「Do you require sponsorship…」（判分器当场掉了一格，越界 0 但槽位选错）。
+      const useAlone = !!a && (!g || groupIsJustOptions);
+      const label = useAlone ? alone : groupLabel;
       fields.push({
         kind,
-        label: groupLabel.text || '',
-        labelRaw: groupLabel.raw || groupLabel.text || '',
-        labelSource: groupLabel.source,
+        label: label.text || '',
+        labelRaw: label.raw || label.text || '',
+        labelSource: label.source,
         name,
         id: el.id || '',
         placeholder: el.getAttribute('placeholder') || '',

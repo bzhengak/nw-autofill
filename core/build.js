@@ -8,4 +8,4 @@
 //    面板是新的，worker 是旧的。界面上有这一行，这种问题一眼就能定性，不用再互相猜。
 //
 // 改了任何会被用户"重载一下"影响的行为（core/dom/ui/background），顺手把这里 +1。
-export const BUILD = '2026-10-01-4';
+export const BUILD = '2026-10-01-5';

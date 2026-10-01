@@ -1,0 +1,54 @@
+{
+  "id": "tupu-antd",
+  "name": "途普 tupu360 校招（careersite.tupu360.com，AntD v3 皮肤 + 自研字段壳子）",
+  "version": "0.1.0",
+  "family": "antd-v3-custom",
+  "domains": ["careersite.tupu360.com", "*.tupu360.com"],
+  "evidence": {
+    "method": "用户在自己浏览器里用扩展导出的真实结构 JSON（accenture 项目 applicationView 页）+ 用户开 devtools 逐项核对出来的选项/码值对照",
+    "checkedAt": "2026-10-01",
+    "observed": "componentLibs.ant=31、framework.react/vue 都取不到全局句柄；79 个控件里 41 个可见，原生 select 0 个、自定义下拉 21 个、radio 5 个、checkbox 28 个、文件框 3 个；sections 为空（页面没有可识别的区块标题元素）",
+    "verified": "structure",
+    "verifiedScope": "结构、标签位置、选项文案与码值都由用户提供的真实导出确认；**控件的真实交互（点开下拉、选项渲染时机）仍未验证**",
+    "realStructure": {
+      "labelOutsideForm": "标签不在 AntD 的 .ant-form-item 里：每个字段自己套一层 <form class=\"ant-form specialSelect\">，题目写在 form **外面**的字段壳子上（chain 顶到 span.field-value field-editor，再上面是 div.field-group）。同一页里 <input> 能在 form 内拿到 prev 兄弟标签，div[role=combobox] 不能 —— 差一层就是全有和全无。",
+      "noLabelElement": "声明区（Declaration）**整页没有任何 <label> 元素**，题目是壳子里的一段裸文本，选项文字是 input 后面的兄弟 span；所以标签必须靠 DOM 邻近规则推，而 groupLabelOf 那种\"减掉选项文本看剩什么\"会把题目 '是否有犯罪记录' 削成 '是否'。",
+      "skinnedChoices": "radio/checkbox 的真身是 opacity:0 的 input，看得见的方框是装饰 span（.ant-radio / .ant-checkbox），按 input 自身可见性判会整组消失。",
+      "optionValueMap": "用户逐项核对出来的\"选项 ↔ 提交码值\"对照（本文件不含任何资料取值，只有页面自己的形状）：\n性别：男→M / 女→F\n婚姻状况：未婚→101 / 已婚→102 / 离异→103 / 丧偶→104 / 其他→105\n第一外语语种：英语→1 / 日语→2 / 德语→3 / 法语→4 / 俄语→5\n普通话程度：一级甲等→1 / 一级乙等→2 / 二级甲等→3 / 二级乙等→4 / 三级甲等→5 / 三级乙等→6\n电脑水平：好→1 / 一般→2 / 较差→3\n是否愿意到异地工作：是→Y / 否→N",
+      "englishLabels": "同一张页面中英混排：基本信息区是英文标签（*Name、*First Name、*Last Name、English Name、*Email、*Address、HKDSE Score (English)、TOEFL/TOEIC/GMAT/IELTS Score、Referrer Name、Relationship with Referee），声明区是中文题目 → 语言判定不能只看页面标题，得按栏位标签各自判",
+      "dropdownShape": "0 个原生 <select>；下拉全是 div[role=combobox] + 同容器内的 ul[role=listbox]（AntD v3 的 .ant-select-dropdown-menu-item），已选文案渲染在 .ant-select-selection-selected-value —— 这层在控件节点之外，探针素描以前会把用户选中的值带进导出"
+    },
+    "todo": [
+      "普通话程度、电脑水平 两栏：页面题目清楚，但资料 schema 里没有对应槽位（现在只有 skills.selfAssessment 这一大段文本），硬塞会把「二级乙等」写进技能自评 —— 需要先决定这两个值存在哪",
+      "TOEFL / TOEIC / GMAT / IELTS / HKDSE 四个成绩框：schema 里是 languages.N.score 四行，但页面是平铺的四个框、没有行容器，序号只能按标签里的考试名定；要稳定命中得做\"按考试名定位第几行\"的 pin，而不是都并到 languages.0",
+      "Relationship with Referee（与推荐人关系）：与 family.*.relation 语义不同（那是家庭关系），暂不映射，避免把推荐人写成家属"
+    ]
+  },
+  "controlHints": {
+    "formItem": ".ant-form-item",
+    "fieldShell": "span.field-value,[class*=\"field-value\"]",
+    "fieldLabel": "[class*=\"field-label\"],[class*=\"field-name\"]",
+    "select": ".ant-select",
+    "selectOption": ".ant-select-dropdown-menu-item",
+    "selectedValue": ".ant-select-selection-selected-value",
+    "radioSkin": ".ant-radio,span[class*=\"radio\"]",
+    "checkboxSkin": ".ant-checkbox,span[class*=\"checkbox\"]",
+    "formItemError": ".ant-form-explain"
+  },
+  "pins": [
+    { "match": "性别", "path": "basics.gender", "note": "题目就是'性别'，选项 男/女（码值 M/F）；写入按可见文本命中，码值由浏览器自己带" },
+    { "match": "婚姻状况", "path": "basics.maritalStatus", "note": "五项：未婚/已婚/离异/丧偶/其他（码值 101-105）" },
+    { "match": "第一外语语种", "path": "languages.0.language", "note": "英语/日语/德语/法语/俄语（码值 1-5）；只钉第一外语这一行" },
+    { "match": "是否愿意到异地工作", "path": "intent.acceptRelocation", "note": "是/否（码值 Y/N），与'是否接受调剂'同源但题目不同，钉住避免互相抢" }
+  ],
+  "aliases": [
+    { "path": "basics.name", "add": ["*Name", "Candidate Name"] },
+    { "path": "basics.firstName", "add": ["*First Name", "First Name"] },
+    { "path": "basics.lastName", "add": ["*Last Name", "Last Name"] },
+    { "path": "basics.nameEn", "add": ["English Name"] },
+    { "path": "contact.email", "add": ["*Email", "Email"] },
+    { "path": "contact.address", "add": ["*Address", "Address"] },
+    { "path": "intent.referralName", "add": ["Referrer Name"] }
+  ],
+  "notes": "这份适配器只钉\"题目 ↔ 槽位\"和控件皮肤，不预置任何站点选项文案之外的规则；页面码值记在 evidence.realStructure.optionValueMap 里，写入按可见文本命中，所以站点改码值不影响我们，改**题目文字**才会。"
+}

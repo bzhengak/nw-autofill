@@ -100,6 +100,7 @@ export const GAP_REASON_ZH = {
   sensitive_withheld: '敏感字段（证件号等）默认不自动写，勾选「允许填写敏感字段」后才会写',
   ai_empty_slot: 'AI 指认的槽位在你资料里是空的 —— 去资料里补上再扫',
   choice_required: '选项列表里没有和资料对得上的项，需要你人工选一个',
+  empty_value: '这一栏我们没拿到要写的值（资料里是空的），已跳过 —— 不会往页面写 undefined 之类的占位文字',
 };
 
 export function gapReasonLabel(reason) {

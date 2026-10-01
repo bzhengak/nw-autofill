@@ -169,3 +169,26 @@ test('皮肤化单选组：按文案勾中正确那一个，回读报可见文�
   assert.equal(no.checked, false, '隔壁「否」被顺带勾了');
   assert.match(String(r.actual || ''), /是/, `回读要报可见文字，实得 ${JSON.stringify(r.actual)}`);
 });
+
+/**
+ * 用户报的形状：某些栏"面板与页面显示未定义"。能在我们这侧发生的方式只有一种 ——
+ * 计划里那条 entry 的取值是 undefined，`String(undefined)` 把 "undefined" 打进框里，
+ * 而站点校验会把它当已填。宁可不写，也不留一个看起来填好了的假框。
+ */
+test('取值缺失时绝不把 undefined 写进页面：跳过并说明原因', async () => {
+  const { doc } = dom(`<form><input type="text" name="x" value=""><select name="s"><option value="">请选择</option><option value="A">甲</option></select></form>`);
+  const fields = fieldsOf(doc);
+  const txt = doc.querySelector('[name=x]'), sel = doc.querySelector('[name=s]');
+  const cases = [
+    { index: fields.findIndex(f => f.el === txt), path: 'a.b', label: 'L', tier: 'auto', value: undefined },
+    { index: fields.findIndex(f => f.el === sel), path: 'a.c', label: 'L', tier: 'auto', value: null, optionValue: undefined },
+  ];
+  const { results } = await applyPlan(fields, cases, {});
+  assert.equal(String(txt.value), '', `文本框里被打进了：${JSON.stringify(txt.value)}`);
+  assert.equal(String(sel.value), '', '下拉被打脏了');
+  assert.ok(!doc.body.innerHTML.includes('undefined'), '页面上出现了字面 undefined');
+  for (const r of results) {
+    const why = r.failReason || r.reason || '';
+    assert.equal(why, 'empty_value', `要说清为什么没写，实得 ${JSON.stringify(r)}`);
+  }
+});

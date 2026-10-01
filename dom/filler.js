@@ -104,6 +104,16 @@ export async function fillField(field, entry, opts = {}) {
 
   if (kind === 'file') return { ok: false, reason: 'file_manual', actual: '' };
 
+  // 绝不把 undefined 写进页面。计划里某条 entry 的取值缺失时（AI 候选落空、槽位算错、
+  // 中英两份都空），以前 `String(undefined)` 会真的在框里打出 "undefined"，
+  // 而站点校验会把它当"已填" —— 用户看到的"页面/面板显示未定义"就是这个形状。
+  // 宁可不写并说清原因，也不留一个看起来填好了的假框。
+  const toWrite = entry.value ?? entry.optionValue ?? '';
+  const asText = String(toWrite).trim();
+  if (!asText || /^(undefined|null|NaN|\[object \w+\])$/.test(asText)) {
+    return { ok: false, reason: 'empty_value', actual: String(readBack(el, kind) ?? '').slice(0, 40), error: '' };
+  }
+
   // 自定义下拉：没有 <select>，选项是点击后渲染到 body 末端的弹层，打字不会选中任何值。
   // 用户授权（allowCustomSelect）后才走"点开 → 匹配 → 选中 → 回读校验"，
   // 任何一步不确定就交人工，绝不"点了就当成功"。

@@ -180,3 +180,22 @@ test('资料落库前要过 ensureEnSkeleton：英文骨架不能只活在界面
   const branch = sw.slice(sw.indexOf("msg.type === 'nw:saveProfile'"));
   assert.match(branch.slice(0, 400), /ensureEnSkeleton\(/, 'nw:saveProfile 没补骨架就写进 storage');
 });
+
+/**
+ * 「导出没填的字段与选项」这条链的穿线检查：面板按钮 → nw:unfilledMap → 内容脚本 → 纯函数。
+ * 这一层的 bug 一直是"每个函数都对、按钮点了没反应"，所以按 id 与消息名对撞，而不是只测函数。
+ */
+test('nw:unfilledMap 三端都在：按钮有 id、面板会发、内容脚本会接', () => {
+  const html = read('../ui/sidepanel.html');
+  const panel = read('../ui/sidepanel.js');
+  const content = read('../dom/content.js');
+  for (const id of ['btnUnfilled', 'btnUnfilledCopy', 'btnUnfilledSave', 'unfilledAll', 'unfilledOut', 'unfilledMeta']) {
+    assert.ok(html.includes(`id="${id}"`), `HTML 里没有 id="${id}"，面板脚本拿到的就是 null`);
+    if (id !== 'unfilledOut') assert.ok(panel.includes(`$('${id}')`), `面板没用到 ${id}`);
+  }
+  assert.match(panel, /type: 'nw:unfilledMap'/, '面板没有把这条消息发出去');
+  assert.match(content, /msg\?\.type === 'nw:unfilledMap'/, '内容脚本没接这条消息');
+  // 没扫过时它必须走"只读算一遍"，不能顺手写页面
+  const branch = content.slice(content.indexOf("msg?.type === 'nw:unfilledMap'"));
+  assert.match(branch.slice(0, 1400), /dryRun: true/, '没扫过时先算计划这一步会真的写页面');
+});

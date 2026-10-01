@@ -90,11 +90,77 @@ function sectionHintFor(el) {
 
 const TRAILING_NOISE = /(必填|选填|限\d+字|\(\d+\/\d+\)|\bmax\b|字符|字$|please\s*enter|例如)/i;
 
+/**
+ * 皮肤可见性：AntD / Element 的 radio、checkbox 真身是
+ * `label > span.ant-radio > input.ant-radio-input(opacity:0)`，看得见的方框只是一层装饰 span。
+ * 按"input 自己不可见就丢掉"一刀切，途普那张页面 33 个 radio/checkbox 全灭 ——
+ * 用户看到的就是"这一页一个选项都填不上"。
+ * 只在这种皮肤结构上放行，并要求皮肤本身真的有尺寸（整块被折叠/隐藏时 rect 是 0，照样排除）。
+ */
+/** 布局能不能用：jsdom 里所有 getBoundingClientRect 都是 0×0，那不代表"看不见"，
+ *  只代表这个环境没有排版。真浏览器里 body 一定有尺寸，于是尺寸判据照旧生效。 */
+function layoutAvailable(doc) {
+  const b = doc && doc.body;
+  if (!b || typeof b.getBoundingClientRect !== 'function') return false;
+  const r = b.getBoundingClientRect();
+  return Boolean(r && (r.width > 0 || r.height > 0));
+}
+
+function skinVisible(el, doc) {
+  const t = String(el.type || '').toLowerCase();
+  if (t !== 'radio' && t !== 'checkbox') return false;
+  // 皮肤层从**父级**开始找：input 自己的类名就带 radio/checkbox（AntD 的 .ant-radio-input），
+  // 用 el.closest() 会第一时间命中它自己，于是"要求皮肤可见"变成"要求那个 opacity:0 的
+  // input 可见" —— 恒假，整组控件照样被丢掉。
+  const wrap = (el.parentElement && el.parentElement.closest?.('label,[class*="radio"],[class*="checkbox"],[role="radio"],[role="checkbox"]'))
+    || el.closest?.('label');
+  if (!wrap) return false;
+  const style = (wrap.ownerDocument || doc).defaultView?.getComputedStyle(wrap);
+  if (style && (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0')) return false;
+  if (!layoutAvailable(wrap.ownerDocument || doc)) return true;
+  const rect = typeof wrap.getBoundingClientRect === 'function' ? wrap.getBoundingClientRect() : null;
+  return Boolean(rect && (rect.width > 0 || rect.height > 0));
+}
+
+/**
+ * 一个 radio/checkbox 的"可见文案"。
+ * 老写法只有 `nextElementSibling || parentElement`：原生裸控件够用，但皮肤结构里
+ * input 的下一个兄弟什么都没有、父级又是那层空的装饰 span，取回来是空串 ——
+ * 于是字段"选项全是空的"，一个都选不上（用户 2026-10-01 报的就是这个）。
+ *
+ * 顺序有坑，两条都不能错：
+ *  - `<label><input>阅读</label>` 这种最常见：文字是 label 里的**文本节点**，
+ *    input 没有元素兄弟；此时"父级的下一个兄弟"是**隔壁选项**（'跑步'），
+ *    先取它就等于把别人的标签安在这个框上 —— 会勾错并且回读还是绿的。
+ *  - `label > span.ant-radio > input` + `span` 这种皮肤：文字在父级 span **之后**，
+ *    而父级自己的文本是空的，所以必须在"父级文本为空"时才走这一步。
+ */
+export function optionTextOf(box) {
+  if (!box) return '';
+  const pick = n => clean(String((n && (n.textContent ?? '')) || ''));
+  const own = pick(box.nextElementSibling);
+  if (own) return own.slice(0, 40);
+  const parent = box.parentElement;
+  const parentText = pick(parent);
+  const parentIsOption = !!parent && (parent.tagName === 'LABEL' || parent.matches?.('[class*="radio"],[class*="checkbox"],[class*="option"],[class*="item"]'));
+  if (parentIsOption && parentText) return parentText.slice(0, 40);
+  const after = pick(parent && parent.nextElementSibling);
+  if (after) return after.slice(0, 40);
+  if (parentText) return parentText.slice(0, 40);
+  const wrap = box.closest?.('label');   // 只认 <label>：input 自己的类名也带 radio，别用它当兜底
+  const inWrap = pick(wrap);
+  if (inWrap) return inWrap.slice(0, 40);
+  return clean(box.getAttribute('aria-label') || box.getAttribute('title') || box.value || '');
+}
+
 function visible(el, doc) {
   if (!el) return false;
   if (el.disabled) return false;
   const style = (el.ownerDocument || doc).defaultView?.getComputedStyle(el);
-  if (style && (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0')) return false;
+  if (style && (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0')) {
+    if (style.opacity === '0' && skinVisible(el, doc)) { el.__nwSkinned = true; return true; }
+    return false;
+  }
   if (el.type === 'hidden') return false;
   const rect = typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null;
   if (rect && rect.width === 0 && rect.height === 0 && !el.closest?.('head')) {
@@ -476,7 +542,7 @@ export function scanForm(root = document) {
         id: el.id || '',
         placeholder: el.getAttribute('placeholder') || '',
         currentValue: (groupEls.find(x => x.checked) || {}).value ?? '',
-        options: groupEls.map(x => ({ text: clean(x.nextElementSibling?.textContent || x.parentElement?.textContent || x.value), value: x.value })),
+        options: groupEls.map(x => ({ text: optionTextOf(x), value: x.value })),
         required: el.required || el.getAttribute('aria-required') === 'true' || /\*/.test(String(el.closest?.('[class*="item"],label')?.textContent || '')),
         sectionHint: sectionHintFor(el),
         itemIndex: (blockInfoOf(el, blockIndex) || {}).index ?? null,
@@ -487,6 +553,7 @@ export function scanForm(root = document) {
         ownerText: clean(el.parentElement?.textContent || '').slice(0, 60),
         multi: kind === 'checkbox',
         zeroSize: Boolean(el.__nwZeroSize),
+        skinned: Boolean(el.__nwSkinned),
         el,
       });
       continue;
@@ -517,6 +584,7 @@ export function scanForm(root = document) {
       readOnly: Boolean(el.readOnly),
       maxLength: el.maxLength > 0 ? el.maxLength : null,
       zeroSize: Boolean(el.__nwZeroSize),
+      skinned: Boolean(el.__nwSkinned),
       el,
     });
   }

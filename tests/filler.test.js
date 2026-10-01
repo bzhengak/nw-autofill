@@ -144,3 +144,28 @@ test('单选按码值命中（value="M"）也要报绿：写入口径与回读�
   assert.equal(doc.querySelector('input[value="M"]').checked, true);
   assert.equal(doc.querySelector('input[value="F"]').checked, false);
 });
+
+/**
+ * 皮肤化 radio/checkbox（真身 input 被 opacity:0 藏起来）——扫描现在能看见它们了，
+ * 这一条钉的是"看得见之后真的填得对"：勾中的必须是文案匹配的那一个，
+ * 回读要报可见文字而不是码值 'Y'（用户界面里说"已填 Y"等于没说）。
+ */
+test('皮肤化单选组：按文案勾中正确那一个，回读报可见文字', async () => {
+  const { doc } = dom(`<form><fieldset><legend>是否有亲属在本系统</legend>
+    <label class="ant-radio-wrapper"><span class="ant-radio"><span class="ant-radio-inner"></span>
+      <input type="radio" class="ant-radio-input" name="relative" value="Y" style="opacity: 0"></span><span>是</span></label>
+    <label class="ant-radio-wrapper"><span class="ant-radio"><span class="ant-radio-inner"></span>
+      <input type="radio" class="ant-radio-input" name="relative" value="N" style="opacity: 0"></span><span>否</span></label>
+  </fieldset></form>`);
+  const fields = fieldsOf(doc);
+  const yes = doc.querySelector('input[value="Y"]');
+  const no = doc.querySelector('input[value="N"]');
+  const f = fieldFor(fields, yes) || fields.find(x => x.kind === 'radio');
+  assert.ok(f, '皮肤 radio 组没被扫到');
+  const { results } = await applyPlan(fields, [entry(fields.indexOf(f), { optionValue: '是', value: '是' })], {});
+  const r = results.find(x => x.index === fields.indexOf(f));
+  assert.equal(okOf(r), true, `写皮肤 radio 报失败：${JSON.stringify(r)}`);
+  assert.equal(yes.checked, true, '该勾的是「是」');
+  assert.equal(no.checked, false, '隔壁「否」被顺带勾了');
+  assert.match(String(r.actual || ''), /是/, `回读要报可见文字，实得 ${JSON.stringify(r.actual)}`);
+});

@@ -3,6 +3,10 @@
 
 import { normalize, formatDate } from '../core/matching.js';
 import { pickCustomSelect, isCustomSelect } from './select-opener.js';
+// 选项可见文案的取法只留一处：扫描、写入、回读三边必须同口径，
+// 否则会出现"扫描看见的选项和写入时认的选项不是一套字"，皮肤结构（AntD/Element 的
+// label > span 装饰 > opacity:0 的 input）下尤其容易各写各的。
+import { optionTextOf } from './scanner.js';
 
 function dispatch(el, type, extra = {}) {
   const doc = el.ownerDocument;
@@ -36,7 +40,7 @@ export function setNativeValue(el, value) {
 export function readBack(el, kind) {
   if (kind === 'contenteditable') return String(el.textContent || '').trim();
   if (kind === 'radio' || kind === 'checkbox') {
-    const checked = el.__nwGroup?.filter(x => x.checked).map(x => x.value || normalize(x.nextElementSibling?.textContent || ''));
+    const checked = el.__nwGroup?.filter(x => x.checked).map(x => x.value || normalize(optionTextOf(x)));
     return (checked || []).join('|');
   }
   return String(el.value ?? '').trim();
@@ -150,7 +154,7 @@ export async function fillField(field, entry, opts = {}) {
     // 回读却拿可见文本比，两边口径不同就会把已经选对的框报成红色 selection_mismatch
     // （plain-cn 的 性别/政治面貌/婚姻状况 全中，判分其实是对的，红字纯属假警报）。
     const hitOf = box => {
-      const label = normalize(box.nextElementSibling?.textContent || box.parentElement?.textContent || '');
+      const label = normalize(optionTextOf(box));
       const boxValue = normalize(box.value || '');
       // 空标签绝不能算命中：`wanted.some(w => w.includes(label))` 在 label='' 时恒真，
       // 老式表格里"整组被勾满"就是这么来的

@@ -127,6 +127,18 @@
   <div class="note" id="probeMeta">用于给新站点写适配器：导出后把 JSON 发给维护者即可。</div>
   <textarea id="probeOut" spellcheck="false" style="min-height:70px" readonly placeholder="尚未导出"></textarea>
 
+  <h2>没填上的字段与选项对照（这一页为什么填不上）</h2>
+  <div class="row">
+    <button id="btnUnfilled">导出没填的字段与选项</button>
+    <button id="btnUnfilledCopy" disabled>复制到剪贴板</button>
+    <button id="btnUnfilledSave" disabled>下载 JSON</button>
+    <label class="note"><input type="checkbox" id="unfilledAll"> 把已填的也带上</label>
+  </div>
+  <div class="note" id="unfilledMeta">radio / checkbox / 下拉这类"有备选项"的栏位，导出里会带上
+    <b>选项文案 ↔ 提交码值</b>的对照（例如「是」↔ <code>1</code>）—— 这一列是写站点规则唯一缺的东西，
+    也是你自己核对"页面到底要什么值"最直接的表。没扫过的话它会先只读地算一遍计划，不写任何东西。</div>
+  <textarea id="unfilledOut" spellcheck="false" style="min-height:70px" readonly placeholder="尚未导出"></textarea>
+
   <h2>资料体检</h2>
   <div class="stats" id="auditStats">尚未体检</div>
   <div class="note" id="auditAdvice"></div>

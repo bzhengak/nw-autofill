@@ -341,3 +341,41 @@ test('两列条目里标签分支自己不套 <label>（field-label 裸文本）
   </div>`);
   assert.equal(f.label, '是否有亲属在本系统');
 });
+
+/**
+ * AntD / Element 的 radio、checkbox 真身是 opacity:0 的 input，看得见的是一层皮肤 span。
+ * 用户 2026-10-01 在途普那张页面遇到的就是这种：探针数出 28 个 checkbox + 5 个 radio，
+ * 可扫描结果里一个都没有 —— 于是"这一页完全填不上"，而我们只看到"控件数为 0 的字段类型"。
+ */
+const SKIN_HTML = `<form><fieldset>
+  <legend>是否有亲属在本系统</legend>
+  <label class="ant-radio-wrapper"><span class="ant-radio">
+      <span class="ant-radio-inner"></span><input type="radio" class="ant-radio-input" name="relative" value="Y" style="opacity: 0">
+    </span><span>是</span></label>
+  <label class="ant-radio-wrapper"><span class="ant-radio">
+      <span class="ant-radio-inner"></span><input type="radio" class="ant-radio-input" name="relative" value="N" style="opacity: 0">
+    </span><span>否</span></label>
+</fieldset>
+<fieldset>
+  <legend>技能掌握</legend>
+  <label class="ant-checkbox-wrapper"><span class="ant-checkbox">
+      <input type="checkbox" class="ant-checkbox-input" name="skill" value="PY" style="opacity: 0">
+    </span><span>Python</span></label>
+  <label class="ant-checkbox-wrapper"><span class="ant-checkbox">
+      <input type="checkbox" class="ant-checkbox-input" name="skill" value="SQL" style="opacity: 0">
+    </span><span>SQL</span></label>
+</fieldset></form>`;
+
+test('皮肤化的 radio/checkbox（input 被 opacity:0 藏起来）也要被扫到，且选项文案取得到', () => {
+  const fields = scan(SKIN_HTML);
+  const radios = fields.filter(f => f.kind === 'radio');
+  const boxes = fields.filter(f => f.kind === 'checkbox');
+  assert.equal(radios.length, 1, `皮肤 radio 组没被扫到（拿到 ${radios.length} 条）`);
+  assert.equal(boxes.length, 1, '皮肤 checkbox 组没被扫到');
+  assert.deepEqual(radios[0].options.map(o => o.text), ['是', '否'], `选项文案是空的：${JSON.stringify(radios[0].options)}`);
+  assert.deepEqual(radios[0].options.map(o => o.value), ['Y', 'N'], '选项码值没带出来');
+  // 选项文案走的是和老写法同一个清洗（core() 会转小写），这里钉的是"取得到字"，不是大小写
+  assert.deepEqual(boxes[0].options.map(o => o.text), ['python', 'sql']);
+  assert.equal(radios[0].skinned, true, '要标注这是"靠皮肤可见"的控件，导出与判分都靠它分辨');
+  assert.match(radios[0].label, /亲属/, '组标签没拿到，字段名会是一串空白');
+});

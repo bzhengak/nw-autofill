@@ -6,7 +6,7 @@ let mods = null;
 async function loadModules() {
   if (mods) return mods;
   const u = p => chrome.runtime.getURL(p);
-  const [scanner, filler, safety, matcher, schema, matching, probe, ai] = await Promise.all([
+  const [scanner, filler, safety, matcher, schema, matching, probe, ai, optionMap, build] = await Promise.all([
     import(u('dom/scanner.js')),
     import(u('dom/filler.js')),
     import(u('dom/safety.js')),
@@ -15,8 +15,10 @@ async function loadModules() {
     import(u('core/matching.js')),
     import(u('dom/probe.js')),
     import(u('core/ai.js')),
+    import(u('core/option-map.js')),
+    import(u('core/build.js')),
   ]);
-  mods = { scanner, filler, safety, matcher, schema, matching, probe, ai };
+  mods = { scanner, filler, safety, matcher, schema, matching, probe, ai, optionMap, build };
   return mods;
 }
 
@@ -134,6 +136,35 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       } else if (msg?.type === 'nw:probe') {
         const { probe } = await loadModules();
         sendResponse({ ok: true, data: probe.probePageStructure(document, location.href, window) });
+      } else if (msg?.type === 'nw:unfilledMap') {
+        // 「导出没填的字段与选项」：优先复用上一次扫描的现场（window.__nwLast），
+        // 没有就先干跑一次（dryRun：只算不写，一个字节都不改页面），
+        // 因为用户常常是"看这一页没填上"就直接点导出，此时还没扫过。
+        const { scanner, filler, matcher, schema, optionMap } = await loadModules();
+        let last = window.__nwLast;
+        if (!last) {
+          const { profile, settings } = await chrome.storage.local.get(['profile', 'settings']);
+          const fields = scanner.scanForm(document);
+          const plan = matcher.planFill(fields, profile || {}, {
+            mode: 'full',
+            fillSensitive: Boolean(settings?.fillSensitive),
+            allowCustomSelect: Boolean(settings?.allowCustomSelect),
+            enMissingMode: settings?.enMissingMode || 'strict',
+          });
+          const applied = await filler.applyPlan(fields, plan.assignments, { dryRun: true });
+          last = window.__nwLast = { fields, plan, applied, auditLog };
+        }
+        sendResponse({
+          ok: true,
+          data: optionMap.buildUnfilledMap({
+            fields: last.fields,
+            gaps: last.plan?.gaps || [],
+            results: last.applied?.results || [],
+            url: location.href,
+            build: build.BUILD,
+            profileFilled: schema.countFilled((await chrome.storage.local.get(['profile'])).profile || {}),
+          }, { includeFilled: msg.includeFilled === true }),
+        });
       } else if (msg?.type === 'nw:ping') {
         await loadModules();
         sendResponse({ ok: true, armed: Boolean(window.__nwSubmitGuardArmed) });

@@ -8,6 +8,7 @@ import { applyExtracted } from '../core/ai-extract.js';
 import { normalizeBaseUrl, sanityCheckKey, findLeaksInExport, clampTimeoutSec, effectiveTimeoutSec, AI_TIMEOUT_DEFAULT_SEC, clampMaxTokens, effectiveMaxTokens, AI_MAX_TOKENS_DEFAULT, effectiveStream } from '../core/ai-security.js';
 import { BUILD } from '../core/build.js';
 import { encryptVault, decryptVault, profileDelta, describeDelta } from '../core/vault.js';
+import { describeUnfilledMap } from '../core/option-map.js';
 
 const $ = id => document.getElementById(id);
 let tabId = null;
@@ -1082,4 +1083,42 @@ $('btnProbeSave').onclick = () => {
   a.href = URL.createObjectURL(new Blob([probeJson], { type: 'application/json' }));
   a.download = 'page-structure-' + new Date().toISOString().slice(0, 10) + '.json';
   a.click();
+};
+
+// ── 没填上的字段与「选项文案 ↔ 码值」对照表 ──
+// 用户实测里最费话的一轮就是"这页 28 个 checkbox 一个都没勾上"：面板只报字段名，
+// 而决定能不能填上的是页面上每个选项的可见文字和它自己的提交码。这一份把两者一起摊开。
+let unfilledJson = '';
+$('btnUnfilled').onclick = async () => {
+  const tab = await activeTab();
+  tabId = tab?.id;
+  $('unfilledMeta').textContent = '正在核对这一页哪些没填上（没扫过会先只读地算一遍，不写任何东西）…';
+  const res = await chrome.runtime.sendMessage({ type: 'nw:unfilledMap', tabId, includeFilled: $('unfilledAll').checked });
+  if (!res?.ok || !res.data) {
+    $('unfilledMeta').textContent = '本页没回应：' + (res?.error || '未知错误') + '（刚重载过扩展请刷新目标页面，再打开侧边栏）';
+    return;
+  }
+  unfilledJson = JSON.stringify(res.data, null, 1);
+  $('unfilledOut').value = unfilledJson;
+  $('btnUnfilledCopy').disabled = false;
+  $('btnUnfilledSave').disabled = false;
+  $('unfilledMeta').innerHTML = escapeHtml(describeUnfilledMap(res.data))
+    + (res.data.profileFilled === 0 ? '<br><b>资料是空的（0 项有值）</b>：这种情况"没填上"多半与站点无关，先去「分类编辑」把简历灌进来。' : '');
+};
+$('btnUnfilledCopy').onclick = async () => {
+  try { await navigator.clipboard.writeText(unfilledJson); $('unfilledMeta').textContent += ' 已复制。'; }
+  catch { $('unfilledOut').select(); document.execCommand('copy'); $('unfilledMeta').textContent += ' 已选中并尝试复制。'; }
+};
+$('btnUnfilledSave').onclick = () => {
+  const leaks = findLeaksInExport(unfilledJson, {});
+  if (leaks.length) {
+    $('unfilledMeta').textContent = '已拒绝导出：内容里出现像 API Key 的字符串（' + leaks.map(l => l.key).join(', ') + '）';
+    return;
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([unfilledJson], { type: 'application/json' }));
+  a.download = 'unfilled-options-' + new Date().toISOString().slice(0, 10) + '.json';
+  a.click();
+  $('unfilledMeta').textContent = `已下载 unfilled-options-${new Date().toISOString().slice(0, 10)}.json。`
+    + '提醒一句：里面的 currentValue 是页面上已经显示的选中项（可能是你自己点的），要发给别人前自己过一眼。';
 };

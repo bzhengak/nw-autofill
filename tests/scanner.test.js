@@ -403,3 +403,44 @@ test('没有 <label> 元素的声明区：题目在 form 外时，radio 组也�
   assert.deepEqual(radios[0].options.map(o => o.text), ['是', '否'], '选项文字取不到');
   assert.deepEqual(radios[0].options.map(o => o.value), ['1', '0'], '码值取不到');
 });
+
+/**
+ * 「Name 这一栏在哪个板块」——途普那张页面没有任何 h1-h4/legend，sections 导出是空的，
+ * 而页面上有 5 个都叫 Name 的框（项目、实习、组织、证书、推荐人）。
+ * 板块标题在 DOM 里确实存在，只是它既不是标题标签也不在字段那一层：
+ * 它是"一个容器里排着好几栏"的第一支不含控件的文本。以前没人看这一层。
+ */
+const BLOCKS_HTML = `<div class="page">
+  <div class="section-box">
+    <div class="sec-title">教育经历</div>
+    <div class="field-group"><span class="field-label">学校名称</span><span class="field-value"><input data-nw-test="e1"></span></div>
+    <div class="field-group"><span class="field-label">专业</span><span class="field-value"><input data-nw-test="e2"></span></div>
+  </div>
+  <div class="section-box">
+    <div class="sec-title">资格证书</div>
+    <div class="field-group"><span class="field-label">Name</span><span class="field-value"><input data-nw-test="c1"></span></div>
+    <div class="field-group"><span class="field-label">获得时间</span><span class="field-value"><input data-nw-test="c2"></span></div>
+  </div>
+</div>`;
+
+test('板块标题能当章节证据：证书区块里的 Name 归到 certifications 而不是基本信息', () => {
+  const fields = scan(BLOCKS_HTML);
+  const by = k => fields.find(f => f.el.getAttribute('data-nw-test') === k);
+  assert.equal(by('c1').sectionHint, 'certifications', `板块标题没被当证据，实得 hint=${by('c1').sectionHint}`);
+  assert.equal(by('c1').sectionTitle, '资格证书');
+  assert.equal(by('e1').sectionHint, 'education');
+  // 字段自己的标签仍然优先：hint 只用来在多个同名词之间做归属判断
+  assert.equal(by('e1').label, '学校名称');
+});
+
+test('区块容器里找不到标题时不许改口：宁可没证据，也不拿页面大标题当板块', () => {
+  const html = `<h1>候选人简历</h1><div class="wrap">
+    <div class="field-group"><span class="field-label">Name</span><span class="field-value"><input data-nw-test="n1"></span></div>
+    <div class="field-group"><span class="field-label">Name</span><span class="field-value"><input data-nw-test="n2"></span></div>
+  </div>`;
+  const fields = scan(html);
+  for (const k of ['n1', 'n2']) {
+    const f = fields.find(x => x.el.getAttribute('data-nw-test') === k);
+    assert.ok(!f.sectionHint, `没有板块标题却给出了章节归属：${f.sectionHint}（会把手名都归到同一块）`);
+  }
+});

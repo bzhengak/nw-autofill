@@ -222,7 +222,7 @@ export function probePageStructure(doc, locationHref = '', win = doc.defaultView
     // 祖先类名链 + 被否掉的候选标签：缺了这两样，"这个字段为什么没标签"只能靠猜。
     // 都是站点自己的 DOM 元数据，不含用户填的任何内容。
     const chain = [];
-    for (let n = e.parentElement; n && chain.length < 7; n = n.parentElement) {
+    for (let n = e.parentElement; n && chain.length < 14; n = n.parentElement) {
       const cls = norm(String(n.className || '')).slice(0, 60);
       if (cls) chain.push(`${n.tagName.toLowerCase()}.${cls}`);
     }
@@ -255,6 +255,8 @@ export function probePageStructure(doc, locationHref = '', win = doc.defaultView
       scanVia: S?.text ? (S.source || undefined) : undefined,
       sketch: sketch || undefined,
       chain: chain.length ? chain : undefined,
+      // 板块归属：这一栏在哪个板块里（途普那张页面标签全叫 Name，没有这一列就永远说不清）
+      section: (() => { try { const v = sectionEvidenceOf(e); return v.hint || v.title ? [v.hint, v.title].filter(Boolean).join(':') : undefined; } catch { return undefined; } })(),
       ph: e.getAttribute('placeholder') || undefined,
       required: req || undefined,
       readonly: e.readOnly || undefined,

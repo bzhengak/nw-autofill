@@ -204,7 +204,10 @@ export const SECTIONS = [
   },
   {
     k: 'certifications', zh: '证书与资格', en: 'Certifications', maxItems: 5, fields: [
-      ['name', '证书名称', 'certificate|certification|name|license|证书名称|资格证书', 'text', ''],
+      // 裸词 'name' 不属于这里：一页有 5 个「Name」时，"name" 就是"这一块的名字栏"这个**列名**，
+      // 不是"姓名"。用户 2026-10-02 的诊断——"你把 name 识别成为 姓名，而不是 name"。
+      // 想要证书名称的栏位必须自己说清楚（certificate/certification/…），否则宁可留空。
+      ['name', '证书名称', 'certificate|certification|license|证书名称|资格证书|certificate name|certification name|qualification', 'text', ''],
       ['number', '证书编号', 'certificate number|license number|编号', 'text', 'S'],
       ['issuer', '发证机构', 'issuer|awarded by|颁发机构', 'text', ''],
       ['issueDate', '获证时间', 'issue date|date obtained|获证时间', 'month', ''],
@@ -277,7 +280,9 @@ export const SECTIONS = [
   },
   {
     k: 'family', zh: '家庭成员', en: 'Family Members', maxItems: 4, fields: [
-      ['name', '姓名', 'name|family member name|成员姓名', 'text', 'S'],
+      // 同上：家庭成员的「姓名」不能靠裸词 name 抢 —— 抢走一次，就把家属名字写进了页面某个
+      // 叫 Name 的栏位（证书、项目、推荐人都会中招）。要它就得说"family member / member name"。
+      ['name', '姓名', 'family member name|成员姓名|member name|relative name|家属姓名', 'text', 'S'],
       ['relation', '与本人关系', 'relation|relationship|family relation|称谓|关系', 'text', ''],
       ['birthYear', '出生年份', 'birth year|year of birth|出生年月', 'year', ''],
       ['employer', '工作单位', 'employer|work unit|company|工作单位|职业', 'text', ''],

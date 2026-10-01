@@ -88,6 +88,49 @@ function sectionHintFor(el) {
   return '';
 }
 
+/**
+ * 这一栏属于**哪个板块**：往上找"一个容器里排着好几栏"的那一层，取它里面不含控件的旁支文本。
+ *
+ * 为什么必须有这条路：途普那张页面 `sections` 是空的（没有任何 h1-h4/legend 可当区块标题），
+ * 而页面上有 N 个都叫「Name」的栏位 —— 项目名、实习公司名、组织名、证书名、推荐人名。
+ * 只按标签文字匹配时它们全都命中同一个词，谁有值就填谁，用户看到的就是"整页填得很乱"。
+ * 板块标题就在 DOM 里（每个板块一个容器，第一支是标题文本），只是我们以前不看这一层。
+ *
+ * 只取"到了区块容器但没找到标题"这一种失败：找到了就用，没找到就明确返回空 ——
+ * 不再往上够到页面大标题，那会把整页的 Name 都归到同一个板块，比不猜更糟。
+ */
+function blockTitleOf(el) {
+  for (let n = el.parentElement, up = 0; n && up < 16; n = n.parentElement, up++) {
+    if (n.tagName === 'BODY' || n.tagName === 'HTML') break;
+    const kids = Array.from(n.children || []);
+    const rowish = kids.filter(k => k.querySelector?.(CONTROL_SELECTOR));
+    if (rowish.length < 2) continue;                 // 不是"一块里排着好几栏"的容器，再往上
+    for (const k of kids) {
+      if (k.querySelector?.(CONTROL_SELECTOR)) continue;
+      const t = textOf(k);
+      if (t && t.length <= 24) return { text: t, hint: hintOfText(t), depth: up };
+    }
+    return { text: '', hint: '', depth: up };        // 容器找到了但没有标题：就此为止
+  }
+  return null;
+}
+
+/** 板块证据（hint + 标题原文 + 来自哪条路），扫出来的字段都带上，导出与判分都看得到 */
+export function sectionEvidenceOf(el) {
+  // 与 sectionHintFor 同一套走法，但把"那段文字"也带出来：导出里要能看见
+  // 我们是凭哪句话判断这一栏属于哪个板块的，出错时才不至于各执一词。
+  for (let node = el, i = 0; node && i < 8; node = node.parentElement, i++) {
+    const own = headingBefore(node, el) || prevSiblingHeading(node) || '';
+    const byHeading = hintOfText(own);
+    if (byHeading) return { hint: byHeading, title: own, source: 'heading' };
+    const byClass = hintOfText(String(node.className || '').replace(/[._-]+/g, ' '));
+    if (byClass) return { hint: byClass, title: '', source: 'class' };
+  }
+  const block = blockTitleOf(el);
+  if (!block) return { hint: '', title: '', source: '' };
+  return { hint: block.hint, title: block.text, source: block.text ? 'block-title' : '' };
+}
+
 const TRAILING_NOISE = /(必填|选填|限\d+字|\(\d+\/\d+\)|\bmax\b|字符|字$|please\s*enter|例如)/i;
 
 /**
@@ -534,6 +577,7 @@ export function scanForm(root = document) {
       && el.closest('[role="combobox"]') !== el) continue;
     let kind = kindOf(el);
     const name = el.getAttribute('name') || '';
+    const secEv = sectionEvidenceOf(el);
 
     if (kind === 'radio' || kind === 'checkbox') {
       const gkey = `${kind}:${name || el.getAttribute('aria-labelledby') || ''}:${blockOf(el, blockIndex)}`;
@@ -570,7 +614,9 @@ export function scanForm(root = document) {
         currentValue: (groupEls.find(x => x.checked) || {}).value ?? '',
         options: groupEls.map(x => ({ text: optionTextOf(x), value: x.value })),
         required: el.required || el.getAttribute('aria-required') === 'true' || /\*/.test(String(el.closest?.('[class*="item"],label')?.textContent || '')),
-        sectionHint: sectionHintFor(el),
+        sectionHint: secEv.hint,
+        sectionTitle: secEv.title,
+        sectionSource: secEv.source,
         itemIndex: (blockInfoOf(el, blockIndex) || {}).index ?? null,
         nearbyLabels: nearbyLabels(el, doc),
         autocomplete: el.getAttribute('autocomplete') || '',
@@ -600,7 +646,9 @@ export function scanForm(root = document) {
       sampleValue: el.getAttribute('placeholder') || '',
       options: optionsOf(el, kind),
       required: el.required || el.getAttribute('aria-required') === 'true' || /\*/.test(String(el.closest?.('[class*="item"],label,td,th')?.textContent || '')),
-      sectionHint: sectionHintFor(el),
+      sectionHint: secEv.hint,
+      sectionTitle: secEv.title,
+      sectionSource: secEv.source,
       itemIndex: (blockInfoOf(el, blockIndex) || {}).index ?? null,
       nearbyLabels: nearbyLabels(el, doc),
       autocomplete: el.getAttribute('autocomplete') || '',

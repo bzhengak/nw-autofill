@@ -23,6 +23,9 @@ export function plainField(f) {
     required: Boolean(f.required),
     multi: Boolean(f.multi),
     sectionHint: f.sectionHint || '',
+    // 板块证据：这一栏到底在哪个板块里（用户 2026-10-02 点名要的就是这一列）
+    sectionTitle: String(f.sectionTitle || '').slice(0, 40),
+    sectionSource: f.sectionSource || '',
     itemIndex: f.itemIndex == null ? null : f.itemIndex,
     nearbyLabels: (f.nearbyLabels || []).slice(0, 3).map(s => String(s).slice(0, 60)),
     // 选项：text 是给人看的，value 是提交时真正发出去的码 —— 这张对照就是这份导出的意义

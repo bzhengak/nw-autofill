@@ -556,3 +556,71 @@ test('页面语言判定只用页面自己的标签：双语标签算中文页�
   ]), 'zh', '中英并排的页面本来就接受中文写法');
   assert.equal(detectPageLanguage([pageField({ label: 'Name' })]), 'zh', '一个孤立英文标签不该把整页判成英文，否则一屏栏位会集体变成缺英文');
 });
+
+/**
+ * 2026-10-02 埃森哲（途普）真实事故：这一页有一堆都叫「Name」的框（项目名、证书名、推荐人名…），
+ * 而别名表里 'name' 同时挂在 basics.name / certifications.*.name / family.*.name 上 ——
+ * 用户的诊断是"你把 name 识别成为 姓名，而不是 name"。
+ * 三条规矩钉住：① 有板块归属就按板块定；② 正确的槽位是空的就留空，绝不拿别的栏位顶；
+ * ③ 同名栏位出现两次以上又没有任何板块证据 → 交人工，不按资料顺序轮值。
+ */
+function accentureProfile() {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'certifications.0.name', 'AWS Certified AI Practitioner');
+  setValueByPath(p, 'family.0.name', 'Chen Xiaoming');
+  setValueByPath(p, 'education.0.school', '南京大学');
+  setValueByPath(p, 'languages.0.score', '6.5');
+  return p;   // 注意：basics.name 故意留空 —— 这正是当初被顶替的前提
+}
+
+test('「Name」有板块证据时按板块定栏位：证书区块的 Name 拿证书名称', () => {
+  const plan = planFill([pageField({ label: 'Name', sectionHint: 'certifications' })], accentureProfile(), { mode: 'full' });
+  const a = plan.assignments.find(x => x.index === 0);
+  assert.ok(a, `该写出去却被拦了：${JSON.stringify(plan.gaps)}`);
+  assert.equal(a.path, 'certifications.0.name');
+});
+
+test('正确的槽位是空的 → 留空并说明，绝不拿别的栏位的值顶上去', () => {
+  const plan = planFill([pageField({ label: 'Name' })], accentureProfile(), { mode: 'full' });
+  assert.ok(!plan.assignments.some(a => a.index === 0), `姓名是空的，证书名被顶进了 Name 栏：${JSON.stringify(plan.assignments)}`);
+  const gap = plan.gaps.find(g => g.index === 0);
+  assert.equal(gap?.reason, 'slot_empty');
+  assert.match(gap.note, /姓名/, '要说清最匹配的是哪一栏');
+});
+
+test('两个都叫 Name、又没有板块证据：不按资料顺序轮值，两栏都交人工', () => {
+  const plan = planFill([pageField({ label: 'Name' }), pageField({ label: 'Name', name: 'n2' })], accentureProfile(), { mode: 'full' });
+  assert.equal(plan.assignments.length, 0, `按顺序猜着写了：${JSON.stringify(plan.assignments)}`);
+  for (const i of [0, 1]) {
+    const gap = plan.gaps.find(g => g.index === i);
+    assert.ok(gap, `第 ${i} 栏既没写也没进缺口清单`);
+    assert.ok(['block_ambiguous', 'slot_empty'].includes(gap.reason), `归因不对：${gap.reason}`);
+    if (gap.reason === 'block_ambiguous') assert.match(gap.note, /certifications|family/, '要把候选板块念出来');
+  }
+});
+
+test('限定过的标签不受影响：School Name / Certificate Name 各回各的槽位', () => {
+  const p = accentureProfile();
+  // 这一页是英文表单，教育经历只填了中文校名 → 单独一条用例讲那件事，这里先把英文值补上，
+  // 否则三条断言里第一条会撞在 missing_english_value 上（那是另一码事，别混进来）
+  setValueByPath(p, 'en.education.0.school', 'Nanjing University');
+  const plan = planFill([
+    pageField({ label: 'School Name', sectionHint: 'education' }),
+    pageField({ label: 'Certificate Name' }),
+    pageField({ label: 'IELTS Score' }),
+  ], p, { mode: 'full' });
+  const by = i => plan.assignments.find(a => a.index === i);
+  assert.equal(by(0)?.path, 'education.0.school', JSON.stringify(plan.gaps));
+  assert.equal(by(0)?.value, 'Nanjing University', '英文页面上该写英文校名');
+  assert.equal(by(1)?.path, 'certifications.0.name', '「Certificate Name」必须落在证书名称，不能被"姓名"或"学校"抢走');
+  assert.ok(by(2), '带考试名的成绩栏该能写：' + JSON.stringify(plan.gaps));
+});
+
+test('标签点名的栏位资料里空着 → 说"你还没填"，不是说"词典没有这个词"', () => {
+  // 裸词 name 已经从 证书名称/家庭成员 的别名里拿掉了，所以现在 'Name' 只对应「姓名」
+  const plan = planFill([pageField({ label: 'Address' })], accentureProfile(), { mode: 'full' });
+  assert.equal(plan.assignments.length, 0, `地址空着却写了别的值：${JSON.stringify(plan.assignments)}`);
+  const gap = plan.gaps.find(g => g.index === 0);
+  assert.equal(gap?.reason, 'slot_empty', JSON.stringify(gap));
+  assert.match(gap.note, /地址/);
+});

@@ -101,6 +101,8 @@ export const GAP_REASON_ZH = {
   ai_empty_slot: 'AI 指认的槽位在你资料里是空的 —— 去资料里补上再扫',
   choice_required: '选项列表里没有和资料对得上的项，需要你人工选一个',
   empty_value: '这一栏我们没拿到要写的值（资料里是空的），已跳过 —— 不会往页面写 undefined 之类的占位文字',
+  slot_empty: '页面这一栏最匹配的资料位是空的：我们没有拿别的栏位顶替（顶替就是错填），去资料里补上再扫',
+  block_ambiguous: '这一栏的标签在资料里好几个板块都有同名位，页面上又没有板块标题可依 —— 按资料顺序轮值是猜，交给你手动选',
 };
 
 export function gapReasonLabel(reason) {
@@ -403,22 +405,23 @@ export function planFill(pageFields, profile, opts = {}) {
     const dateish = sf => sf.type === 'date' || sf.type === 'month' || sf.type === 'year';
     const candidates = [];
     const nearMissEn = [];
+    let emptyBest = null;      // 按标签最匹配、但资料里是空的那个槽位（见下面"空槽优先"）
     const questionish = isQuestionLabel(pf.labelRaw || pf.label);
     for (let c = 0; c < schemaFields.length; c++) {
       const sf = schemaFields[c];
       if (asDate && !dateish(sf)) continue;        // 年框+月框问的就是一个日期，别让它去抢文本栏
+      const s = scorePair(scoring, sf);
       const value = valueOf(sf.path, scoring);
       if (!value) {
+        if (s >= REVIEW_THRESHOLD && (!emptyBest || s > emptyBest.s)) emptyBest = { sf, s };
         // 英文页面上"这一槽只有中文值"不能算"我们没有这个词"：
         // 先记下按标签本来能匹配到（near miss），缺口就报成 missing_english_value，
         // 用户看到的下一步是"去 EN 表单补这一栏的英文写法"，而不是"去补别名"。
-        if (pageLang === 'en' && missingEnglish.has(sf.path)) {
-          const s0 = scorePair(scoring, sf);
-          if (s0 >= REVIEW_THRESHOLD) nearMissEn.push({ sf, s: s0 });
+        if (pageLang === 'en' && missingEnglish.has(sf.path) && s >= REVIEW_THRESHOLD) {
+          nearMissEn.push({ sf, s });
         }
         continue;
       }
-      const s = scorePair(scoring, sf);
       // 问句式标签：港企/SF 里"Do you require sponsorship?"这类是合规判断题（bool/enum），该填；
       // 而"which functions interest you?"这类动机题靠词元重合能蹭到"兴趣爱好"，必须挡住。
       // 折中：问句只允许 bool/enum 目标，或字面/主干命中（≥0.95）的文本目标。
@@ -426,6 +429,35 @@ export function planFill(pageFields, profile, opts = {}) {
       if (s >= REVIEW_THRESHOLD) candidates.push({ c, sf, value, s });
     }
     candidates.sort((a, b) => b.s - a.s);
+    // 空槽优先于"退而求其次"：这一栏按标签最匹配的槽位在资料里是空的，就绝不能拿别的栏位顶上。
+    // 用户 2026-10-02 看到的「Name 被写成 AWS Certified AI Practitioner」正是这条缺失造成的：
+    // basics.name 没填 → 它根本不进候选 → 谁有值就用谁（证书名称 0.855 赢）。
+    // 只在"本来会写出去"时拦（有候选）；一个候选都没有仍走下面的章节放宽，别把老用例做窄。
+    {
+      const bestFilled = candidates[0];
+      // "同一板块同一栏位的另一条"（工作第 2 段没写内容）不算顶替，那是记录序号问题，
+      // 老规矩是照写第 1 条 + 黄字说清错位；只有**跨板块/跨栏位**的空槽压过有值候选时，
+      // 写下去才是拿别的东西顶替（姓名 ← 证书名称就是这么发生的）。
+      // 只在**标签就是在点名下那个空栏**时才拦（分数 ≥0.9 = 字面/主干命中）：
+      // 'Name' ≡ 姓名(0.95) 空着 → 绝不能拿证书名称顶；
+      // 而 'Certificate Name' 对 姓名 只有 0.65（靠 'name' 这个词蹭上的），
+      // 那种情况拦下来就是把本来对的栏位做没了 —— 判分器会立刻告诉我。
+      const substitution = bestFilled && emptyBest
+        && emptyBest.s >= 0.9
+        && (emptyBest.sf.section !== bestFilled.sf.section || emptyBest.sf.key !== bestFilled.sf.key);
+      if (substitution && emptyBest.s >= bestFilled.s + 0.05) {
+        const zh = emptyBest.sf.zh || emptyBest.sf.path;
+        gaps.push({
+          index,
+          label: pf.label || '(未命名字段)',
+          reason: 'slot_empty',
+          kind: pf.kind,
+          slotPath: emptyBest.sf.path,
+          note: `这一栏按标签最匹配的是「${zh}」，但你资料里那一栏是空的 —— 没有拿别的栏位的值顶上（顶替就是错填）`,
+        });
+        return;
+      }
+    }
     // 章节线索是启发式证据，不该变成一票否决：Moka/Klook 把"工作职责"放在 工作经历 区块里，
     // 而这份简历只有实习经历（work.* 全空）→ 实习的 summary 被 0.55 罚下后一个候选都不剩，
     // 页面就变成"我们没有词"。这里放宽一次章节惩罚重算，命中就降级为待复核，绝不自动写。
@@ -461,7 +493,7 @@ export function planFill(pageFields, profile, opts = {}) {
       }
       return;
     }
-    considered.push({ index, top: candidates.slice(0, TOP_K), nearMissEn: nearMissEn.sort((a, b) => b.s - a.s).slice(0, TOP_K) });
+    considered.push({ index, top: candidates.slice(0, TOP_K), nearMissEn: nearMissEn.sort((a, b) => b.s - a.s).slice(0, TOP_K), emptyBest });
   });
 
   // 构造稀疏代价矩阵：行 = 有候选的页面字段，列 = 出现过的 profile 索引
@@ -471,6 +503,18 @@ export function planFill(pageFields, profile, opts = {}) {
     if (!item.top.length) {
       const pf = pageFields[item.index];
       const miss = (item.nearMissEn || [])[0];
+      // 一个候选都没有，但标签其实**点名**要某个栏位、只是资料里那一栏空着：
+      // 报"我们没有这个词"会把人赶去补别名，而真正该补的是资料本身
+      // （途普那张页面上 Address / Name 空着时就是这种情况）。
+      if (item.emptyBest && item.emptyBest.s >= 0.9) {
+        const ebZh = item.emptyBest.sf.zh || item.emptyBest.sf.path;
+        gaps.push({
+          index: item.index, label: pf.label || '(未命名字段)',
+          reason: 'slot_empty', kind: pf.kind, slotPath: item.emptyBest.sf.path,
+          note: `这一栏要的是「${ebZh}」，你资料里还没填`,
+        });
+        continue;
+      }
       if (miss) {
         // 按标签本来能对上、只是这一槽没英文写法：把它说成"缺英文值"而不是"我们没有这个词"，
         // 否则用户会去补别名，而真正该补的是 EN 表单里的这一栏
@@ -554,6 +598,39 @@ export function planFill(pageFields, profile, opts = {}) {
     // 而每个字段单独回读都是绿的，事后根本发现不了。
     const domEvidence = pf.itemIndex != null && pf.itemIndexSource !== 'occurrence';
     const sectionEvidence = Boolean(pf.sectionHint) && pf.sectionHint === sf.section;
+    // 跨板块同名栏位：这一页可能有 N 个都叫「Name」的框（项目名、实习公司名、组织名、证书名、推荐人名…）。
+    // 用户 2026-10-02 的诊断很准："你把 name 识别成为 姓名，而不是 name" —— 别名表里 'name' 这种
+    // 一个词的通用词，落到哪个板块就是哪个东西的"名字"，光看标签永远分不开。
+    // 所以：**光秃秃一个词的标签 + 跨板块并列 + 页面上没有板块证据** → 不猜，退成交给人工，
+    // 并把候选板块念出来。判据只收"一个拉丁单词"或"一两个汉字"：Moka 的「公司名称」是 4 个汉字、
+    // "公司"本身有区分度，那种按老规矩写+黄字（有测试钉着"两栏都该进计划"）。
+    const bareLabel = normalize(pf.label || '');
+    const bareGeneric = (/^[a-z][a-z.'-]{1,15}$/.test(bareLabel) && !bareLabel.includes(' '))
+      || /^[\u4e00-\u9fff]{1,2}$/.test(bareLabel);
+    // 只在"这个光秃秃的词在页面上出现不止一次"时才拒。只问一次就没有"哪个框属于哪个板块"
+    // 的问题（Klook 一整个表单里「职责」只出现一次，按最像的板块写是对的，判分钉过这条）；
+    // 出现两次以上才说明同一页有多个板块都在问同名的一栏。
+    const sameBareLabel = pageFields.filter(x => normalize(x.label || '') === bareLabel).length;
+    const tiedSections = [...new Set(row.cells
+      .filter(c => c.score >= chosen.score - 0.12 && c.cand?.sf?.itemIndex != null)
+      .map(c => c.cand.sf.section))];
+    if (bareGeneric && sameBareLabel >= 2 && sf.itemIndex != null && tiedSections.length >= 2 && !domEvidence && !sectionEvidence) {
+      gaps.push({
+        index: row.index,
+        label: pf.label || '(未命名字段)',
+        reason: 'block_ambiguous',
+        kind: pf.kind,
+        slotPath: sf.path,
+        note: `这一栏只写了「${sf.key}」，而资料里有 ${tiedSections.length} 个板块都有同名位（${tiedSections.join(' / ')}）；页面上找不到能判断归属的板块标题`,
+      });
+      return;
+    }
+    if (sf.itemIndex != null && !domEvidence && !sectionEvidence && tiedSections.length >= 2) {
+      // 不够"光秃秃"但仍跨板块并列：照写，但黄字 + 把候选板块念出来，让用户一眼知道我们在猜
+      const why = `这一栏按标签能对上 ${tiedSections.length} 个板块的同名位（${tiedSections.join(' / ')}），按最像的那个写了，请核对`;
+      entry.tier = 'review';
+      entry.note = entry.note ? `${entry.note}；${why}` : why;
+    }
     if (sf.itemIndex != null && !domEvidence && !sectionEvidence) {
       entry.tier = 'review';
       // 追加而不是覆盖：一栏可以同时有两个问题（既是"第几段说不清"，又是"写的是中文值"），

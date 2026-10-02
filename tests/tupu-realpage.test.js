@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 
 import { scanForm } from '../dom/scanner.js';
+import { pickCustomSelect, adapterHints } from '../dom/select-opener.js';
 import { applyPlan } from '../dom/filler.js';
 import { planFill } from '../core/matcher.js';
 import { createEmptyProfile, setValueByPath } from '../core/profile-schema.js';
@@ -165,4 +166,40 @@ test('无名 radio 一题只算一栏：gender 的三个选项是一题，不是
   assert.equal(boxes[1].checked, false, 'female 被勾了');
   assert.equal(boxes[2].checked, false, 'prefer not to disclose 被勾了');
   assert.ok(results[0].ok ?? results[0].status === 'green', `回读没确认：${JSON.stringify(results[0])}`);
+});
+
+/**
+ * AntD **v3** 的下拉：选项是 .ant-select-dropdown-menu-item、已选文案在
+ * .ant-select-selection-selected-value —— 内置签名只认 v4/v5 的 -item-option，
+ * 所以在途普这张页面上"点得开、却匹配不到选项"，用户看到的就是"下拉都不好用"。
+ * 适配器现在能把站点自己说出的选择器接进来（controlHints → adapterHints）。
+ */
+test('AntD v3 下拉：靠适配器的选择器也能点开并选中，回读读到真正的已选文案', async () => {
+  const html = `<div class="text-muted"><span class="field-label">highest education</span>
+    <span class="field-value field-editor"><form class="ant-form ant-form-horizontal specialSelect">
+      <div class="ant-row ant-form-item"><span class="ant-form-item-children">
+        <div class="ddf_wrapper"><div class="ant-select ant-select-enabled">
+          <div class="ant-select-selection ant-select-selection--single" role="combobox" aria-haspopup="listbox">
+            <div class="ant-select-selection__rendered"><span class="ant-select-selection-selected-value"></span></div>
+          </div>
+          <div class="ant-select-dropdown">
+            <ul role="listbox" class="ant-select-dropdown-menu">
+              <li class="ant-select-dropdown-menu-item" data-v="Bachelor">Bachelor</li>
+              <li class="ant-select-dropdown-menu-item" data-v="Master">Master</li>
+            </ul>
+          </div>
+        </div></div>
+      </span></div></form></span></div></div>`;
+  const dom = new JSDOM(`<!doctype html><html><body>${html}</body></html>`, { url: 'https://careersite.tupu360.test/x', pretendToBeVisual: true });
+  const fields = scanForm(dom.window.document);
+  const box = fields.find(f => f.kind === 'combobox');
+  assert.ok(box, 'combobox 没被扫到');
+  const hints = adapterHints(tupuAdapter);
+  assert.ok(hints && /ant-select-dropdown-menu-item/.test(hints.option), '适配器的 v3 选项选择器没接进来');
+  const r = await pickCustomSelect(box, 'Master', { hints });
+  assert.equal(r.ok, true, `v3 下拉选不中：${JSON.stringify(r)}`);
+  assert.match(r.shown, /Master/, `回读要读到 .ant-select-selection-selected-value，实得 ${JSON.stringify(r.shown)}`);
+  // 不带适配器提示时必须诚实地失败，而不是"点了就当成功"
+  const bad = await pickCustomSelect(box, 'Bachelor', {});
+  assert.notEqual(bad.ok, true, '没有选择器提示却报成功 —— 那说明回读在骗人');
 });

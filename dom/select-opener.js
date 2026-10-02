@@ -98,10 +98,10 @@ function visiblePanels(doc, sig) {
  * 而且上一个失败后它仍然开着。不做差集，"现居城市"会把"意向城市"那 10 个选项一起收进来，
  * '南京' 出现两次 → 判成歧义 → 整栏交人工（实测踩过，还是被 mustNotTouch 兜住才发现）。
  */
-export function openOptions(el, doc) {
+export function openOptions(el, doc, hints) {
   const { wrapper, target, allowed, reason } = clickTargetOf(el);
   if (!allowed) return { ok: false, reason, trigger: wrapper, options: [] };
-  const sig = pickSignature(wrapper, doc);
+  const sig = pickSignature(wrapper, doc, hints);
   const before = new Set(visiblePanels(doc, sig));
   const win = doc.defaultView;
   const fire = (type, Ctor) => {
@@ -127,20 +127,54 @@ export function openOptions(el, doc) {
   return { ok: true, trigger: wrapper, options, signature: sig.name, panels: pools };
 }
 
-function pickSignature(trigger, doc) {
+/**
+ * 适配器里的下拉选择器 → 本模块能用的提示。
+ * 为什么必须有：内置签名只认 AntD v4/v5 的 `.ant-select-item-option`，而途普那张页面是
+ * **AntD v3**（选项是 `.ant-select-dropdown-menu-item`，已选文案在
+ * `.ant-select-selection-selected-value`）—— 签名对不上时点开能看见选项却"匹配不到"，
+ * 用户看到的就是"下拉都不好用"。站点自己知道自己是哪一代，所以让它说。
+ * 只接受选择器字符串（validateAdapter 已经挡过 <>、javascript: 等），拼进 querySelector
+ * 失败就退回内置签名，绝不因为一份坏适配器把整栏点击废掉。
+ */
+export function adapterHints(adapter) {
+  const h = adapter && adapter.controlHints;
+  if (!h || typeof h !== 'object') return null;
+  const str = v => (typeof v === 'string' && v.trim() && v.length < 200 ? v.trim() : '');
+  const out = {
+    option: str(h.selectOption) || str(h.option),
+    panel: str(h.optionPanel) || str(h.dropdownPanel),
+    display: str(h.selectedValue) || str(h.displayValue),
+    trigger: str(h.select),
+  };
+  return out.option || out.panel || out.display || out.trigger ? out : null;
+}
+
+function safeQueryAll(root, selector) {
+  if (!root || !selector) return [];
+  try { return Array.from(root.querySelectorAll(selector) || []); } catch { return []; }
+}
+
+function pickSignature(trigger, doc, hints) {
   const host = trigger.closest?.('.el-select,.ant-select,.next-select');
   const cls = String((host || trigger).className || '');
-  if (/el-select/.test(cls)) return LIBRARY_SIGNATURES[0];
-  if (/ant-select/.test(cls)) return LIBRARY_SIGNATURES[1];
-  if (/next-select/.test(cls)) return LIBRARY_SIGNATURES[2];
-  return LIBRARY_SIGNATURES[3];
+  const base = /el-select/.test(cls) ? LIBRARY_SIGNATURES[0]
+    : /ant-select/.test(cls) ? LIBRARY_SIGNATURES[1]
+      : /next-select/.test(cls) ? LIBRARY_SIGNATURES[2] : LIBRARY_SIGNATURES[3];
+  // 适配器说了选项/弹层怎么写，就把它**并到**内置签名前面（不是替换）：
+  // 同一个站点混用两代组件时（途普这张页面上 v3 类名 + 通用 role），只留一种会漏。
+  if (!hints || (!hints.option && !hints.panel)) return base;
+  return {
+    ...base,
+    option: [hints.option, base.option].filter(Boolean).join(','),
+    panel: [hints.panel, base.panel].filter(Boolean).join(','),
+  };
 }
 
 /** 弹层里的选项：只取"看得见的"，且必须属于一个弹层容器（避免把页面其它 role=option 当目标） */
 /** 弹层里的选项：只取被指定那几个容器内的（可见性已在容器层判过） */
 function collectOptions(doc, sig, panels) {
   const pools = [];
-  for (const p of panels || []) pools.push(...Array.from(p.querySelectorAll?.(sig.option) || []));
+  for (const panel of panels || []) pools.push(...safeQueryAll(panel, sig.option));
   // 有些实现不用框架类名的容器，选项直接是 role=option 挂在任意弹层里：退回全局扫描
   if (!pools.length) {
     for (const opt of doc.querySelectorAll?.('[role="option"],[role="menuitem"]') || []) {
@@ -201,9 +235,9 @@ export function matchOption(options, want) {
  * 完整一次选择：点开 → 匹配 → 点选项 → 回读校验。
  * 返回 { ok, reason, shown, expected } —— 调用方（filler）用 shown/expected 决定是否给绿字。
  */
-export async function pickCustomSelect(field, want, { sleep = ms => new Promise(r => setTimeout(r, ms)) } = {}) {
+export async function pickCustomSelect(field, want, { sleep = ms => new Promise(r => setTimeout(r, ms)), hints = null } = {}) {
   const doc = field.el.ownerDocument;
-  const opened = openOptions(field.el, doc);
+  const opened = openOptions(field.el, doc, hints);
   if (!opened.ok) return { ok: false, reason: opened.reason, shown: '', expected: want };
 
   let opt = matchOption(opened.options, want);
@@ -220,7 +254,7 @@ export async function pickCustomSelect(field, want, { sleep = ms => new Promise(
   if (!fired) return { ok: false, reason: 'click_blocked', shown: '', expected: want };
   await sleep(0);
 
-  const shown = readShown(field.el, opt);
+  const shown = readShown(field.el, opt, hints);
   // 回读有两层：① 显示的确实是我们要的值；② 显示的就是我点的那一项 —— 第②层只在
   // "那一项本身也 match 我们要的值"时才算过。以前它单独就能过，于是点错项（want male 点成 female）
   // 也报成黄字"已填 female"：错值被包装成"请你核对"，比报红危险得多。
@@ -240,12 +274,15 @@ export async function pickCustomSelect(field, want, { sleep = ms => new Promise(
  * 先读 input.value 就会把"搜索城市"当成已选值报给用户（仿真页里埋了这个坑，实测踩过同类）。
  */
 const PLACEHOLDERISH = /^(please\s+select|no\s+selection|请选择|选择|请输入|搜索)/i;
-function readShown(el, opt) {
+function readShown(el, opt, hints) {
   const trigger = triggerFor(el);
   const text = n => String(n?.value ?? n?.textContent ?? '').trim();
-  const displayArea = trigger.querySelector?.(
-    '.ant-select-selection-item, .el-select__placeholder:not(.is-transparent), .el-cascader span, .next-select em, [class*="selection-item"]'
-  );
+  // 显示区：适配器可以先说（AntD v3 的已选文案在 .ant-select-selection-selected-value，
+  // 内置那条只认 v4/v5 的 -item，读到空就会退去读整块壳子 → 把面板第一项当成已选值）
+  const displayArea = (hints && hints.display && safeQueryAll(trigger, hints.display)[0])
+    || trigger.querySelector?.(
+      '.ant-select-selection-item, .el-select__placeholder:not(.is-transparent), .el-cascader span, .next-select em, [class*="selection-item"]'
+    );
   const input = trigger.querySelector?.('input,textarea');
   for (const c of [displayArea, el.getAttribute?.('aria-valuetext'), trigger.querySelector?.('[aria-valuetext]'),
     input?.getAttribute?.('aria-valuetext'), trigger, input]) {

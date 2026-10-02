@@ -71,7 +71,7 @@ async function handleScan({ profile, mode = 'full', dryRun = false, adapter = nu
     plan.stats = merged.stats;
     aiApplied = merged.applied;
   }
-  const applied = await filler.applyPlan(fields, plan.assignments, { dryRun, allowCustomSelect });
+  const applied = await filler.applyPlan(fields, plan.assignments, { dryRun, allowCustomSelect, adapter });
 
   clearMarks();
   for (const r of applied.results) {

@@ -2,7 +2,7 @@
 // setNativeValue 的思路与上游 shared/fill-runtime.js 的"回读匹配"一致，此处独立实现。见 NOTICE.md。
 
 import { normalize, formatDate } from '../core/matching.js';
-import { pickCustomSelect, isCustomSelect, wordMatches } from './select-opener.js';
+import { pickCustomSelect, isCustomSelect, wordMatches, adapterHints } from './select-opener.js';
 // 选项可见文案的取法只留一处：扫描、写入、回读三边必须同口径，
 // 否则会出现"扫描看见的选项和写入时认的选项不是一套字"，皮肤结构（AntD/Element 的
 // label > span 装饰 > opacity:0 的 input）下尤其容易各写各的。
@@ -119,7 +119,7 @@ export async function fillField(field, entry, opts = {}) {
   // 任何一步不确定就交人工，绝不"点了就当成功"。
   if (opts.allowCustomSelect && kind !== 'select' && isCustomSelect(field)) {
     const want = entry.optionValue ?? entry.value ?? '';
-    const picked = await pickCustomSelect(field, want);
+    const picked = await pickCustomSelect(field, want, { hints: adapterHints(opts.adapter) });
     if (picked.ok) return { ok: true, actual: picked.shown, shown: picked.shown, viaCustomSelect: true, error: '' };
     // 「站点选项里没有我们资料中的值」不是填写失败，是必须本人表态：
     // 报红会把用户的注意力从真错上引开（与 needsChoice 同一口径）。

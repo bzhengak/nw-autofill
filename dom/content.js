@@ -177,6 +177,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         /**
          * 撤销成功就要把账本里对应那几笔擦掉 —— 否则页面已经恢复原状，
          * 台账还说着"这值是我们写的"，下一轮会拿它去覆盖用户自己填的东西。
+         * 代价要写明白（独立审查 Minor 9）：撤销会把**上一轮那个错值**放回页面，
+         * 从此它在归属上算 other，自动通路不再碰它 —— 方向是对的（你撤销就是不认可这次改动），
+         * 但"撤销后又想让插件填对"得先经映射表改判（M4），不是再点一次扫描。
          */
         if (r?.ok && last?.fields && /^https?:$/.test(location.protocol)) {
           const { ledger } = await loadModules();

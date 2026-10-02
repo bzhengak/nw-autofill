@@ -19,7 +19,17 @@ export const LEDGER_BUCKET = 'nwFillLedger';
 export const LEDGER_CAP_PER_ORIGIN = 400;
 export const LEDGER_CAP_ORIGINS = 40;
 
-/** 稳定哈希（djb2 → base36）：只要"变没变"，不要可逆 */
+/**
+ * 稳定哈希（djb2 → base36）：只要"变没变"，不要可逆。
+ *
+ * 审查提过"要不要加安装期随机盐"（djb2 + 长度对手机号/身份证这类小取值空间可被字典反推）。
+ * 结论是不加，理由记在这儿免得下次又讨论一遍：能读到 `chrome.storage.local` 的人
+ * 本来就能读到同一份存储里**明文的 profile**（含手机号、证件号）——盐只是把
+ * "同一攻击面里的第二个字段"从可反推变成不可反推，边际收益接近 0，
+ * 代价却是把盐穿到 content/matcher/filler/SW 四处（那种漂移正是本文件要避免的）。
+ * 真要收紧，该收的是"整个 profile 明文落盘"这件事（需要 native host 才能用系统钥匙串，
+ * 而"纯浏览器插件"是硬边界），不是这里。
+ */
 export function hashValue(value) {
   const s = String(value ?? '');
   let h = 5381;

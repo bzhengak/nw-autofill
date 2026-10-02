@@ -61,8 +61,8 @@
 
 | 里程碑 | 内容 | 验收 |
 | --- | --- | --- |
-| M1 证据与语义 | `scorePair` 内层拆出 `scorePairDetailed` 返回 `{score, why[]}`（单一实现，`scorePair` 只转发）；每个 assignment 带 `evidence`；只有"中心词/结构属性"这类弱证据支撑的栏位一律不许 auto；新增写入前语义体检 `shape_mismatch`（电话/证件/邮箱/日期 形状与槽位不相容 → 不写并说明是配错栏） | 单栏页面 `School Name→学校`、`Referrer Name→内推人`、`Name→姓名`；形状不相容不再出现绿字；判分 191/191、越界 0 |
-| M2 谁写的 | 写入成功后打 `data-nw-path/value/build`，并记入本地账本（按站点 origin）；扫描读回 → `writtenBy:'us'`；incremental 的 `already_filled` 只认**不是我们写的**非空值 | 重扫能把我们上轮写错的值重新排入计划并可覆盖；用户手填与站点预填仍被跳过；撤销与账本一致 |
+| M1 证据与语义（已完成） | 实际做法与计划略有偏差并更好：没拆 `scorePairDetailed`，而是新增**独立分类** `labelEvidence()`（exact / full-cover / qualifier / head-only / head-noun / broader / struct-* / options-hit / section-agree / item-agree），每个 assignment 带 `evidence` 与 `weakEvidence`；只有弱证据的栏位不许 auto；`shapeOfControl × valueShape → shape_mismatch` 写入前体检。**两道闸最终下沉到 `filler.applyPlan` 入口**（独立审查 2026-10-02 的意见：挂在出口上就有后门） | 单栏页面 `School Name→学校`、`Referrer Name→内推人`、`Name→姓名`；形状不相容不再出现绿字；判分 191/191、越界 0 |
+| M2 谁写的（已完成，S1） | 账本 `chrome.storage.local.nwFillLedger` 按站点 origin 分桶，**只存栏位指纹 + 槽位 + 取值哈希 + 构建号**；刻意**不打 DOM `data-*` 属性**（值进属性就能被页面脚本读走）；扫描前取账本→排计划，写完记账，撤销擦账；归属判定 `us / edited / other / empty` 统一由 `writtenByMap` 提供，所有出口引用同一答案 | 任何模式（full / incremental / AI 落地）都不盖站点预填与用户手填；我们上轮写错的值被重新计划并覆盖；值没变则 `already_ours` 不重写；台账不进任何导出物 |
 | M3 整页映射 | `core/ai.js` 新增 `buildPageMapRequest / parsePageMapResponse`：全量栏位档案（标签/描述/板块/选项文案=码值/邻近/必填/当前值是否我们写的）+ 槽位目录，四档压缩；SW 新消息 `nw:aiMapPage`，白名单与自检沿用 | 一屏 28 栏的页面能一次拿到全量映射；请求体仍零取值；AI 拒绝的栏位带原话理由 |
 | M4 映射表 | 侧边栏新增映射表面板：每栏一行（页面栏位 / 我们的判定 / 依据 / 现状 / 改判下拉）；"按此映射填写"才真正写入；改判可"记住到本站"（写进站点规则，下次同站直接命中） | 未确认的栏位一个都不写；改判后同站重扫直接生效；导出的对照表里能看到每条依据 |
 | M5 收口 | 无 AI 时的退化路径（纯本地快填）明确成开关；README/SITE-FINDINGS 与 memory 同步；判分集补真实形状用例 | 关掉 AI 仍保持当前可核对行为；文档说的是代码真做的 |

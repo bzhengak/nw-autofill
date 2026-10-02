@@ -87,3 +87,23 @@ test('形状不相容直接不写，并说清是配错了槽位（不是"我们�
   assert.match(gapReasonLabel('shape_mismatch'), /形状/);
   assert.match(gaps[0].note, /配错了槽位|形状对不上/, gaps[0].note);
 });
+
+/**
+ * 含糊词名单（学 Bitwarden 的 AmbiguousTotpFieldNames）：
+ * `code / number / type / other…` 这类词单独出现不足以定性，必须有旁证。
+ * 我们的裸词 name 之病与它的裸词 code 之病是同一个病。
+ */
+test('含糊词单独命中不定性：Number / Code / 名称 都不能算强证据', () => {
+  const num = labelEvidence({ label: 'number', labelRaw: 'Number' }, field('contact.phone'));
+  assert.equal(num.strong, false, `裸词 number 蹭到"联系电话"不该算强证据：${JSON.stringify([...num.kinds])}`);
+  assert.equal(num.weakOnly, true);
+  const code = labelEvidence({ label: 'code', labelRaw: 'Code' }, field('basics.idNumber'));
+  assert.equal(code.strong, false, JSON.stringify([...code.kinds]));
+  const cname = labelEvidence({ label: '名称', labelRaw: '名称' }, field('certifications.0.name'));
+  assert.equal(cname.strong, false, `光秃秃"名称"说不出是谁的名称：${JSON.stringify([...cname.kinds])}`);
+  // 有旁证时照常算强：autocomplete 是站点自己声明的，比任何文本启发都硬
+  const evAc = labelEvidence({ label: 'code', labelRaw: 'Code', autocomplete: 'one-time-code' }, field('basics.idNumber'));
+  assert.equal(evAc.strong, true, JSON.stringify([...evAc.kinds]));
+  // 定语齐全时也该算强：'cell phone' 说清了是谁的电话
+  assert.equal(labelEvidence({ label: 'cell phone', labelRaw: 'Cell Phone' }, field('contact.phone')).strong, true);
+});

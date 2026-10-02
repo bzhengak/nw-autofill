@@ -319,6 +319,20 @@ export const GENERIC_HEAD_WORDS = new Set([
   'name', 'number', 'num', 'score', 'date', 'time', 'type', 'level', 'status', 'title', 'address', 'value',
 ]);
 
+/**
+ * 「含糊词名单」：这些词单独出现**不足以定性**，必须有旁证。
+ * 直接学 Bitwarden 的 `AmbiguousTotpFieldNames = [code, pin, otp, 2fa, mfa…]` ——
+ * 它把"这个词谁都可能是"这件事写成一份显式名单，而不是靠打分猜。
+ * 我们的裸词 `name / number / date / code / type / other…` 是完全同一类问题
+ * （"school name 就是 school name"、"phone number 填成 id number"都出在这里）。
+ */
+export const AMBIGUOUS_WORDS = new Set([
+  ...GENERIC_HEAD_WORDS,
+  'code', 'id', 'other', 'others', 'detail', 'details', 'info', 'information',
+  'description', 'note', 'notes', 'item', 'items', 'field', 'category', 'region', 'area',
+  '语言', '其他', '备注', '说明', '编号', '号码', '名称', '日期', '类型', '级别', '程度',
+]);
+
 export function labelEvidence(pageField, profileField) {
   const kinds = new Set();
   const normLabel = normalize(pageField.label || '');
@@ -338,6 +352,7 @@ export function labelEvidence(pageField, profileField) {
       const aw = ac.split(' ').filter(Boolean);
       const isHead = aw.length === 1 ? (heads.has(aw[0]) || head === aw[0]) : labelCore.endsWith(ac);
       if (cover >= 0.5) kinds.add('full-cover');
+      else if (aw.length === 1 && AMBIGUOUS_WORDS.has(aw[0])) kinds.add('head-only');   // 含糊词：单独出现不定性
       else if (isHead && GENERIC_HEAD_WORDS.has(aw[aw.length - 1])) kinds.add('head-only');
       else if (isHead) kinds.add('head-noun');
       else kinds.add('qualifier');

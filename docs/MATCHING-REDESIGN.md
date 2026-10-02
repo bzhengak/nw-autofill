@@ -97,3 +97,53 @@
 请求体不再需要整份槽位目录，体积小、也不必将槽位中文名都发出去；
 概念层给了本地一条确定性通道 —— 定语归属（`name.school` vs `name.person`）在那里一次定死，
 不再靠每页调打分。硬边界不变：取值仍一个字节不出本机，最终写哪个槽位仍由本地白名单定。
+
+## 六、联网核实到的做法（2026-10-02 第二轮，来源可查）
+
+这一轮真的搜到了东西，来源只有两个但都是**一手**：浏览器的 `autocomplete` 令牌表（MDN 抄 WHATWG 注册表）
+与 Bitwarden 浏览器端自动填充的常量文件 `apps/browser/src/autofill/services/autofill-constants.ts`
+（连同它的采集服务 `collect-autofill-content.service.ts`）。下面每条都注明它治我们哪个病、落到哪个里程碑。
+
+1. **概念是封闭令牌表，不是自由文本。** 标准里有约 40 个字段名令牌：
+   `name / honorific-prefix / given-name / additional-name / family-name / nickname / username /
+   bday(-day|-month|-year) / sex / email / tel(-country-code|-national|-area-code|-local|-extension) /
+   street-address / address-line1..3 / address-level1..4 / postal-code / country(-name) /
+   organization / organization-title / url / photo / cc-* …`
+   还带**修饰符**：`section-<名>`（同一页重复分组，正是我们的"第几条经历"）、
+   `shipping|billing`（语境）、`home|work|mobile|fax|pager`（同类不同用途）。
+   → 我们的概念层**直接沿用这套命名**，再补简历特有的（degree / major / gpa / graduationYear /
+   certName / languageProficiency / workPermit / sponsorship…）。AI 与本地规则共用同一张表。
+   顺带一条硬收益：`autocomplete` 令牌命中就是**确定性证据**，不用再和文本启发抢分数。
+
+2. **Bitwarden 的每个概念有两份名单**：`XxxFieldNames`（拿去扫属性文本）与 `XxxFieldNameValues`
+   （只比对 `autocomplete`/`data-stripe` 这类属性**值**），并且扫属性时有**固定优先级序列**
+   （`autoCompleteType → data-stripe → htmlName → htmlID → label-tag → placeholder → label-left →
+   label-top → type`）。→ 我们的 `scorePair` 现在把所有线索混成一个数；改成"按优先级找第一条能定性的证据"，
+   证据本身就是结论的依据（M1 的 `labelEvidence` 是这个思路的第一步，M3 完整化）。
+
+3. **有一份明确的"含糊词表"**：`AmbiguousTotpFieldNames = [code, pin, otp, 2fa, mfa …]` ——
+   这些词单独出现**不足以定性**，必须旁证。→ 正是我们裸词 `name / number / date / type / level` 的病。
+   已在 M1 之后补 `AMBIGUOUS_WORDS`，只命中含糊词时证据算弱（不许绿字）。
+
+4. **排除表挂在概念上，不挂在全页**：`FieldIgnoreList(captcha, forgot…)`、
+   `PasswordFieldExcludeList(hint + 忽略表 + TOTP 名单)`、`ExcludedAutofillTypes(hidden/file/button/image/
+   reset/search，登录类还额外排除 radio/checkbox)`。→ 我们的 `BLOCK_PATTERNS` 是全局一份；
+   下一步把"电话/邮箱这类概念不接受 radio/checkbox 之外的控件"这种**概念×控件**的相容表补进去
+   （M1 的 `shapeOfControl` 只做了一半）。
+
+5. **先判表单目的，再判字段**：`FormPurposeCategories` + `RegistrationKeywords` +
+   `StrongNonLoginKeywords(newsletter)` + `StrongLoginHeadingKeywords(sign in / log in …)`——
+   页面目的判错，字段判得再准也没用。→ 我们现在只有零散的 `site_search`；M3 加一次**页面级目的判定**
+   （网申表格 / 登录 / 搜索 / 问卷），判成非网申就整页不动。
+
+6. **关键词扫描不许跨标题边界**：它的采集服务专门把每个 heading 单列成一条，
+   注释写着"这样关键词扫描不会跨边界匹配"。→ 我们的 `blockTitleOf` / `nearbyLabels` 会跨块取文本，
+   这是"Certificate Name 抢走姓名"能发生的土壤之一。M1' 直接把扫描收进标题边界内。
+
+7. **值也要规范化到代码**：`IsoCountries / IsoStates` 把 "United States"→`US`、"California"→`CA`。
+   → 我们有中英等价表，但国省**没有值→码值**这一层；英文页面的 `Country/Territory of Residence`
+   这类下拉常常要的是码值或另一种写法（M3 一起做，放在取值层，不影响识别）。
+
+**由此确认没走偏的地方**：AI 只见字段名不见取值（OpenJobAutofill 那条边界我们本来就有）、
+"拿不准就弃权"（Bitwarden 的 ambiguous 表就是同一个思想）、站点规则是数据不是代码（我们的
+`adapters/*.json` 形状与它的 domain-specific 规则一致，缺的只是"把用户改判也写进这一层"，M4 做）。

@@ -45,7 +45,7 @@ const clip = (s, n) => {
  * @param {string}   o.temporaryFps  本轮临时确认的指纹集合（区分"记本站"与"只这一次"）
  * @param {Array}    o.schemaFields  buildFields()：槽位中文名用
  */
-export function buildMappingTable({ fields = [], plan, results = [], ledger = {}, origin = '', siteRules = {}, temporaryFps = [], schemaFields = [] } = {}) {
+export function buildMappingTable({ fields = [], plan, results = [], ledger = {}, origin = '', siteRules = {}, temporaryFps = [], storedRules = null, schemaFields = [] } = {}) {
   const byIndex = new Map();
   const put = (index, patch) => {
     if (index == null || index < 0) return;
@@ -63,6 +63,14 @@ export function buildMappingTable({ fields = [], plan, results = [], ledger = {}
       score: typeof a.score === 'number' ? Number(a.score.toFixed(3)) : null,
       skip: Boolean(a.skip),
       skipReason: a.skip ? (a.reason || '') : '',
+      /**
+       * "我们不动这一栏"有两种原因，界面上绝对不能都说成用户的决定（独立审查 I5）：
+       *   yours —— 他在映射表勾了「这一栏不自动填」；
+       *   kept  —— 已有值（站点预填 / 他自己填的 / 就是我们写的且值没变），按覆盖口径不动。
+       * 把 kept 说成 yours，等于把我们自己的保守策略记在他头上，
+       * 他下次就会问"我没勾过不填，为什么这栏没写"。
+       */
+      skipKind: a.skip ? (a.reason === 'user_excluded' ? 'yours' : 'kept') : '',
       weak: Boolean(a.weakEvidence),
       shape: a.shapeMismatch || '',
     });
@@ -139,20 +147,32 @@ export function buildMappingTable({ fields = [], plan, results = [], ledger = {}
         actual: d.actual || '',
         skip: Boolean(d.skip),
         skipReason: d.skipReason || '',
+        skipKind: d.skipKind || (d.gap === 'user_excluded' ? 'yours' : ''),
         weak: Boolean(d.weak),
       },
       current: origin ? classify(f || {}, cur, ledger, origin) : (cur ? 'other' : 'empty'),
       currentZh: { us: '我们上一轮写的', edited: '我们写过、被人改过', other: '站点或你自己填的', empty: '空的' }[origin ? classify(f || {}, cur, ledger, origin) : (cur ? 'other' : 'empty')] || '',
-      rule: rule ? { path: rule.skip ? '' : clip(rule.path, 60), skip: Boolean(rule.skip), note: clip(rule.note, 120), temporary: Boolean(rule.temporary) } : null,
+      rule: (() => {
+        if (!rule) return null;
+        // 本轮临时确认压住了已记住的那条：两个都得显示，否则他以为"取消勾选就恢复原状"，
+        // 而实际上关页之后旧规则又回来了（独立审查 Minor：只报临时那条会误导）
+        const stored = storedRules ? storedRules[fp] : null;
+        const shadow = stored && (stored.path !== rule.path || Boolean(stored.skip) !== Boolean(rule.skip))
+          ? { path: stored.skip ? '' : clip(stored.path, 60), skip: Boolean(stored.skip) } : null;
+        return { path: rule.skip ? '' : clip(rule.path, 60), skip: Boolean(rule.skip), note: clip(rule.note, 120), temporary: Boolean(rule.temporary), alsoStored: shadow };
+      })(),
       collision: (fpSeen.get(fp) || 1) > 1 ? fpSeen.get(fp) : 0,
     };
   });
 
   const count = fn => rows.filter(fn).length;
+  const isYours = r => r.decision.skipKind === 'yours' || (r.rule?.skip && r.decision.skip);
   const stats = {
     fields: rows.length,
     decided: count(r => r.decision.path && !r.decision.skip),
-    excluded: count(r => r.decision.skip || r.decision.gap === 'user_excluded'),
+    // 「你勾了不填」只数真是他勾的；"已有值所以不动"是我们自己的口径，另算一格（I5）
+    excluded: count(r => isYours(r)),
+    keptFilled: count(r => r.decision.skip && !isYours(r)),
     unpinned: count(r => !r.decision.path && !r.decision.skip),
     byRule: count(r => r.decision.by === 'siteRule' || r.decision.by === 'confirmed'),
     collisions: count(r => r.collision > 1),
@@ -173,11 +193,34 @@ export function describeMappingTable(table) {
   bits.push(`打算写 ${s.decided ?? 0} 栏`);
   if (s.byRule) bits.push(`其中 ${s.byRule} 栏按你的改判`);
   if (s.excluded) bits.push(`你勾了不填 ${s.excluded} 栏`);
+  if (s.keptFilled) bits.push(`${s.keptFilled} 栏已有值所以不动`);
   if (s.unpinned) bits.push(`没定下来 ${s.unpinned} 栏`);
   if (s.alreadyFilled) bits.push(`${s.alreadyFilled} 栏已有别人的值（不动）`);
   if (s.oursToFix) bits.push(`${s.oursToFix} 栏是我们自己写过的（可纠正）`);
   if (s.collisions) bits.push(`注意：${s.collisions} 栏与别的栏自述完全相同，改判会一起生效`);
   return `${bits.join(' · ')}。表里只有页面文字与槽位名，没有你的任何取值。`;
+}
+
+/**
+ * 导出前的取值自查。两条严格程度不同的检查，各有各的道理：
+ *  · 整份文档：只报**长度 ≥6** 的取值。像 '2025' 这种四位年份，页面上本来就常出现
+ *    （「2025 届」「毕业年份」），一律拦就会出现"表是干净的却不让你导"的假阳性。
+ *  · 说明文字（我们自己写进表里的 note / 用户填的理由）：任何 ≥2 字的取值都报。
+ *    这里是唯一可能被人把简历内容手打进导出的口子 —— 用户在理由框里写"这就是我妈的名字"，
+ *    那条值就跟着进文件了，而它不出现在 value 字段里。
+ */
+export function findValueLeaks(view, values = []) {
+  const all = JSON.stringify(view ?? null);
+  const notes = (view?.rows || [])
+    .map(r => `${r.note || ''}\n${r.rule?.note || ''}\n${r.slotGuess || ''}`)
+    .join('\n');
+  const hits = new Set();
+  for (const raw of values) {
+    const s = String(raw || '').trim();
+    if (s.length >= 6 && all.includes(s)) hits.add(`${s.slice(0, 3)}…（出现在表格正文）`);
+    else if (s.length >= 2 && notes.includes(s)) hits.add(`${s.slice(0, 3)}…（出现在说明/理由里）`);
+  }
+  return [...hits].slice(0, 8);
 }
 
 /**
@@ -203,6 +246,8 @@ export function plainMappingTable(table) {
       slotZh: r.decision.zh,
       by: r.decision.by,
       tier: r.decision.tier,
+      skipKind: r.decision.skipKind,
+      skipReason: r.decision.skipReason,
       gap: r.decision.gap,
       gapZh: r.decision.gapZh,
       slotGuess: r.decision.slotGuess,

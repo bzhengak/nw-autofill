@@ -111,6 +111,7 @@ export const GAP_REASON_ZH = {
   user_excluded: '这一栏你在映射表里勾了「不自动填」，所以我们不动它 —— 想恢复就在映射表取消这条改判',
   slot_empty: '页面这一栏最匹配的资料位是空的：我们没有拿别的栏位顶替（顶替就是错填），去资料里补上再扫',
   pinned_field_empty: '这一栏被站点题目钉死到某个资料位，而那个资料位是空的 —— 去资料里补这一栏，我们不拿别的东西顶',
+  ruled_slot_missing: '这条改判（或钉位）指向的槽位已经不在资料结构里了：在映射表里对这一栏重新改判一次，或取消记住那条',
   block_ambiguous: '这一栏的标签在资料里好几个板块都有同名位，页面上又没有板块标题可依 —— 按资料顺序轮值是猜，交给你手动选',
   language_slot_unresolved: '这一栏的标题是一种语言或考试名（IELTS / 粤语…），但你资料的语言栏里没有对应那一行 —— 去「分类编辑 · 语言」补一行，我不按顺序猜',
 };
@@ -428,8 +429,18 @@ export function planFill(pageFields, profile, opts = {}) {
     const { pins: rulePins } = applySiteRules(pageFields, siteRulesByFp);
     for (const [index, r] of rulePins) {
       pinSource.set(index, r);
+      /**
+       * 摊平型槽位规则（`slotPins`：学历"硕士毕业学校"、家庭成员"父亲姓名"那一类）也要一起让位。
+       * 独立审查 2026-10-03 的 Important 1：那一类以前在 `pins` 之后判，
+       * 于是"用户明确改判过的一栏"照样被适配器那条规则拿走，而且表里会说成"本地词典匹配" ——
+       * 来历报错比判错更难查，因为他看到的是我们替他编的理由。
+       */
+      if (slotPins.has(index)) slotPins.delete(index);
       if (r.skip) { skip.set(index, 'user_excluded'); pins.delete(index); continue; }
       pins.set(index, r.path);
+      // 只撤销"上一轮他自己勾的不填"：适配器那条 skip 是站点层面的判断
+      // （搜索框、只读推导栏），改判不能把它复活成可写栏。
+      if (skip.get(index) === 'user_excluded') skip.delete(index);
     }
   }
   /**
@@ -476,7 +487,21 @@ export function planFill(pageFields, profile, opts = {}) {
   // 组里任何一个成员被适配器钉住 = 整组钉住：年框和月框问的是同一件事，
   // 只钉月框（Moka 的 data-nw-test 常两个框各有一条规则）也必须让组长拿到那个槽位。
   for (const g of pairGroups.values()) {
-    if (!g.complete || pins.has(g.leader) || (slotPins || new Map()).has(g.leader)) continue;
+    if (!g.complete) continue;
+    // **跳过也要往组长传**（独立审查 2026-10-03 的 Critical 2）：以前只传钉位不传跳过，
+    // 于是用户在映射表里对"月框"勾了「这一栏不自动填」，计划照样从年框那一笔把整个日期写进去 ——
+    // 一个明确的"别动"被无声推翻，比填错更难发现（表里那一行还显示着"本站规则：不填"）。
+    const skipped = g.members.find(m => skip.has(m.index));
+    if (skipped) {
+      const reason = skip.get(skipped.index);
+      skip.set(g.leader, reason);
+      pins.delete(g.leader);
+      if (slotPins.has(g.leader)) slotPins.delete(g.leader);
+      if (!pinSource.has(g.leader) && pinSource.has(skipped.index)) pinSource.set(g.leader, pinSource.get(skipped.index));
+      g.skipFrom = skipped.index;
+      continue;                       // 这一组既然不写，就不必再谈钉位归谁
+    }
+    if (pins.has(g.leader) || (slotPins || new Map()).has(g.leader)) continue;
     for (const m of g.members) {
       if (pins.has(m.index)) { pins.set(g.leader, pins.get(m.index)); break; }
       if ((slotPins || new Map()).has(m.index)) { slotPins.set(g.leader, slotPins.get(m.index)); break; }
@@ -525,10 +550,14 @@ export function planFill(pageFields, profile, opts = {}) {
       const reason = skip.get(index);
       const src = pinSource.get(index);
       const mine = src && src.skip;
+      // 年月两个框是同一个问题：成员里任何一个被勾了不填，整组都不写，
+      // 这句必须说是哪一格替他说的，否则用户看到的是"我没动过这一栏怎么没填"。
+      const viaMember = group && group.skipFrom != null && group.skipFrom !== index
+        ? `（这组日期里你勾的是第 ${group.skipFrom + 1} 个框，年月问的是同一件事，所以整组都不写）` : '';
       gaps.push({
         index, label: pf.label || '(无标签)', reason, kind: pf.kind,
         note: mine
-          ? `按你在这站点的改判，这一栏不自动填${src.note ? `（你当时写的理由：${src.note}）` : ''}；要恢复自动判断，在映射表里取消记住`
+          ? `按你在这站点的改判，这一栏不自动填${src.note ? `（你当时写的理由：${src.note}）` : ''}${viaMember}；要恢复自动判断，在映射表里取消记住`
           : '',
       });
       return;
@@ -545,6 +574,8 @@ export function planFill(pageFields, profile, opts = {}) {
           index, path: hit.path, label: pf.label || '', score: 1, value: hit.value,
           profileType: hit.field.type, sensitive: hit.field.sensitive,
           tier: hit.ambiguous || hit.field.sensitive ? 'review' : 'auto', pinned: true,
+          // 来历要说清是站点规则给的（摊平型槽位规则），不能到了表里变成"本地词典匹配"
+          pinnedBy: 'adapter',
           note: hit.ambiguous ? `资料里有 ${hit.slots.length} 行「${slot.want}」，取第一行，请复核` : `按「${slot.want}」定位槽位`,
         });
       } else {
@@ -583,6 +614,13 @@ export function planFill(pageFields, profile, opts = {}) {
           tier: pinField.sensitive || (byRule && byRule.shared > 1) ? 'review' : 'auto', pinned: true,
           note: provenance,
           pinnedBy: byRule ? 'siteRule' : 'adapter',
+        });
+      } else if (!pinField) {
+        // 规则指向的槽位已经不存在了（资料结构改过、或旧版本存的规则）：
+        // 不能说成"资料里那一栏是空的，去补" —— 那一栏根本没有，让他去补是白跑一趟（独立审查 Minor）。
+        gaps.push({
+          index, label: pf.label || '(无标签)', reason: 'ruled_slot_missing', kind: pf.kind, slotPath: pinPath,
+          note: `这条${byRule ? '改判' : '钉位'}指向的槽位「${pinPath}」在现在的资料里已经不存在了 —— 在映射表里重新改判一次，或取消记住这条`,
         });
       } else {
         gaps.push({

@@ -9,7 +9,7 @@ import { normalizeBaseUrl, sanityCheckKey, findLeaksInExport, clampTimeoutSec, e
 import { BUILD } from '../core/build.js';
 import { encryptVault, decryptVault, profileDelta, describeDelta } from '../core/vault.js';
 import { describeUnfilledMap } from '../core/option-map.js';
-import { describeMappingTable, plainMappingTable } from '../core/mapping-table.js';
+import { describeMappingTable, plainMappingTable, slotZhFor, findValueLeaks } from '../core/mapping-table.js';
 import { describePlanCheck } from '../core/plan-check.js';
 import { slotChoices } from '../core/site-rules.js';
 
@@ -350,12 +350,19 @@ async function run(mode, extra = {}) {
   if (mappingGate) panelNotice = '映射表先行：这一轮只出了这张表，页面一个字节都没改。要落笔点「按此映射填写」。';
   const tab = await activeTab();
   tabId = tab?.id;
-  const res = await chrome.runtime.sendMessage({ type: 'nw:scan', tabId, mode, dryRun: mode === 'preview', allowNonApplication: allowNonApplicationOnce, ...rest });
+  const res = await chrome.runtime.sendMessage({
+    type: 'nw:scan', tabId, mode, dryRun: mode === 'preview',
+    allowNonApplication: allowNonApplicationOnce,
+    // 带着"这张表是在哪一页算的"：后台据此判断本轮改判是否还对应这一页（切了页就拒，见 SW 注释）
+    expectOrigin: scanOrigin,
+    ...rest,
+  });
   if (!res?.ok) {
     $('stats').innerHTML = `<span class="banner">页面未响应：${escapeHtml(res?.error || '未知错误')}。若是刚装扩展，请刷新目标页面后重试。</span>`;
     return;
   }
   lastScan = res.data;
+  scanOrigin = res.data?.pageOrigin || '';
   if (res.confirmationRejected?.length) {
     panelNotice = `有 ${res.confirmationRejected.length} 条改判被拒（${res.confirmationRejected.map(x => x.why).slice(0, 2).join('；')}），这一轮没生效。`
       + (panelNotice ? `　${panelNotice}` : '');
@@ -363,9 +370,11 @@ async function run(mode, extra = {}) {
   render(res.data, { adapterId: res.adapterId, adapterInfo: res.adapterInfo });
 }
 
-// 用户主动发起的一次扫描该把上一轮的结论清掉（"已记住/被拒"是上一次动作的话）
-$('btnScan').onclick = () => { panelNotice = ''; pendingWritten = false; run(mappingFirstOn() ? 'preview' : 'full', mappingFirstOn() ? { mappingGate: true } : {}); };
-$('btnPreview').onclick = () => { panelNotice = ''; pendingWritten = false; run('preview'); };
+// 用户主动发起的一次扫描该把上一轮的结论清掉（"已记住/被拒"是上一次动作的话）。
+// AI 那批候选也一起作废：它们是**上一次扫描的那些缺口**的答案，重新扫过之后 index 可能对不上，
+// 留着比丢掉危险。
+$('btnScan').onclick = () => { panelNotice = ''; pendingWritten = false; lastAiCandidates = null; run(mappingFirstOn() ? 'preview' : 'full', mappingFirstOn() ? { mappingGate: true } : {}); };
+$('btnPreview').onclick = () => { panelNotice = ''; pendingWritten = false; lastAiCandidates = null; run('preview'); };
 
 // ── S6 映射表：一栏一行，确认后才写 ──────────────────────────────────
 // 用户 2026-10-02 定的口径："一律先出映射表再写"。所以这张表不是"更多信息"，
@@ -378,6 +387,10 @@ const MAP_SCHEMA = buildFields();
 const MAP_SKIP = '__skip__';
 let pendingRules = new Map();      // 指纹 → { path, skip, note }（本轮改判，还没确认）
 let pendingWritten = false;        // 这批改判是否已经按下去写过一次（措辞要跟着变）
+let lastAiCandidates = null;       // 「问 AI」给出的那批候选：写入那一跳必须带上，不然 AI 的栏位在表里"存在过又消失"
+// 这张表是在哪家站点上算出来的（扫描回包里的 pageOrigin）。改判落盘时带回去当凭据：
+// 侧边栏不监听标签页切换，tabId 可能是旧的，用户却已经把那一页翻到别家招聘站了。
+let scanOrigin = '';
 let lastMapping = null;            // 最近一次扫描的映射表（导出与"已记住几条"都读它）
 let panelNotice = '';          // 「映射表先行」把填写钮变成出表时的那句话
 let mapJson = '';
@@ -514,8 +527,12 @@ function mappingRow(r, choices) {
   dot.className = `dot ${tier === 'auto' ? 'green' : tier === 'review' ? 'yellow' : 'orange'}`;
   c2.appendChild(dot);
   const dec = document.createElement('span');
-  dec.textContent = r.decision.skip || r.decision.gap === 'user_excluded' ? '不自动填（你的决定）'
-    : r.decision.path ? `${r.decision.zh || r.decision.path}` : (r.decision.gapZh || '没定下来');
+  dec.textContent = r.decision.skipKind === 'yours' || r.decision.gap === 'user_excluded'
+    ? '不自动填（你的决定）'
+    : r.decision.skip
+      // "已有值所以不动"是我们的覆盖口径，不是他勾的：说成他的决定，他就会去找自己按过哪儿（I5）
+      ? `这一栏${r.current === 'us' ? '是我们上一轮写的、值没变' : '已经有值'}，按口径不动`
+      : r.decision.path ? `${r.decision.zh || r.decision.path}` : (r.decision.gapZh || '没定下来');
   c2.appendChild(dec);
   if (r.decision.path) {
     const p = document.createElement('span');
@@ -564,6 +581,14 @@ function mappingRow(r, choices) {
     rl.textContent = r.rule.skip ? '本站规则：不填' : `本站规则：${r.rule.path}`;
     rl.title = r.rule.temporary ? '本轮确认，没勾记住 —— 关页就没了' : '已记住到本站';
     c4.appendChild(rl);
+    // 本轮确认压在已记住那条上面时，必须说"关页之后旧规则会回来"，
+    // 否则他以为勾掉记住就恢复原状（独立审查 Minor）
+    if (r.rule.alsoStored) {
+      const back = document.createElement('span');
+      back.className = 'mtag';
+      back.textContent = `关页后回到：${r.rule.alsoStored.skip ? '不填' : r.rule.alsoStored.path}`;
+      c4.appendChild(back);
+    }
   }
 
   // ⑤ 改判：下拉（只在这一个站点、只改这一栏）+ 理由
@@ -575,6 +600,10 @@ function mappingRow(r, choices) {
     o.textContent = text;
     return o;
   };
+  const pending = pendingRules.get(r.fp);
+  // 已改判的那一栏必须先在渲染时就带上 pending 标记：以前只在 onchange 里加，
+  // 于是"改判 → 换搜索词重画 → 看不出来改过，但写入照带"（独立审查 I4：隐蔽的 armed 状态）
+  if (pending) row.classList.add('pending');
   sel.appendChild(mk('', `不改判（沿用「${r.decision.path ? r.decision.zh || r.decision.path : '没定下来'}」）`));
   sel.appendChild(mk(MAP_SKIP, '这一栏不自动填'));
   const listed = new Set();
@@ -585,8 +614,9 @@ function mappingRow(r, choices) {
   };
   // 这一栏现在的判定永远排在最前：搜别的词时也不能把"它自己"从选项里挤掉
   if (r.decision.path) push(r.decision.path, `${r.decision.zh}（当前）`);
+  // 本轮已改判但被搜索结果筛掉了 —— 也必须列出来，否则下拉显示"不改判"而写入仍带它
+  if (pending?.path) push(pending.path, `${slotZhFor(MAP_SCHEMA, pending.path)}（你本轮改的）`);
   for (const c of choices) push(c.path, c.zh);
-  const pending = pendingRules.get(r.fp);
   sel.value = pending ? (pending.skip ? MAP_SKIP : pending.path) : '';
   if (!sel.value && pending) sel.value = '';
   const noteBox = document.createElement('input');
@@ -624,28 +654,50 @@ $('mappingFirst').onchange = async () => {
 };
 $('mapSearch').oninput = () => { if (lastMapping) renderMapping({ mapping: lastMapping, planCheck: lastScan?.planCheck }); };
 
+const RULES_ERROR_ZH = {
+  no_origin: '当前页面不是 http(s) 站点，改判没地方存',
+  origin_changed: '这个标签页已经翻到别的站点，而这张表是在旧站点上算的 —— 先重新扫描这一页再改判',
+};
+const rulesZh = err => RULES_ERROR_ZH[err] || err || '未知原因';
+
+/** 规则类消息的 tabId 必须现取：面板没有标签页监听，旧 tabId 会让规则存到别处 */
+async function currentTabId() {
+  const tab = await activeTab();
+  if (tab?.id != null) tabId = tab.id;
+  return tabId;
+}
+
 $('btnMapFill').onclick = async () => {
+  await currentTabId();
   const confirmed = [...pendingRules.entries()].map(([fp, r]) => ({ fp, path: r.path, skip: r.skip, note: r.note }));
   panelNotice = '';
   pendingWritten = true;
+  const extra = {};
+  // 「问 AI」补的那几栏必须一起带上：写入那一跳不带 aiCandidates，它们在表里就"存在过又消失"，
+  // 用户看到的是"我确认过的表，写出来少了 AI 补的那几栏"（独立审查 Important 2）。
+  if (lastAiCandidates?.length) extra.aiCandidates = lastAiCandidates;
+  let persisted = false;
   if (confirmed.length && $('mapRemember').checked) {
-    const put = await chrome.runtime.sendMessage({ type: 'nw:siteRulesPut', tabId, entries: confirmed });
-    if (!put?.ok) {
-      panelNotice = `改判没能记住（${put?.error || '未知原因'}）—— 这一轮仍按这些改判填写，但下一页/下一次重载就没了。`;
+    const put = await chrome.runtime.sendMessage({ type: 'nw:siteRulesPut', tabId, expectOrigin: scanOrigin, entries: confirmed });
+    persisted = Boolean(put?.ok);
+    if (!persisted) {
+      panelNotice = `改判没能记住（${rulesZh(put?.error)}）—— 这一轮仍按这些改判填写，但下一页/下一次重载就没了。`;
     } else {
       const rejected = put.rejected || [];
       panelNotice = `已记住 ${put.accepted} 条到本站`
         + (rejected.length ? `；被拒 ${rejected.length} 条：${rejected.map(x => x.why).slice(0, 3).join('；')}` : '')
         + '　正在按这张表写入…';
     }
-    await run('full');
-    return;
   }
-  await run('full', confirmed.length ? { confirmed } : {});
+  // 没进存储的改判（没勾记住，或落盘失败）必须随这一次扫描带下去 ——
+  // 以前落盘失败那一支只说了"仍按这些改判填写"，发出去的却不带 confirmed（Important 3）。
+  if (confirmed.length && !persisted) extra.confirmed = confirmed;
+  await run('full', extra);
 };
 
 $('btnMapRules').onclick = async () => {
-  const res = await chrome.runtime.sendMessage({ type: 'nw:siteRulesGet', tabId });
+  await currentTabId();
+  const res = await chrome.runtime.sendMessage({ type: 'nw:siteRulesGet', tabId, expectOrigin: scanOrigin });
   const box = $('mapWarn');
   const rules = res?.rules || {};
   const fps = Object.keys(rules);
@@ -654,7 +706,7 @@ $('btnMapRules').onclick = async () => {
   const head = document.createElement('div');
   head.textContent = res?.ok
     ? `本站已记住 ${fps.length} 条改判（桶：${res.origin}）。这一页命中 ${lastMapping?.rows?.filter(r => rules[r.fp]).length || 0} 条。`
-    : `读不到本站改判：${res?.error || '未知原因'}`;
+    : `读不到本站改判：${rulesZh(res?.error)}`;
   box.appendChild(head);
   for (const r of (lastMapping?.rows || []).filter(x => rules[x.fp])) {
     const item = document.createElement('div');
@@ -673,12 +725,13 @@ $('btnMapRules').onclick = async () => {
 };
 
 $('btnMapForget').onclick = async () => {
-  const res = await chrome.runtime.sendMessage({ type: 'nw:siteRulesForgetSite', tabId });
+  await currentTabId();
+  const res = await chrome.runtime.sendMessage({ type: 'nw:siteRulesForgetSite', tabId, expectOrigin: scanOrigin });
   pendingRules = new Map();
   $('btnMapFill').textContent = '按此映射填写';
   panelNotice = res?.ok
     ? `本站的改判已忘记（剩 ${res.count ?? 0} 条）。正在按无改判重扫一遍…`
-    : `忘记失败：${res?.error || '未知原因'}`;
+    : `忘记失败：${rulesZh(res?.error)}`;
   refreshMapSummary();
   await run('preview');
 };
@@ -686,9 +739,11 @@ $('btnMapForget').onclick = async () => {
 $('btnMapExport').onclick = () => {
   if (!lastMapping?.rows?.length) { panelNotice = '还没有映射表可导出（先扫一次这一页）。'; $('mapOut').value = ''; refreshMapSummary(); return; }
   mapJson = JSON.stringify(plainMappingTable(lastMapping), null, 1);
-  const leaks = findLeaksInExport(mapJson, flattenValues(lastState?.profile || {}));
+  const values = Object.values(flattenValues(lastState?.profile || {}));
+  // 两道检查一起过：Key 形状（findLeaksInExport）+ 取值本身（长度分档，说明文字里更严）
+  const leaks = [...findLeaksInExport(mapJson, {}).map(l => `${l.key}…（像 Key）`), ...findValueLeaks(JSON.parse(mapJson), values)];
   if (leaks.length) {
-    panelNotice = `已拒绝导出：表里出现了资料取值（${leaks.map(l => l.key).slice(0, 4).join('、')}）。请把这一句连同构建号发回来。`;
+    panelNotice = `已拒绝导出：表里出现了资料取值（${leaks.slice(0, 4).join('、')}）。请把这一句连同构建号发回来。`;
     $('mapOut').value = '';
     refreshMapSummary();
     return;
@@ -1064,9 +1119,12 @@ $('btnAiAsk').onclick = async () => {
         : `AI 没有给出可用建议（丢弃 ${res.dropped.length} 条）—— 下面有原始回显`;
       return;
     }
+    lastAiCandidates = res.candidates;
     await run('preview', { aiCandidates: res.candidates });
     showSiteConsentRow('', '');   // 问通了说明两道闸都过了，那一行不该继续挂着
-    $('aiStatus').textContent = `AI 补齐 ${res.candidates.length} 栏（敏感字段黄字待你核对，其余按正常档位；来源标了〔AI 选路〕）；${formatTiming(res.timing) ? formatTiming(res.timing) + '；' : ''}已用「只预演」应用，确认后点「扫描并填写」写入`
+    $('aiStatus').textContent = `AI 补齐 ${res.candidates.length} 栏（敏感字段黄字待你核对，其余按正常档位；来源标了〔AI 选路〕）；${formatTiming(res.timing) ? formatTiming(res.timing) + '；' : ''}`
+      // 「扫描并填写」在映射表先行开着时只出表，所以这句指路不能写死按钮名（Important 2）
+      + `已在映射表里预演出来，核对后点「按此映射填写」才会写页面`
       + (res.finishReason === 'length' ? ' —— 注意：这次回答被长度上限截断了，可能还有缺口没给出，再点一次问剩下的' : '')
       + endpointNote(res) + streamNote(res);
   } finally { stopWait(); }   // 任何一条出口都得停掉计时与心跳，不能让它在后台一直跳
@@ -1147,7 +1205,17 @@ $('btnAiAbort').onclick = async () => {
   $('aiStatus').textContent = '已请求取消：等这一条回包中止（不会真的把答案应用上）';
 };
 
-$('btnUndo').onclick = async () => { await chrome.runtime.sendMessage({ type: 'nw:undo', tabId }); render({ stats: {}, results: [], gaps: [] }); };
+$('btnUndo').onclick = async () => {
+  await currentTabId();
+  await chrome.runtime.sendMessage({ type: 'nw:undo', tabId });
+  // 撤销之后不能把映射表抹成"没扫到栏位"（审查 Minor：那会让导出和改判都在下一跳前失效）。
+  // 重新只读扫一遍：账本已擦掉、页面已复原，表里看到的就是真实现状。
+  panelNotice = '已回滚这一轮的写入，并重新只读扫了一遍这一页。注意：撤销会把上一轮那个值放回页面，'
+    + '那一格从此算"别人写的" —— 要再写它请先在映射表里改判。';
+  pendingWritten = false;
+  lastAiCandidates = null;
+  await run('preview');
+};
 $('btnClear').onclick = () => chrome.runtime.sendMessage({ type: 'nw:clearMarks', tabId });
 $('btnEdit').onclick = () => $('editor').classList.toggle('on');
 $('btnCancel').onclick = () => { $('editor').classList.remove('on'); refresh(); };

@@ -8,7 +8,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildMappingTable, describeMappingTable, plainMappingTable, slotZhFor } from '../core/mapping-table.js';
+import { buildMappingTable, describeMappingTable, plainMappingTable, slotZhFor, findValueLeaks } from '../core/mapping-table.js';
 import { checkPlan, describePlanCheck, filledRecordCount, pageRecordGroups } from '../core/plan-check.js';
 import { planFill, gapReasonLabel } from '../core/matcher.js';
 import { fingerprint, hashValue, recordWrites } from '../core/ledger.js';
@@ -51,7 +51,9 @@ test('映射表一行一栏：页面自述、判给谁、凭什么、现在是�
   const b = table.rows[1];
   assert.equal(b.decision.by, 'none', '没判定的栏别装作判过了');
   assert.ok(b.decision.gap, '没判定要给原因：' + JSON.stringify(b.decision));
-  assert.equal(gapReasonLabel(b.decision.gap) === b.decision.gapZh, true, '原因要有中文说明');
+  // 原因必须翻成中文并且**不等于内部 token**（拿 gapReasonLabel 跟自己比是同义反复，抓不到漏翻）
+  assert.match(b.decision.gapZh, /[\u4e00-\u9fff]/, `缺口原因还是内部 token：${b.decision.gapZh}`);
+  assert.notEqual(b.decision.gapZh, b.decision.gap);
 });
 
 test('导出的映射表里没有资料取值：手机号/证件号/姓名一个都不许出现', () => {
@@ -175,11 +177,15 @@ test('摘要里的每个数字都是数出来的，不是抄来的文案', () =>
 test('段数校验双向都报：资料多了说"没地方写"，页面多了说"后面几组留空"', () => {
   const p = createEmptyProfile();
   for (let i = 0; i < 3; i++) setValueByPath(p, `internship.${i}.company`, `甲公司${i}`);
-  const oneGroup = [pf({ label: '实习公司名称', name: 'ic', id: 'i1', sectionHint: 'internship' })];
+  // 页面上有"第 1 组"的编号证据（真站点上是重复区块容器给的），资料却有 3 段 —— 那才是扩行信号
+  const oneGroup = [
+    pf({ label: '实习公司名称', name: 'ic', id: 'i1', sectionHint: 'internship', itemIndex: 0 }),
+    pf({ label: '实习职责', name: 'ir', id: 'i2', sectionHint: 'internship', itemIndex: 0 }),
+  ];
   const plan1 = planFill(oneGroup, p, { mode: 'full' });
   const c1 = checkPlan({ fields: oneGroup, plan: plan1, profile: p, schemaFields: SCHEMA });
   const w1 = c1.warnings.find(w => w.kind === 'records_no_room');
-  assert.ok(w1, `资料有 3 段、页面只有一组，却没报"没地方写"：${JSON.stringify(c1.warnings)}`);
+  assert.ok(w1, `资料有 3 段、页面只排到第 1 组，却没报"没地方写"：${JSON.stringify(c1.warnings)}`);
   assert.match(w1.zh, /3 段/);
   assert.match(w1.action, /添加一段|扩行/, '下一步动作要说得出（那是 S7 的开关）');
 
@@ -256,4 +262,106 @@ test('计数函数自己也算得对：filledRecordCount / pageRecordGroups', ()
   ];
   assert.equal(pageRecordGroups(fields, [0, 1, 2]), 2);
   assert.equal(pageRecordGroups(fields, [0, 1]), 1);
+});
+
+/** ── 独立审查 2026-10-03 抓到的假阳性与归属错报 ─────────────────── */
+test('「我们不动这一栏」有两种来源：已填的不能算成"你勾了不填"（I5）', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'basics.name', '张三');
+  const field = pf({ label: '姓名', name: 'nm', id: 'n1', currentValue: '张三' });
+  const kept = scanAndPlan([field], p, { mode: 'incremental' });
+  assert.equal(kept.table.rows[0].decision.skipKind, 'kept', JSON.stringify(kept.table.rows[0].decision));
+  assert.equal(kept.table.stats.excluded, 0, '把我们自己的保守口径记到用户头上，他就会去找自己按过哪儿');
+  assert.equal(kept.table.stats.keptFilled, 1);
+
+  const fp = fingerprint(field);
+  const ruled = scanAndPlan([field], p, { mode: 'incremental', siteRules: { [fp]: { fp, path: '', skip: true, note: '' } } });
+  assert.equal(ruled.table.rows[0].decision.skipKind, 'yours');
+  assert.equal(ruled.table.stats.excluded, 1);
+});
+
+test('成对日期不会被报成"两栏抢同一个只能填一次的槽位"（I6a）', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'education.0.enrollDate', '2021-09');
+  const dp = part => ({ id: 'dp1', part, role: 'start', roleSource: 'label' });
+  const fields = [
+    pf({ label: '入学时间（年）', name: 'y', id: 'y1', datePair: dp('year') }),
+    pf({ label: '入学时间（月）', name: 'm', id: 'm1', datePair: dp('month') }),
+  ];
+  const { check } = scanAndPlan(fields, p);
+  assert.ok(!check.warnings.some(w => w.kind === 'duplicate_slot' || w.kind === 'duplicate_record_slot'),
+    `年月两笔是同一个问题拆出来的，建议"逐栏改判到第 1/第 2 条"会把日期写坏：${JSON.stringify(check.warnings)}`);
+});
+
+test('页面没有"第几组"证据时不报"没地方写"（I6d：这一页本来就只收一段）', () => {
+  const p = createEmptyProfile();
+  for (let i = 0; i < 3; i++) setValueByPath(p, `education.${i}.school`, '某大学' + i);
+  const single = [pf({ label: '学校名称', name: 'sch', id: 's1' })];
+  const c1 = checkPlan({ fields: single, plan: planFill(single, p, { mode: 'full' }), profile: p, schemaFields: SCHEMA });
+  assert.ok(!c1.warnings.some(w => w.kind === 'records_no_room'),
+    `一页只收一段（最高学历）被判成故障，红字就会永久挂着：${JSON.stringify(c1.warnings)}`);
+  const numbered = [
+    pf({ label: '学校名称', name: 'sch', id: 's1', itemIndex: 0 }),
+    pf({ label: '专业名称', name: 'maj', id: 's2', itemIndex: 0 }),
+  ];
+  const c2 = checkPlan({ fields: numbered, plan: planFill(numbered, p, { mode: 'full' }), profile: p, schemaFields: SCHEMA });
+  assert.ok(c2.warnings.some(w => w.kind === 'records_no_room'), '页面排到第 1 组而资料有 3 段 —— 这才是 S7 的扩行信号');
+});
+
+test('必填但已经有值的栏，不该被说成"提交会被它拦下来"（I6c）', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'basics.name', '张三');
+  const field = pf({ label: '姓名', name: 'nm', id: 'n1', required: true, currentValue: '张三' });
+  const { check } = scanAndPlan([field], p);
+  assert.ok(!check.warnings.some(w => w.kind === 'required_unplanned'),
+    JSON.stringify(check.warnings));
+});
+
+test('整页都已经有值：说"不需要我们写"，是软提示不拦落笔', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'basics.name', '张三');
+  const field = pf({ label: '姓名', name: 'nm', id: 'n1', currentValue: '张三' });
+  const { check } = scanAndPlan([field], p, { mode: 'incremental' });
+  const w = check.warnings.find(x => x.kind === 'nothing_needed');
+  assert.ok(w, `这一页根本不需要写，却没给那句准话：${JSON.stringify(check.warnings)}`);
+  assert.equal(w.soft, true);
+  assert.equal(check.ok, true, '这种情形不该算"落笔前该看一眼"');
+  assert.ok(!check.warnings.some(x => x.kind === 'nothing_to_write'), '两种"一个都不写"不许混成一个');
+});
+
+test('混合形状的一节不会数出虚假的组数（I6b：编号组 + 无编号栏混排）', () => {
+  const fields = [pf({ label: '学校名称', itemIndex: 0 }), pf({ label: '专业名称' }), pf({ label: '入学年份', itemIndex: 0 })];
+  assert.equal(pageRecordGroups(fields, [0, 1, 2]), 1, '没编号的那些属于同一组，不该各算一组');
+  assert.equal(pageRecordGroups([pf({ label: 'a' }), pf({ label: 'b' })], [0, 1]), 1, '整节都没编号就是 1 组，不是 2 组');
+  assert.equal(pageRecordGroups([pf({ label: 'a', itemIndex: 0 }), pf({ label: 'b', itemIndex: 2 })], [0, 1]), 2);
+});
+
+/** ── 独立审查 2026-10-03 的 Minor 两条 ─────────────────────────── */
+test('导出前的取值自查：正文查长值，说明文字里任何取值都查', () => {
+  const inNote = { rows: [{ note: '这就是我妈的名字 李秀英', rule: { note: '' }, slotGuess: '' }] };
+  assert.equal(findValueLeaks(inNote, ['李秀英']).length, 1, '两个字的名字藏在说明里也必须拦得住');
+  const clean = { rows: [{ note: '这一栏其实是姓', rule: { note: '' }, slotGuess: '' }] };
+  assert.deepEqual(findValueLeaks(clean, ['李秀英', '13800001234', '2021-09-15']), []);
+  // 页面自带「2025 届」这类四位年份不该被当成本人取值 → 假阳性会让人不敢用导出
+  assert.deepEqual(findValueLeaks({ rows: [], label: '2025 届' }, ['2025']), []);
+  assert.equal(findValueLeaks({ rows: [{ note: '', rule: { note: '' } }], x: '13800001234' }, ['13800001234']).length, 1);
+});
+
+test('本轮确认压住已记住的规则时，两份都要看得见', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'certifications.0.name', 'CFA Level II');
+  setValueByPath(p, 'basics.name', '张三');
+  const field = pf({ label: 'Awarding Body', name: 'ab', id: 'ab3' });
+  const fp = fingerprint(field);
+  const stored = { [fp]: { fp, path: 'basics.name', skip: false } };
+  const merged = { [fp]: { fp, path: 'certifications.0.name', skip: false, temporary: true } };
+  const plan = planFill([field], p, { mode: 'full', siteRules: merged });
+  const t = buildMappingTable({
+    fields: [field], plan, schemaFields: SCHEMA, origin: '',
+    siteRules: merged, temporaryFps: [fp], storedRules: stored,
+  });
+  assert.equal(t.rows[0].rule.temporary, true);
+  assert.equal(t.rows[0].rule.alsoStored?.path, 'basics.name', '关页之后会回到哪一条，要提前说');
+  const same = buildMappingTable({ fields: [field], plan, schemaFields: SCHEMA, origin: '', siteRules: stored, storedRules: stored });
+  assert.equal(same.rows[0].rule.alsoStored, null, '两份一致时不该虚张声势');
 });

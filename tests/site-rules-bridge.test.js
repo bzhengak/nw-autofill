@@ -164,3 +164,52 @@ test('规则与适配器一起下发：面板拿到的 mapping 用的是这一�
   assert.ok(toPage.siteRules.z1);
   assert.equal(toPage.mode, 'full', '合流时不该顺手改掉扫描模式');
 });
+
+/** ── 独立审查 Critical 1：面板的 tabId 可能是旧的，用户已经把那一页翻到别家站点 ── */
+test('expectOrigin 与当前页对不上时：拒绝落盘，一条都不写进新站点的桶', async () => {
+  const { chrome, send } = await boot();
+  const got = await send({
+    type: 'nw:siteRulesPut', tabId: 1, expectOrigin: 'https://a-old-recruiter.example',
+    entries: [{ fp: 'f1', path: 'basics.name' }],
+  });
+  assert.equal(got.ok, false, `旧表的改判被存进了当前站点的桶：${JSON.stringify(got)}`);
+  assert.equal(got.error, 'origin_changed');
+  assert.equal(got.pageOrigin, 'https://careersite.tupu360.com', '要说清现在这一页是谁');
+  assert.ok(!chrome.local[RULES_BUCKET], '被拒的落盘却在存储里留下了痕迹');
+
+  // 读取那一侧同样要拒：不然面板会拿着旧表的行去显示别家的规则
+  const read = await send({ type: 'nw:siteRulesGet', tabId: 1, expectOrigin: 'https://a-old-recruiter.example' });
+  assert.equal(read.ok, false);
+  assert.equal(read.error, 'origin_changed');
+});
+
+test('扫描时带旧表的确认：确认不套用并说清原因，但本站已记住的规则照旧生效', async () => {
+  const { chrome, send } = await boot();
+  await send({ type: 'nw:siteRulesPut', tabId: 1, entries: [{ fp: 'saved', path: 'basics.name' }] });
+  const res = await send({
+    type: 'nw:scan', tabId: 1, mode: 'full',
+    expectOrigin: 'https://a-old-recruiter.example',
+    confirmed: [{ fp: 'fresh', path: 'contact.email' }],
+  });
+  const toPage = chrome.sent[chrome.sent.length - 1];
+  assert.ok(toPage.siteRules.saved, '本站自己记住的那条不该被牵连');
+  assert.ok(!toPage.siteRules.fresh, `旧页面上的确认被套到新站点这一页：${JSON.stringify(toPage.siteRules)}`);
+  assert.equal(res.confirmationRejected?.length, 1, '被丢掉的确认必须回话，不能静默');
+  assert.match(res.confirmationRejected[0].why, /换到/);
+});
+
+test('没有确认项时 expectOrigin 不该制造噪音：正常扫描不回"被拒 1 条"', async () => {
+  const { send } = await boot();
+  const res = await send({ type: 'nw:scan', tabId: 1, mode: 'preview', expectOrigin: 'https://a-old-recruiter.example' });
+  assert.equal(res.ok, true);
+  assert.ok(!res.confirmationRejected?.length, JSON.stringify(res.confirmationRejected));
+});
+
+test('只读导出也带规则：面板与导出不许各说一套', async () => {
+  const { chrome, send } = await boot();
+  await send({ type: 'nw:siteRulesPut', tabId: 1, entries: [{ fp: 'z9', path: 'basics.name' }] });
+  await send({ type: 'nw:unfilledMap', tabId: 1 });
+  const toPage = chrome.sent[chrome.sent.length - 1];
+  assert.equal(toPage.type, 'nw:unfilledMap');
+  assert.ok(toPage.siteRules?.z9, '导出没带规则 → 表上写着"按你的改判"，导出却说词典没这个词');
+});

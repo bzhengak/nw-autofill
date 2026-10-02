@@ -586,6 +586,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
        */
       const pageOrigin = await originOfTab(tabId);
       if (!pageOrigin) { sendResponse({ ok: false, error: 'no_origin' }); return; }
+      /**
+       * 面板带上"这张表是在哪一页算出来的"（扫描回包里的 pageOrigin）。
+       * 对不上就拒绝：MV3 的侧边栏不监听标签页切换，`tabId` 会是上一次扫描时那个，
+       * 而用户完全可能已经把这个标签页翻到另一家招聘站点 ——
+       * 那时"存进 A 站的改判"会落进 B 站的桶里，B 站一扫就命中并绿字写入
+       * （独立审查 Critical 1：指纹只用标签/name/id，跨站点常常撞得上）。
+       * 认不出来路的消息（没带 expectOrigin）照旧放行：内容脚本那一侧的读写本来就自己带不上。
+       */
+      const expectOrigin = String(msg.expectOrigin || '').trim();
+      if (expectOrigin && expectOrigin !== pageOrigin) {
+        sendResponse({ ok: false, error: 'origin_changed', pageOrigin, expectOrigin });
+        return;
+      }
       const bucket = await readRulesBucket();
       if (msg.type === 'nw:siteRulesGet') {
         const mine = rulesForOrigin(bucket, pageOrigin);
@@ -623,13 +636,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
          * 且不该读到别的站点；② 确认项要在落笔前过一次"槽位必须真实存在"的校验，
          * 校验只写一处（core/site-rules.js），页面侧不复制一份规则。
          */
-        if (msg.type === 'nw:scan') {
+        if (msg.type === 'nw:scan' || msg.type === 'nw:unfilledMap') {
           const pageOrigin = await originOfTab(tabId);
           const stored = pageOrigin ? rulesForOrigin(await readRulesBucket(), pageOrigin) : {};
-          const now = confirmToRules(msg.confirmed);
+          /**
+           * 本轮确认只在"面板那张表就是这一页算出来的"时才接受：
+           * expectOrigin 与当前 origin 对不上，说明这个标签页已经翻到别家站点，
+           * 那些确认对应的栏位根本不在这页上 —— 收下就等于让 A 站的判断去钉 B 站的栏
+           * （独立审查 Critical 1）。拒掉并说清，不静默吞。
+           */
+          const expectOrigin = String(msg.expectOrigin || '').trim();
+          const staleTable = Boolean(msg.confirmed?.length) && expectOrigin && pageOrigin && expectOrigin !== pageOrigin;
+          const now = staleTable ? { rules: {}, rejected: [{ fp: '', why: `这个标签页已经换到 ${pageOrigin}，而那张映射表是在 ${expectOrigin} 上算的 —— 本轮改判没有套用，请重新扫描这一页` }] } : confirmToRules(msg.confirmed);
           payload = {
             ...payload,
+            // 只读导出也要带规则：不带就会出现"面板按改判填了、导出却说这栏没对应"的分裂结果
             siteRules: { ...stored, ...now.rules },
+            // 已记住的那一份单独再给一次：本轮临时确认压住它时，界面要说"关页之后这条会回来"
+            siteRulesStored: stored,
             // 哪些是"本轮点下来的、没勾记住"：映射表上要分开说"按你本轮的确认"和"按本站已记住的"，
             // 因为前者关掉这一页就没了，后者会跟着这个站点活下去。
             temporaryFps: Object.keys(now.rules),

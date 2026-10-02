@@ -23,14 +23,41 @@ export function filledRecordCount(profile, schemaFields, section) {
   return seen.size;
 }
 
-/** 页面上这一节被排成了几组：按扫描器给的重复区块序号数（没有序号就当一组） */
+/**
+ * 页面上这一节被排成了几组：按扫描器给的重复区块序号数。
+ * 有编号组时，"没带编号的那些栏"算进同一组而不是另算一组 ——
+ * 一页里 `{学校名称(第 1 组), 专业名称(没编号)}` 是常态（扫描器只能从容器边界推出部分序号），
+ * 各算一组会报出"资料只有 1 段、从第 2 组起留空"这种根本没发生的提示（独立审查 I6b）。
+ */
 export function pageRecordGroups(fields, indexes) {
-  const set = new Set();
+  const numeric = new Set();
+  let unnumbered = 0;
   for (const i of indexes) {
-    const f = fields[i] || {};
-    set.add(f.itemIndex == null ? '·' : String(f.itemIndex));
+    const it = (fields[i] || {}).itemIndex;
+    if (it == null) unnumbered++;
+    else numeric.add(String(it));
   }
-  return set.size;
+  if (numeric.size) return numeric.size;
+  return unnumbered ? 1 : 0;
+}
+
+/**
+ * 同一件事拆出来的几笔要算一栏：「年 + 月」两个框是一个日期（matcher 落笔时才展开成两笔）。
+ * 不合并的话每一组成对日期都会被 `duplicate_slot` 判成"两栏抢同一个只能填一次的位置"，
+ * 而建议"逐栏改判到第 1 / 第 2 条"恰好是把日期写坏的做法（独立审查 I6a）。
+ */
+function distinctCells(fields, indexes) {
+  const seenPair = new Set();
+  const out = [];
+  for (const i of indexes) {
+    const pid = (fields[i] || {}).datePair?.id;
+    if (pid) {
+      if (seenPair.has(pid)) continue;
+      seenPair.add(pid);
+    }
+    out.push(i);
+  }
+  return out;
 }
 
 const sectionOf = path => String(path || '').split('.')[0];
@@ -46,6 +73,13 @@ export function checkPlan({ fields = [], plan, profile = {}, schemaFields = [], 
   const warnings = [];
   const assignments = (plan?.assignments || []).filter(a => !a.skip && a.path);
   const gaps = plan?.gaps || [];
+  /**
+   * 计划里"这一栏我们不动"的那些（已填过 / 就是我们写的且值没变）不是缺口：
+   * 页面上有值，提交不会被拦。把它们算进"必填没安排值"会让每个重扫第二遍的页面都长红字
+   * （独立审查 I6c：already_ours 的必填框照样被报"提交会被它拦下来"）。
+   */
+  const untouched = new Set((plan?.assignments || []).filter(a => a.skip).map(a => a.index));
+  const hasValue = i => String((fields[i] || {}).currentValue ?? '').trim() !== '';
 
   // ── ① 段数对不上（双向都报，因为下一步动作完全不同）────────────────
   const bySection = new Map();
@@ -69,14 +103,17 @@ export function checkPlan({ fields = [], plan, profile = {}, schemaFields = [], 
     const members = [...inSection];
     const have = filledRecordCount(profile, schemaFields, s);
     const page = pageRecordGroups(fields, members);
+    // 页面这一节有没有"这是第几组"的证据：没有编号就说不清页面准备收几段，
+    // 那"资料有 3 段而页面只有 1 组"多半是这一页只要最高学历/最近一份工作 —— 不是故障。
+    const numbered = members.some(i => (fields[i] || {}).itemIndex != null);
     const planned = members.filter(i => fields[i]?.itemIndex != null).map(i => fields[i].itemIndex);
     const maxPlanned = planned.length ? Math.max(...planned) + 1 : 0;
     const zh = SECTION_ZH[s] || s;
-    if (have > page) {
+    if (have > page && numbered) {
       warnings.push({
         kind: 'records_no_room', section: s, have, page,
-        zh: `资料里有 ${have} 段「${zh}」，这一页只排了 ${page} 组：至少有 ${have - page} 段没地方写。`,
-        action: '要么这一页本来就只收一段（"最高学历""最近一份工作"很常见），要么它有个「+ 添加一段」要点下去才出得了新行 —— 后者是 S7 的扩行代理，默认关着，要我们代点就去设置里打开。',
+        zh: `资料里有 ${have} 段「${zh}」，这一页只排到第 ${page} 组：后面 ${have - page} 段在这一页没地方写。`,
+        action: '这一页多半有个「+ 添加一段」，点下去才出得了新行 —— 那是 S7 的扩行代理，默认关着；要我们代点就去设置里打开。',
       });
     } else if (page > have && maxPlanned > have - 1) {
       warnings.push({
@@ -94,8 +131,9 @@ export function checkPlan({ fields = [], plan, profile = {}, schemaFields = [], 
     if (!claimed.has(key)) claimed.set(key, []);
     claimed.get(key).push(a.index);
   }
-  for (const [path, indexes] of claimed) {
+  for (const [path, raw] of claimed) {
     const isList = schemaFields.some(f => f.path === path && f.itemIndex != null);
+    const indexes = distinctCells(fields, raw);
     if (indexes.length < 2) continue;
     if (!isList) {
       warnings.push({
@@ -119,24 +157,36 @@ export function checkPlan({ fields = [], plan, profile = {}, schemaFields = [], 
   const plannedIndexes = new Set(assignments.map(a => a.index));
   const requiredEmpty = fields
     .map((f, i) => ({ f, i }))
-      .filter(({ f, i }) => f?.required && !plannedIndexes.has(i));
+      .filter(({ f, i }) => f?.required && !plannedIndexes.has(i) && !untouched.has(i) && !hasValue(i));
   if (requiredEmpty.length) {
     warnings.push({
       kind: 'required_unplanned', count: requiredEmpty.length,
       labels: requiredEmpty.slice(0, 6).map(x => String(x.f.label || x.f.name || x.f.id || '(未命名)').slice(0, 30)),
-      zh: `有 ${requiredEmpty.length} 栏站点标了必填，但我们没能安排值 —— 提交会被它拦下来。`,
+      zh: `有 ${requiredEmpty.length} 栏站点标了必填，而我们既没安排值、框里也是空的 —— 提交会被它拦下来。`,
       action: '在映射表里对着这些栏点「改判」指定槽位，或直接手填。缺口原因每栏都写在表里了。',
     });
   }
 
   // ── ④ 整页一个都不写 ────────────────────────────────────────────
   if (fields.length && !assignments.length) {
+    // "一栏都不写"有两种完全不同的原因：这一页确实没东西可写（都已经填好了，我们按口径不动），
+    // 还是我们判不动。前一种不是故障，报成故障就会在每个"重扫第二遍"的页面上长红字
+    //（独立审查 I6c：already_ours 的必填框照样被报"提交会被拦"就是这个毛病）。
+    const blank = fields.map((f, i) => i).filter(i => !untouched.has(i) && !hasValue(i));
     const reasons = gaps.reduce((acc, g) => (acc[g.reason] = (acc[g.reason] || 0) + 1, acc), {});
-    warnings.push({
-      kind: 'nothing_to_write', count: fields.length, reasons,
-      zh: `这一页 ${fields.length} 栏，我们一栏都不写。`,
-      action: `最常见的原因是标签没采到或说法不在词典里（本轮原因分布：${Object.entries(reasons).map(([k, v]) => `${k}×${v}`).join('、') || '无'}）。先「导出没填的字段与选项」，那份表就是诊断表。`,
-    });
+    if (blank.length) {
+      warnings.push({
+        kind: 'nothing_to_write', count: blank.length, reasons,
+        zh: `这一页 ${fields.length} 栏，其中有 ${blank.length} 栏是空的而我们一栏都不写。`,
+        action: `最常见的原因是标签没采到或说法不在词典里（本轮原因分布：${Object.entries(reasons).map(([k, v]) => `${k}×${v}`).join('、') || '无'}）。先「导出没填的字段与选项」，那份表就是诊断表。`,
+      });
+    } else {
+      warnings.push({
+        kind: 'nothing_needed', count: fields.length, soft: true,
+        zh: `这一页 ${fields.length} 栏没有需要我们写的：要么已经有值（站点预填或你自己填的），要么是我们上一轮写的且值没变。`,
+        action: '要改写其中某一栏，在映射表里对它点「改判」（我们的覆盖口径只动自己写过的）。',
+      });
+    }
   }
 
   // ── ⑤ 指纹撞车：一条改判会同时落到好几栏 ─────────────────────────

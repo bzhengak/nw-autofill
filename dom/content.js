@@ -60,7 +60,7 @@ if (!window.__nwSubmitListener) {
   });
 }
 
-async function handleScan({ profile, mode = 'full', dryRun = false, adapter = null, fillSensitive = false, allowCustomSelect = false, aiCandidates = null, enMissingMode = 'strict', allowNonApplication = false, siteRules = null, temporaryFps = [] }) {
+async function handleScan({ profile, mode = 'full', dryRun = false, adapter = null, fillSensitive = false, allowCustomSelect = false, aiCandidates = null, enMissingMode = 'strict', allowNonApplication = false, siteRules = null, temporaryFps = [], siteRulesStored = null }) {
   const { scanner, filler, matcher, safety, schema, ledger, canonical, mappingTable, planCheck } = await loadModules();
   safety.armSubmitGuard(window, auditLog);
   const fields = scanner.scanForm(document);
@@ -84,6 +84,7 @@ async function handleScan({ profile, mode = 'full', dryRun = false, adapter = nu
       results: [], gaps: [], aiFields: [], auditLog,
       mapping: { rows: [], stats: { fields: fields.length, decided: 0 } },
       planCheck: { warnings: [], ok: false },
+      pageOrigin: location.origin,
       pagePurpose: purpose, purposeBlocked: true,
     };
   }
@@ -184,7 +185,8 @@ async function handleScan({ profile, mode = 'full', dryRun = false, adapter = nu
   const schemaFields = schema.buildFields();
   const mapping = mappingTable.buildMappingTable({
     fields, plan, results: applied.results, ledger: fillLedger,
-    origin: location.origin, siteRules: siteRules || {}, temporaryFps, schemaFields,
+    origin: location.origin, siteRules: siteRules || {}, temporaryFps,
+    storedRules: siteRulesStored || null, schemaFields,
   });
   const check = planCheck.checkPlan({ fields, plan, profile, schemaFields, table: mapping });
   return {
@@ -192,6 +194,9 @@ async function handleScan({ profile, mode = 'full', dryRun = false, adapter = nu
     results: applied.results.map(r => ({ path: r.path, label: r.label, score: r.score, status: r.status, reason: r.failReason || '', note: r.note || '', actual: r.actual, sensitive: r.sensitive, aiChosen: r.aiChosen, evidence: r.evidence || [], weakEvidence: Boolean(r.weakEvidence), notOurs: r.notOurs || '', overwrites: r.overwrites || '' })),
     gaps: plan.gaps.map(g => ({ index: g.index, label: g.label, reason: g.reason, kind: g.kind, note: g.note || '' })),
     mapping, planCheck: check,
+    // 面板拿它当"这张表是在哪家站点上算出来的"凭证：改判落盘时必须带上，
+    // 后台用它和标签页**当前** origin 对一遍（独立审查 C1：切了页仍把上一页的改判存进新站点的桶）
+    pageOrigin: location.origin,
     aiFields,
     auditLog,
   };
@@ -213,6 +218,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           // 改判规则由后台按 tabId 反查 origin 后合流下发（自报的一律不用）
           siteRules: msg.siteRules || null,
           temporaryFps: Array.isArray(msg.temporaryFps) ? msg.temporaryFps : [],
+          siteRulesStored: msg.siteRulesStored || null,
         }) });
       } else if (msg?.type === 'nw:undo') {
         const last = window.__nwLast;
@@ -257,6 +263,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
             enMissingMode: settings?.enMissingMode || 'strict',
             ledger: ledgerNow,
             pageOrigin: location.origin,
+            // 导出与面板必须看同一份改判：不带规则就会出现"面板上这栏写着『按你的改判』、
+            // 导出里却说词典没这个词"（独立审查 Minor）。
+            siteRules: msg.siteRules || null,
           });
           const applied = await filler.applyPlan(fields, plan.assignments, { dryRun: true, pageOrigin: location.origin, ledger: ledgerNow });
           last = window.__nwLast = { fields, plan, applied, auditLog };

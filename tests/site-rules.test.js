@@ -174,7 +174,8 @@ test('硬边界压过改判：验证码/声明/附件这类栏，用户点了也
   const rules = { [fingerprint(captcha)]: { fp: fingerprint(captcha), path: 'basics.name', skip: false } };
   const plan = planFill([captcha], p, { mode: 'full', siteRules: rules });
   assert.equal(plan.assignments.length, 0, `改判绕过了"永不代做"：${JSON.stringify(plan.assignments)}`);
-  assert.ok(['captcha', 'consent_declaration', 'subjective', 'file'].includes(plan.gaps[0]?.reason) || plan.gaps[0], '至少要给出拒绝的理由');
+  // 拒绝要给出**具体是哪一类**永不代做，不能只留一句"有缺口"
+  assert.equal(plan.gaps.find(g => g.index === 0)?.reason, 'captcha', JSON.stringify(plan.gaps));
 });
 
 test('敏感槽位的改判仍要「允许填写敏感字段」：点一下不等于授权', () => {
@@ -202,4 +203,52 @@ test('适配器钉位与人工改判同时存在时：改判说了算（人来�
   const plan = planFill([field], p, { mode: 'full', adapter, siteRules: rules, fillSensitive: true });
   assert.equal(plan.assignments.find(a => a.index === 0)?.path, 'basics.lastName', '改判没压过适配器');
   assert.match(String(plan.assignments.find(a => a.index === 0)?.note || ''), /改判/, '压过适配器这件事要在来历里看得见');
+});
+
+/** ── 独立审查 2026-10-03 抓到的两条：改判的效力边界 ───────────────── */
+test('「这一栏不自动填」落在年月组的月框上：整组都不写（Critical 2）', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'education.0.enrollDate', '2021-09');
+  const dp = (part) => ({ id: 'dp1', part, role: 'start', roleSource: 'label' });
+  const year = pf({ label: '入学时间（年）', name: 'y', id: 'y1', datePair: dp('year') });
+  const month = pf({ label: '入学时间（月）', name: 'm', id: 'm1', datePair: dp('month') });
+  // 前提：没有改判时这一组是要写的（年 + 月 两笔）
+  const plain = planFill([year, month], p, { mode: 'full' });
+  assert.equal(plain.assignments.filter(a => !a.skip && a.path).length, 2, '前提没了：这组日期本来就不写，测不出跳过传播');
+
+  const rules = { [fingerprint(month)]: { fp: fingerprint(month), path: '', skip: true, note: '' } };
+  const plan = planFill([year, month], p, { mode: 'full', siteRules: rules });
+  assert.equal(plan.assignments.filter(a => !a.skip && a.path).length, 0,
+    '月框被勾了不填，整组却照样写出去：' + JSON.stringify(plan.assignments.filter(a => !a.skip)));
+  const g = plan.gaps.find(x => x.reason === 'user_excluded');
+  assert.ok(g, '要有一条说得清的缺口：' + JSON.stringify(plan.gaps));
+  assert.match(String(g.note), /这组日期里你勾的是第 2 个框/, '要说清是那一格里他勾的替他做的决定：' + g.note);
+});
+
+test('摊平型槽位规则（学历/亲属那一类）也给改判让路（Important 1）', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'education.0.degree', '硕士');
+  setValueByPath(p, 'education.0.school', '复旦大学');
+  setValueByPath(p, 'education.1.degree', '本科');
+  setValueByPath(p, 'education.1.school', '南京大学');
+  const field = pf({ label: '硕士毕业院校', name: 'sch', id: 'sch1' });
+  const adapter = { id: 'x', degreeSlotPins: [{ match: 're:(硕士|研究生).*(学校|院校)', degree: '硕士', subfield: 'school' }] };
+  const byAdapter = planFill([field], p, { mode: 'full', adapter });
+  assert.equal(byAdapter.assignments[0]?.path, 'education.0.school', '前提：这条摊平规则会把栏判给第 1 段');
+  assert.equal(byAdapter.assignments[0]?.pinnedBy, 'adapter', '来历要说得出是站点规则给的，不是本地词典猜的');
+
+  const fp = fingerprint(field);
+  const rules = { [fp]: { fp, path: 'education.1.school', skip: false, note: '' } };
+  const byRule = planFill([field], p, { mode: 'full', adapter, siteRules: rules });
+  assert.equal(byRule.assignments[0]?.path, 'education.1.school', '改判被摊平规则压住了：人来过就必须先验');
+  assert.equal(byRule.assignments[0]?.pinnedBy, 'siteRule');
+});
+
+test('记住的改判指向已经不存在的槽位：说"槽位没了"，不是"资料里空着"（Minor）', () => {
+  const field = pf({ label: 'Awarding Body', name: 'ab', id: 'ab9' });
+  const rules = { [fingerprint(field)]: { fp: fingerprint(field), path: 'education.9.school', skip: false } };
+  const plan = planFill([field], createEmptyProfile(), { mode: 'full', siteRules: rules });
+  const g = plan.gaps.find(x => x.index === 0);
+  assert.equal(g?.reason, 'ruled_slot_missing', '让他去补一个根本不存在的栏位：' + JSON.stringify(g));
+  assert.match(String(g.note), /不存在/);
 });

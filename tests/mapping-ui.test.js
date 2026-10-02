@@ -36,14 +36,16 @@ function scanData(profile, fields, opts = {}) {
     gaps: plan.gaps.map(g => ({ index: g.index, label: g.label, reason: g.reason, kind: g.kind, note: g.note || '' })),
     mapping,
     planCheck: checkPlan({ fields, plan, profile, schemaFields: SCHEMA, table: mapping }),
+    pageOrigin: 'https://job.example.test',
   };
 }
 
-function boot({ data, rules = {}, putResult = null } = {}) {
+function boot({ data, rules = {}, putResult = null, ai = false, aiCandidates = null } = {}) {
   const dom = new JSDOM(html, { url: 'chrome-extension://nwtest/ui/sidepanel.html', pretendToBeVisual: true });
   const sent = [];
   dom.window.CSS = dom.window.CSS || {};
   if (!dom.window.CSS.escape) dom.window.CSS.escape = s => String(s).replace(/([^\w-])/g, '\\$1');
+  const BASE = 'https://api.example.test/v1';
   dom.window.chrome = {
     runtime: {
       getURL: p => 'chrome-extension://nwtest/' + p,
@@ -53,7 +55,14 @@ function boot({ data, rules = {}, putResult = null } = {}) {
         if (msg.type === 'nw:siteRulesGet') return { ok: true, rules, origin: 'https://job.example.test', count: Object.keys(rules).length };
         if (msg.type === 'nw:siteRulesPut') return putResult || { ok: true, accepted: (msg.entries || []).length, rejected: [], count: (msg.entries || []).length };
         if (msg.type === 'nw:siteRulesForgetSite') return { ok: true, count: 0 };
-        return { ok: true, profile: createEmptyProfile(), settings: {}, tabId: 1 };
+        if (msg.type === 'nw:aiPreview') return { ok: true, text: '要问的字段清单', bytes: 40, asks: 2, endpoint: BASE };
+        if (msg.type === 'nw:aiAsk') return { ok: true, candidates: aiCandidates || [], dropped: [], declined: [], rawChars: 30, snippet: '', endpoint: BASE };
+        return {
+          ok: true, profile: createEmptyProfile(), settings: ai
+            ? { aiBaseUrl: BASE, aiModel: 'm', aiConsentOrigin: 'https://api.example.test' } : {},
+          tabId: 1,
+          hasAiKey: ai, aiKeyOrigin: 'https://api.example.test', aiKeyPersisted: false, aiKeyLength: 24,
+        };
       },
       onMessage: { addListener() {} },
     },
@@ -257,7 +266,8 @@ test('导出映射表：走的是脱敏视图，屏幕上的回读值不进文�
   const parsed = JSON.parse(out);
   assert.deepEqual(Object.keys(parsed).sort(), ['rows', 'stats']);
   assert.ok(parsed.rows[0].label !== undefined && !('actual' in parsed.rows[0]));
-  assert.ok(JSON.stringify(plainMappingTable(data.mapping)) === out.trim() || out.includes('"fp"'), '导出内容应与脱敏视图一致');
+  // 面板导出的那一串必须**逐字节等于**脱敏视图：中间只要有人偷偷加了字段（比如回读值），这条就红
+  assert.equal(out, JSON.stringify(plainMappingTable(data.mapping), null, 1));
 });
 
 test('「本站已记住几条」列的是这一页命中的那些，不是整桶', async () => {
@@ -314,4 +324,106 @@ test('关掉「映射表先行」：扫描钮回到直接写，且开关状态�
   const write = sent.filter(m => m.type === 'nw:scan').pop();
   assert.equal(write.mode, 'full');
   assert.equal(write.dryRun, false);
+});
+
+/** ── 独立审查 Important 2 / Important 4：面板这两条最容易"看着对、其实断" ── */
+test('改判过的栏，搜索词换掉后仍然是"已改判"样子，且写入照样带上（I4）', async () => {
+  const { p, fields } = fixture();
+  const { doc, sent } = boot({ data: scanData(p, fields) });
+  await loadSidePanel();
+  await settle();
+  click(doc, 'btnScan');
+  await settle();
+  await pickSlot(doc, 2, 'certifications.0.name', '证书');
+  // 现在把搜索词清空：默认那 40 个候选里没有 certifications.0.name
+  const box = doc.getElementById('mapSearch');
+  box.value = '';
+  box.dispatchEvent(new doc.defaultView.Event('input', { bubbles: true }));
+  await settle(20);
+  const row = doc.getElementById('mapTable').querySelectorAll('.mrow')[2];
+  assert.ok(row.className.includes('pending'), '重画后看不出这一栏改过判 —— 隐蔽的 armed 状态');
+  assert.equal(row.querySelector('select').value, 'certifications.0.name', '下拉不该把已改判的栏显示回"不改判"');
+  assert.match(row.querySelector('select').selectedOptions[0].textContent, /你本轮改的/);
+  click(doc, 'btnMapFill');
+  await settle();
+  const write = sent.filter(m => m.type === 'nw:scan').pop();
+  assert.equal(write.mode, 'full');
+  assert.deepEqual(write.confirmed.map(c => c.path), ['certifications.0.name'], '界面上看不见却不带上，就是偷偷替用户做主');
+});
+
+test('「问 AI」补的栏位必须跟着「按此映射填写」一起写，措辞也不指错按钮（I2）', async () => {
+  const { p, fields } = fixture();
+  const data = scanData(p, fields);
+  data.aiFields = [{ index: 1, label: 'Awarding Body' }];
+  data.gaps = [...(data.gaps || []), { index: 1, label: 'Awarding Body', reason: 'no_candidate', kind: 'text' }];
+  const candidates = [{ index: 1, path: 'certifications.0.name', label: 'Awarding Body' }];
+  const { doc, sent } = boot({ data, ai: true, aiCandidates: candidates });
+  await loadSidePanel();
+  await settle();
+  click(doc, 'btnScan');
+  await settle();
+  assert.equal(doc.getElementById('btnAiAsk').disabled, false, '前提：AI 三项配置齐了才可点');
+  click(doc, 'btnAiAsk');
+  await settle(80);
+  assert.match(doc.getElementById('aiStatus').textContent, /按此映射填写/, '指路不能写死"扫描并填写"（那个钮现在只出表）');
+  click(doc, 'btnMapFill');
+  await settle();
+  const write = sent.filter(m => m.type === 'nw:scan').pop();
+  assert.equal(write.mode, 'full');
+  assert.deepEqual(write.aiCandidates, candidates, `写入那一跳把 AI 补的栏位丢了：${JSON.stringify(write.aiCandidates)}`);
+});
+
+test('重新扫描会让上一轮的 AI 候选作废（它们是按旧缺口算的）', async () => {
+  const { p, fields } = fixture();
+  const data = scanData(p, fields);
+  const candidates = [{ index: 1, path: 'certifications.0.name', label: 'Awarding Body' }];
+  const { doc, sent } = boot({ data, ai: true, aiCandidates: candidates });
+  await loadSidePanel();
+  await settle();
+  click(doc, 'btnScan');
+  await settle();
+  click(doc, 'btnAiAsk');
+  await settle(80);
+  click(doc, 'btnScan');            // 用户又点了一次扫描
+  await settle();
+  click(doc, 'btnMapFill');
+  await settle();
+  const write = sent.filter(m => m.type === 'nw:scan').pop();
+  assert.equal(write.aiCandidates, undefined, '换了新的一轮还带着旧候选，index 对不上就是拿别人的答案写这一栏');
+});
+
+test('面板把"这张表是哪页算的"随规则消息一起发出（审查 C1 的凭据）', async () => {
+  const { p, fields } = fixture();
+  const { doc, sent } = boot({ data: scanData(p, fields) });
+  await loadSidePanel();
+  await settle();
+  click(doc, 'btnScan');
+  await settle();
+  click(doc, 'btnMapRules');
+  await settle();
+  const read = sent.filter(m => m.type === 'nw:siteRulesGet').pop();
+  assert.equal(read.expectOrigin, 'https://job.example.test',
+    '没带 expectOrigin：用户翻页之后，改判会存进另一家招聘站的桶里');
+  assert.ok(Number.isInteger(read.tabId), 'tabId 必须现取，不能拿上次扫描留下的');
+  click(doc, 'btnMapForget');
+  await settle();
+  const forgot = sent.filter(m => m.type === 'nw:siteRulesForgetSite').pop();
+  assert.equal(forgot.expectOrigin, 'https://job.example.test');
+});
+
+test('撤销之后映射表还在：重新只读扫一遍，而不是抹成"没扫到栏位"', async () => {
+  const { p, fields } = fixture();
+  const { doc, sent } = boot({ data: scanData(p, fields) });
+  await loadSidePanel();
+  await settle();
+  click(doc, 'btnScan');
+  await settle();
+  assert.ok(doc.getElementById('mapTable').querySelectorAll('.mrow').length >= 3, '前提：表已经画出来了');
+  click(doc, 'btnUndo');
+  await settle();
+  assert.ok(sent.some(m => m.type === 'nw:undo'), '没发撤销消息');
+  const after = sent.filter(m => m.type === 'nw:scan').pop();
+  assert.equal(after.mode, 'preview', '撤销后应该重新只读扫一遍，让表反映现状');
+  assert.ok(doc.getElementById('mapTable').querySelectorAll('.mrow').length >= 3, '撤销把映射表抹掉了：改判与导出下一跳就失效');
+  assert.match(doc.getElementById('mapSummary').textContent, /回滚/);
 });

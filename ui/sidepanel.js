@@ -354,6 +354,10 @@ const AI_ERROR_ZH = {
   not_confirmed: '这次没点确认，没有发送任何内容',
   // 闸门拦下的几种（不是 API 出错）：措辞要说清按哪一步重来
   needs_consent: '没勾「我确认把 Key 与字段名发往 …」那一格 —— 勾上才允许发',
+  // 站点级确认（每换一个招聘站点问一次）：这一栏的字段名与选项文案要离开本机
+  needs_site_consent: '这一站还没确认过：勾上下面那行「以后在本页都允许…」，再点一次问 AI',
+  site_consent_stale: 'AI 地址变了，之前在本页的确认已作废：重新勾一次那行站点确认',
+  no_page_origin: '认不出当前标签页是哪个站点（不是 http/https 页面），因此不发任何字段名',
   origin_changed: 'Base URL 换过了，之前对旧地址的确认已作废：重新勾一次确认',
   origin_mismatch: 'Key 是在别的地址下录的，不会跟着发到这里：在当前 Base URL 下重新保存 Key',
   no_endpoint: '还没填 Base URL（应形如 https://…/v1）',
@@ -450,6 +454,35 @@ function startAiWait(statusEl, label) {
     if (abortBtn) abortBtn.disabled = true;   // 计时一停，「取消等待」就该灰掉
   };
 }
+
+/**
+ * 站点级确认那一行：只在后台说"这一站还没确认过 / 确认已过期"时出现。
+ * 页面地址由后台按 tabId 查回来，界面只负责把它念给用户看（textContent，永不进 HTML）。
+ */
+const SITE_GATE_ERRORS = new Set(['needs_site_consent', 'site_consent_stale', 'no_page_origin']);
+function showSiteConsentRow(error, pageOrigin) {
+  const row = $('aiSiteRow');
+  if (!row) return;
+  if (!SITE_GATE_ERRORS.has(String(error || ''))) { row.hidden = true; $('aiSiteConsent').checked = false; return; }
+  $('aiSiteTarget').textContent = pageOrigin || '（认不出这一页是哪个站点）';
+  $('aiSiteConsent').checked = false;
+  row.hidden = false;
+}
+$('aiSiteConsent')?.addEventListener('change', async e => {
+  if (!e.target.checked) {
+    // 反勾 = 撤回本站确认（后台那条记录删掉），不然界面和账本会分叉
+    await chrome.runtime.sendMessage({ type: 'nw:aiConsentSite', tabId, revoke: true });
+    $('aiStatus').textContent = '已撤回本页的站点确认，下次问 AI 会重新问。';
+    return;
+  }
+  const res = await chrome.runtime.sendMessage({ type: 'nw:aiConsentSite', tabId });
+  if (!res?.ok) {
+    e.target.checked = false;
+    $('aiStatus').textContent = `记下本站确认失败：${ENDPOINT_ERROR_ZH[String(res?.error || '').replace('endpoint_', '')] || res?.error || '未知错误'}`;
+    return;
+  }
+  $('aiStatus').textContent = `已记下：${res.pageOrigin} 的字段名可以发往 ${res.targetOrigin}（换了 AI 地址会重新问）。再点一次「问 AI 补全缺口」。`;
+});
 
 function aiUiSync() {
   const base = normalizeBaseUrl($('aiBaseUrl').value);
@@ -621,10 +654,12 @@ $('btnAiAsk').onclick = async () => {
   const stopWait = startAiWait($('aiStatus'), '正在请求（只发字段名，等模型答完）');
   try {
     const profile = JSON.parse($('profileText').value || '{}');
-    const res = await chrome.runtime.sendMessage({ type: 'nw:aiAsk', profile, gaps: lastScan.gaps, fields: lastScan.aiFields });
+    const res = await chrome.runtime.sendMessage({ type: 'nw:aiAsk', profile, gaps: lastScan.gaps, fields: lastScan.aiFields, tabId });
     if (!res?.ok) {
       const why = aiErrorText(res);
       $('aiStatus').textContent = why;
+      // 被站点级确认拦下：把那一站的名字摊出来，勾一次记一站
+      showSiteConsentRow(res?.error, res?.pageOrigin);
       const box = $('aiPreviewText');
       box.hidden = false;
       // why 里已经带上游原文（res.detail）与试过的地址了，这里不能再拼一遍
@@ -643,7 +678,8 @@ $('btnAiAsk').onclick = async () => {
       return;
     }
     await run('preview', { aiCandidates: res.candidates });
-    $('aiStatus').textContent = `AI 补齐 ${res.candidates.length} 栏（全部黄字待你核对）；${formatTiming(res.timing) ? formatTiming(res.timing) + '；' : ''}已用「只预演」应用，确认后点「扫描并填写」写入`
+    showSiteConsentRow('', '');   // 问通了说明两道闸都过了，那一行不该继续挂着
+    $('aiStatus').textContent = `AI 补齐 ${res.candidates.length} 栏（敏感字段黄字待你核对，其余按正常档位；来源标了〔AI 选路〕）；${formatTiming(res.timing) ? formatTiming(res.timing) + '；' : ''}已用「只预演」应用，确认后点「扫描并填写」写入`
       + (res.finishReason === 'length' ? ' —— 注意：这次回答被长度上限截断了，可能还有缺口没给出，再点一次问剩下的' : '')
       + endpointNote(res) + streamNote(res);
   } finally { stopWait(); }   // 任何一条出口都得停掉计时与心跳，不能让它在后台一直跳

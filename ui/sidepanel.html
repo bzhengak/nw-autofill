@@ -288,6 +288,9 @@ Edge:   %LOCALAPPDATA%\Microsoft\Edge\User Data\&lt;配置文件&gt;\Local Exten
       用「清除」两个位置一起删。公用电脑或别人能碰你电脑的情况，建议别勾。
     </p>
     <label class="chk"><input type="checkbox" id="aiConsent">我确认把 Key 与字段名发往：<b id="aiConsentTarget">（先填 Base URL）</b></label>
+    <!-- 站点级确认：上一行管的是"发去哪个 AI 地址"，这一行管的是"哪一页的字段名可以离开本机"。
+         只在后台回 needs_site_consent 时出现，勾一次记一站（Base URL 变了会重新问）。 -->
+    <label class="chk" id="aiSiteRow" hidden><input type="checkbox" id="aiSiteConsent">以后在 <b id="aiSiteTarget">（本站）</b> 都允许把这一页的字段名与选项发给 AI</label>
     <p class="hint" id="aiKeyState">当前会话没有 Key。</p>
     <div class="row">
       <button id="btnAiPreview">预览将发送的内容</button>

@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, redact, SETTING_KEYS, SECRETS_BUCKET, findLeaksInExport, consentAfterSettingsPatch, clampTimeoutSec, effectiveTimeoutSec, AI_TIMEOUT_DEFAULT_SEC, clampMaxTokens, effectiveMaxTokens, AI_MAX_TOKENS_DEFAULT, effectiveStream } from '../core/ai-security.js';
+import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, redact, SETTING_KEYS, SECRETS_BUCKET, findLeaksInExport, consentAfterSettingsPatch, siteConsentCheck, withSiteConsent, siteConsentAfterEndpoint, SITE_CONSENT_BUCKET, clampTimeoutSec, effectiveTimeoutSec, AI_TIMEOUT_DEFAULT_SEC, clampMaxTokens, effectiveMaxTokens, AI_MAX_TOKENS_DEFAULT, effectiveStream } from '../core/ai-security.js';
 
 test('持久化 Key 只能进独立桶：SECRETS_BUCKET 不在 settings 白名单里', () => {
   assert.equal(SECRETS_BUCKET, 'aiSecrets');
@@ -184,4 +184,36 @@ test('流式开关：默认开、能存住、名字不会被秘密键名闸误�
   assert.equal(clean.aiStream, false, JSON.stringify(dropped));
   const prev = { aiBaseUrl: 'https://api.a.test/v1', aiConsentOrigin: 'https://api.a.test' };
   assert.equal(consentAfterSettingsPatch({ prev, patch: { aiStream: false } }), 'https://api.a.test');
+});
+
+/** 站点级确认的三件套：判放、记账、端点变了以后清账 */
+test('siteConsentCheck：只认"这一站对这一地址"确认过', () => {
+  const K = 'https://api.example.test';
+  const S = 'https://tupu360.example.test';
+  assert.deepEqual(siteConsentCheck({ consents: { [S]: K }, pageOrigin: S, targetOrigin: K }), { ok: true });
+  assert.equal(siteConsentCheck({ consents: {}, pageOrigin: S, targetOrigin: K }).error, 'needs_site_consent');
+  assert.equal(siteConsentCheck({ consents: { [S]: K }, pageOrigin: S, targetOrigin: 'https://evil.test' }).error, 'site_consent_stale',
+    '换端点后旧确认不能继续放行');
+  assert.equal(siteConsentCheck({ consents: { [S]: K }, pageOrigin: '', targetOrigin: K }).error, 'no_page_origin',
+    '认不出页面是哪一站就不许发（不能"当作已确认"）');
+  assert.equal(siteConsentCheck({ consents: { [S]: K }, pageOrigin: S, targetOrigin: '' }).error, 'no_endpoint');
+});
+
+test('withSiteConsent：只收形状正确的 origin，账本有上限', () => {
+  const K = 'https://api.example.test';
+  const got = withSiteConsent({}, { pageOrigin: 'https://a.test', targetOrigin: K });
+  assert.deepEqual(got, { 'https://a.test': K });
+  assert.deepEqual(withSiteConsent({}, { pageOrigin: 'javascript:alert(1)', targetOrigin: K }), {}, '非法 origin 不进账本');
+  assert.deepEqual(withSiteConsent({}, { pageOrigin: 'https://a.test', targetOrigin: 'not a url' }), {});
+  let map = {};
+  for (let i = 0; i < 80; i++) map = withSiteConsent(map, { pageOrigin: `https://s${i}.test`, targetOrigin: K, limit: 50 });
+  assert.equal(Object.keys(map).length, 50, '投过的站点会无限涨：必须有上限');
+  assert.equal(map['https://s79.test'], K, '留最晚的那 50 条');
+  assert.equal(map['https://s0.test'], undefined);
+});
+
+test('端点变了：不再指向新端点的站点记录一起清掉', () => {
+  const consents = { 'https://a.test': 'https://old.test', 'https://b.test': 'https://new.test' };
+  assert.deepEqual(siteConsentAfterEndpoint({ consents, endpointOrigin: 'https://new.test' }), { 'https://b.test': 'https://new.test' });
+  assert.deepEqual(siteConsentAfterEndpoint({ consents, endpointOrigin: '' }), consents, '拿不到端点时不动账本（发送另有闸兜着）');
 });

@@ -208,6 +208,51 @@ export function maySendKey({ keyOrigin, targetOrigin, consentOrigin }) {
 }
 
 /**
+ * 「每换一个站点问一次」的那本账。
+ *
+ * 为什么 aiConsentOrigin 不够用：它记的是"我确认把 Key 与字段名发往这个 AI 端点"，
+ * 一次勾完，之后在哪个招聘站点都放行。但真正在变的另一半是**发出去的是什么页面**：
+ * 途普那一页的栏位名、选项文案、板块标题都会离开本机。用户 2026-10-02 要的粒度是
+ * "每换站点问一次"，所以要按页面 origin 单独记一条。
+ *
+ * 记的是 `页面 origin → 当时确认过的 AI 端点 origin`：
+ *  · 端点换了（改 Base URL）→ 老记录一律不算数（site_consent_stale），重新问；
+ *  · 认不出页面 origin（没有标签页 URL）→ 直接拒，不"当作已确认"。
+ * 这本账不进 settings —— settings 会被「导出 JSON」带走，而它记的是"你在哪些站点投过简历"。
+ */
+export const SITE_CONSENT_BUCKET = 'aiSiteConsent';
+export const SITE_CONSENT_LIMIT = 50;
+
+export function siteConsentCheck({ consents, pageOrigin, targetOrigin }) {
+  if (!pageOrigin) return { ok: false, error: 'no_page_origin' };
+  if (!targetOrigin) return { ok: false, error: 'no_endpoint' };
+  const granted = String((consents && consents[pageOrigin]) || '');
+  if (!granted) return { ok: false, error: 'needs_site_consent', pageOrigin };
+  if (granted !== targetOrigin) return { ok: false, error: 'site_consent_stale', pageOrigin };
+  return { ok: true };
+}
+
+/** 记一条"这一站确认发往该端点"；只接受 https?://host 形状的 origin，超量时丢最旧插入的 */
+export function withSiteConsent(consents, { pageOrigin, targetOrigin, limit = SITE_CONSENT_LIMIT }) {
+  const next = { ...(consents && typeof consents === 'object' ? consents : {}) };
+  const ok = s => /^https?:\/\/[a-z0-9.\-]+(:\d+)?$/i.test(String(s || ''));
+  if (!ok(pageOrigin) || !ok(targetOrigin)) return next;
+  next[pageOrigin] = targetOrigin;
+  const keys = Object.keys(next);
+  if (keys.length > limit) for (const k of keys.slice(0, keys.length - limit)) delete next[k];
+  return next;
+}
+
+/** 端点变了：把不再指向新端点的记录一起清掉，避免"旧确认放行新地址"或反过来 */
+export function siteConsentAfterEndpoint({ consents, endpointOrigin }) {
+  const next = {};
+  for (const [k, v] of Object.entries(consents && typeof consents === 'object' ? consents : {})) {
+    if (!endpointOrigin || v === endpointOrigin) next[k] = v;
+  }
+  return next;
+}
+
+/**
  * 存设置之后，"确认发往某地址"这条记录该留什么值。
  *
  * 曾经的写法是"patch 里带了 aiBaseUrl 且它和 prev.aiBaseUrl 的 origin 不一样 → 清空确认"。

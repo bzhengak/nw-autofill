@@ -89,11 +89,13 @@ const okJson = content => {
   };
 };
 
-/** 配好一套"能用 AI"的状态：session Key + Base URL + 模型 + 确认 */
-async function configure(send, chrome, { baseUrl = BASE, consent = true } = {}) {
+/** 配好一套"能用 AI"的状态：session Key + Base URL + 模型 + 端点确认 + 本站确认 */
+async function configure(send, chrome, { baseUrl = BASE, consent = true, site = true } = {}) {
   await send({ type: 'nw:saveAiKey', key: KEY, baseUrl, persist: false });
   await send({ type: 'nw:saveSettings', settings: { aiBaseUrl: baseUrl, aiModel: 'some-model' } });
   if (consent) await send({ type: 'nw:saveSettings', settings: { aiConsentOrigin: new URL(baseUrl).origin } });
+  // 站点级确认走真消息（顺手也测了那个 handler）：假标签页是 https://job.example.test/apply
+  if (site) await send({ type: 'nw:aiConsentSite', tabId: 1 });
   return chrome;
 }
 
@@ -320,4 +322,68 @@ test('页面文本里的 "12" 与资料撞字时不再误拦：请求真的出�
   assert.equal(res.error, undefined, `还是被自检拦下了：${JSON.stringify(res.leaks || res.error)}`);
   assert.equal(res.ok, true, JSON.stringify(res));
   assert.equal(calls.length, 1, '误拦时一个字节都不该出门，放行后就必须真发');
+});
+
+/**
+ * 「每换一个站点问一次」：aiConsentOrigin 只管"发去哪个 AI 地址"，
+ * 这一组测的是另一半账——这一页的字段名能不能离开本机。
+ * 只有把真 SW 跑起来才测得到：拦截发生在后台，面板只是把错误念出来。
+ */
+test('没确认过这一站：一个字节都不发出去，且回包说清是哪一站', async () => {
+  const { send, calls } = await bootSw([okJson('[]')]);
+  await configure(send, null, { site: false });
+  const res = await send(ASK_MSG);
+  assert.equal(res.ok, false);
+  assert.equal(res.error, 'needs_site_consent', `该被站点闸拦下：${JSON.stringify(res)}`);
+  assert.equal(res.pageOrigin, 'https://job.example.test', '要把手地址带回去，界面才知道让用户确认什么');
+  assert.equal(calls.length, 0, '拦下了还发了请求');
+});
+
+test('勾一次记一站：确认之后同一站再问就放行；换站重新问', async () => {
+  const { send, calls } = await bootSw([okJson('[{"i":0,"p":"basics.name","why":"标签就是 Full Name"}]')]);
+  await configure(send, null, { site: false });
+  const granted = await send({ type: 'nw:aiConsentSite', tabId: 1 });
+  assert.equal(granted.ok, true, JSON.stringify(granted));
+  assert.equal(granted.pageOrigin, 'https://job.example.test');
+  const res = await send(ASK_MSG);
+  assert.equal(res.ok, true, `确认过了还被拦：${JSON.stringify(res)}`);
+  assert.equal(calls.length, 1);
+  // 面板再问一次同一站：不必重复确认（这正是"每站一次"而不是"每次一问"）
+  const again = await send(ASK_MSG);
+  assert.equal(again.ok, true);
+  assert.equal(calls.length, 2);
+});
+
+test('AI 地址换了：各站点的确认一起作废，端点确认重勾也不等于站点确认', async () => {
+  const { send, calls } = await bootSw([okJson('[]')]);
+  await configure(send, null);                                  // 旧地址：两道确认都勾过
+  assert.equal((await send(ASK_MSG)).ok, true, '起点该是能问通的');
+  const OTHER = 'https://other.example.test/v1';
+  await send({ type: 'nw:saveAiKey', key: KEY, baseUrl: OTHER, persist: false });
+  await send({ type: 'nw:saveSettings', settings: { aiBaseUrl: OTHER } });
+  await send({ type: 'nw:saveSettings', settings: { aiConsentOrigin: new URL(OTHER).origin } });
+  const before = calls.length;
+  const res = await send(ASK_MSG);
+  assert.equal(res.ok, false, '端点确认重勾了，但这一站对**新地址**从没确认过，不该放行');
+  assert.equal(res.error, 'needs_site_consent', JSON.stringify(res));
+  assert.equal(calls.length, before, '被拦下还发了请求');
+});
+
+test('反勾撤回本站确认：账本里那条真的删掉', async () => {
+  const { chrome, send } = await bootSw([okJson('[]')]);
+  await configure(send, null);
+  const revoked = await send({ type: 'nw:aiConsentSite', tabId: 1, revoke: true });
+  assert.equal(revoked.ok, true);
+  assert.equal(revoked.sites, 0, '撤回后账本该空：' + JSON.stringify(chrome.local.aiSiteConsent));
+  const res = await send(ASK_MSG);
+  assert.equal(res.error, 'needs_site_consent');
+});
+
+test('认不出站点（chrome:// 这类）就不发：绝不"当作已确认"', async () => {
+  const { chrome, send, calls } = await bootSw([okJson('[]')]);
+  await configure(send, null, { site: false });
+  chrome.tabs.get = async () => ({ id: 1, url: 'chrome://extensions' });
+  const res = await send(ASK_MSG);
+  assert.equal(res.error, 'no_page_origin', JSON.stringify(res));
+  assert.equal(calls.length, 0);
 });

@@ -13,7 +13,7 @@ import { compileAdapters } from '../core/adapters.js';
 import { BUILD } from '../core/build.js';
 import { buildAiRequest, assertNoProfileValues, parseAiResponse, aiSlotCatalog, AI_MAX_BYTES } from '../core/ai.js';
 import { extractFragments, buildExtractRequest, parseExtractResponse } from '../core/ai-extract.js';
-import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, findLeaksInExport, SECRETS_BUCKET, consentAfterSettingsPatch, effectiveTimeoutSec, effectiveMaxTokens, effectiveStream, AI_TIMEOUT_DEFAULT_SEC, AI_MAX_TOKENS_DEFAULT, chatEndpointCandidates } from '../core/ai-security.js';
+import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, findLeaksInExport, SECRETS_BUCKET, consentAfterSettingsPatch, siteConsentCheck, withSiteConsent, siteConsentAfterEndpoint, SITE_CONSENT_BUCKET, effectiveTimeoutSec, effectiveMaxTokens, effectiveStream, AI_TIMEOUT_DEFAULT_SEC, AI_MAX_TOKENS_DEFAULT, chatEndpointCandidates } from '../core/ai-security.js';
 import { callChatEndpoint, pingAiEndpoint } from '../core/ai-endpoint.js';
 import { ensureEnSkeleton } from '../core/profile-schema.js';
 
@@ -47,6 +47,26 @@ async function writeAiSession(key, keyOrigin, persist) {
   if (!key) return;
   if (persist) await chrome.storage.local.set({ [SECRETS_BUCKET]: { aiKey: key, aiKeyOrigin: keyOrigin } });
   else await chrome.storage.session.set({ aiKey: key, aiKeyOrigin: keyOrigin });
+}
+
+/** 「每换一个站点问一次」的账本：页面 origin → 当时确认过的 AI 端点 origin。
+ *  单独一个顶层桶，不放 settings：settings 会被「导出 JSON」带走，
+ *  而这一本记的是"你在哪些招聘站点投过简历"。 */
+async function readSiteConsents() {
+  const bucket = (await chrome.storage.local.get([SITE_CONSENT_BUCKET]))[SITE_CONSENT_BUCKET];
+  return bucket && typeof bucket === 'object' ? bucket : {};
+}
+async function writeSiteConsents(map) {
+  await chrome.storage.local.set({ [SITE_CONSENT_BUCKET]: map || {} });
+}
+/** 标签页 → 可比较的 origin。认不出（chrome://、about:blank、本地文件）就当没有站点。
+ *  校验的是 URL 的 protocol，不是 origin 字符串本身 —— 'https://job.example.test' 带主机名，
+ *  拿 /^https?:$/ 整串去匹配会把每一站都判成"认不出"，两道确认闸一起变成死闸。 */
+async function originOfTab(id) {
+  const tab = await chrome.tabs.get(id).catch(() => null);
+  let u;
+  try { u = new URL(tab?.url || ''); } catch { return ''; }
+  return /^https?:$/.test(u.protocol) ? u.origin : '';
 }
 
 /** 组装请求；把"取值不许外发"的自检放在真正出网之前 */
@@ -271,6 +291,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // 而且用户没勾过"确认发往这个地址"时一律拒发。
       const gate = maySendKey({ keyOrigin: sess.keyOrigin, targetOrigin: target.origin, consentOrigin: settings.aiConsentOrigin });
       if (!gate.ok) { sendResponse({ ok: false, error: gate.error }); return; }
+      // 第二道闸：这一页的字段名/选项文案也要离开本机，所以按站点各确认一次。
+      // 页面 origin 由后台自己按 tabId 查（不信面板自报），查不到就当没确认过。
+      const pageOrigin = await originOfTab(tabId);
+      const siteGate = siteConsentCheck({ consents: await readSiteConsents(), pageOrigin, targetOrigin: target.origin });
+      if (!siteGate.ok) { sendResponse({ ok: false, error: siteGate.error, pageOrigin }); return; }
       const call = await callAiEndpoint({ baseUrl: settings.aiBaseUrl, model: settings.aiModel, key: sess.key, text: built.req.text, timeoutSec: effectiveTimeoutSec(settings), maxTokens: effectiveMaxTokens(settings), stream: effectiveStream(settings) });
       if (!call.ok) {
         // detail / finishReason / attempted 一并带回：用户报"空输出"或"调用失败"时，
@@ -382,6 +407,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         await writeAiSession('', '', false);
         const st = (await chrome.storage.local.get('settings')).settings || {};
         if (st.aiConsentOrigin) await chrome.storage.local.set({ settings: { ...st, aiConsentOrigin: '' } });
+        await writeSiteConsents({});        // 各站点的确认也一起作废：清 Key 要清得干净
         sendResponse({ ok: true, hasAiKey: false, consentOrigin: '' });
         return;
       }
@@ -419,8 +445,36 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (!t.ok) { sendResponse({ ok: false, error: `endpoint_${t.error}`, dropped }); return; }
       }
       await chrome.storage.local.set({ settings: next });
+      // 端点变了 → 各站点的确认一起跟着作废。留着的后果是"在途普勾过一次确认，
+      // 之后把 Base URL 换成另一家的 Key，新站点就再也不会问了"。
+      if (clean.aiBaseUrl !== undefined) {
+        const t = normalizeBaseUrl(clean.aiBaseUrl || '');
+        const kept = siteConsentAfterEndpoint({ consents: await readSiteConsents(), endpointOrigin: t.ok ? t.origin : '' });
+        await writeSiteConsents(kept);
+      }
       // consentOrigin 回给界面：按钮能不能点要看**存下来的**确认，不是看勾有没有打上
-      sendResponse({ ok: true, dropped, consentOrigin: next.aiConsentOrigin || '' });
+      sendResponse({ ok: true, dropped, consentOrigin: next.aiConsentOrigin || '', siteConsents: Object.keys(await readSiteConsents()).length });
+    } else if (msg.type === 'nw:aiConsentSite') {
+      // 「以后本站点都允许」：记的是"这个页面 origin → 当前端点 origin"。
+      // 页面 origin 只认后台按 tabId 查到的那一个（面板自报的一律不用），
+      // 否则任何面板代码都能替用户在别的站点上签这张确认。
+      const pageOrigin = await originOfTab(msg.tabId ?? tabId);
+      const settings = (await chrome.storage.local.get('settings')).settings || {};
+      const target = normalizeBaseUrl(settings.aiBaseUrl);
+      if (!pageOrigin) { sendResponse({ ok: false, error: 'no_page_origin' }); return; }
+      if (msg.revoke === true) {
+        // 反勾要真的撤回：否则界面显示"没确认"，账本里那条还在，下次照发不误
+        const all = await readSiteConsents();
+        const kept = { ...all };
+        delete kept[pageOrigin];
+        await writeSiteConsents(kept);
+        sendResponse({ ok: true, revoked: true, pageOrigin, sites: Object.keys(kept).length });
+        return;
+      }
+      if (!target.ok) { sendResponse({ ok: false, error: `endpoint_${target.error}` }); return; }
+      const next = withSiteConsent(await readSiteConsents(), { pageOrigin, targetOrigin: target.origin });
+      await writeSiteConsents(next);
+      sendResponse({ ok: true, pageOrigin, targetOrigin: target.origin, sites: Object.keys(next).length });
     } else if (msg.type === 'nw:keepAlive') {
       // 长等待期间侧边栏每十几秒发一次心跳：MV3 的 service worker 空闲约 30 秒会被回收，
       // 一旦它在 fetch 还没回来时被杀掉，sendResponse 就永远不会响应——

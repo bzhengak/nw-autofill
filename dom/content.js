@@ -140,7 +140,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         // 「导出没填的字段与选项」：优先复用上一次扫描的现场（window.__nwLast），
         // 没有就先干跑一次（dryRun：只算不写，一个字节都不改页面），
         // 因为用户常常是"看这一页没填上"就直接点导出，此时还没扫过。
-        const { scanner, filler, matcher, schema, optionMap } = await loadModules();
+        const { scanner, filler, matcher, schema, optionMap, build } = await loadModules();
         let last = window.__nwLast;
         if (!last) {
           const { profile, settings } = await chrome.storage.local.get(['profile', 'settings']);

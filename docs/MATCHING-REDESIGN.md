@@ -147,3 +147,28 @@
 **由此确认没走偏的地方**：AI 只见字段名不见取值（OpenJobAutofill 那条边界我们本来就有）、
 "拿不准就弃权"（Bitwarden 的 ambiguous 表就是同一个思想）、站点规则是数据不是代码（我们的
 `adapters/*.json` 形状与它的 domain-specific 规则一致，缺的只是"把用户改判也写进这一层"，M4 做）。
+
+## 七、S2 概念层落地实录（2026-10-02）
+
+`core/canonical.js`：**页面栏位 → 封闭概念 → 本地展开槽位**的第一跳。
+概念 id 直接沿用 autocomplete 标准令牌族（`name.person / name.family / phone / phone-dial-code /
+address-line / postal-code / country …`）+ 简历扩展（`degree / major / gpa / cert-name / work-permit …`），
+每个概念两份名单（keywords 扫属性文本、values 只比 autocomplete 值），属性扫描按优先级走。
+
+两条**当场学到并立刻写死**的自律，都是判分掉分换来的：
+
+1. **不认识的槽位不插手，只抬举命中的、不降级别人。**
+   第一版把"概念明确是别的东西"的槽位一律压到 0.6，判分当场从 191 掉到 186：
+   `紧急联系人电话` 被判成歧义、`mobile` 被 id-number 顶掉。
+   现在只有**站点自己写了 autocomplete**（那是页面向我们自证）才允许压别人；
+   概念来自属性文本时只抬不压。
+2. **一个概念跨板块时必须页面先说块。** `work-summary` 同时是工作总结、实习职责、项目描述，
+   「项目职责」被硬抬进 `work.0.summary`（判分又掉 2 条）。
+   现在多板块同概念时，只有在页面给出板块证据（`sectionHint`）的情况下才抬举，
+   且只抬那一块，别块出局；没块证据就整条不插手。
+   另外多概念并列命中按**具体度**取胜（长词赢），而不是判死为歧义 ——
+   「紧急联系人电话」里既含"紧急联系人"又含"电话"，按长度该定案到 emergency-contact-phone。
+
+验证：`tests/canonical.test.js` 6 条（概念表自洽、autocomplete 确定性、具体度、概念×控件、
+`family-name` 压过 "Your Name" 字面相似、跨板块需板块证据）。
+摘掉 boost 那条用例立刻红；判分 191/191、越界 0；391 条测试全绿。构建号 2026-10-02-13。

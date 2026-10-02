@@ -5,6 +5,7 @@ import { buildFields, getValueByPath, equivalentsOf, isLangNeutral } from './pro
 import { planFromAdapter, dateFormatOverride } from './adapters.js';
 import { assignMaxWeight, scorePair, normalize, core, inferDateFormat, boolLike, signals, negationMismatch, AMBIGUOUS_SECTIONS, dateParts, isQuestionLabel, labelEvidence, shapeMismatch, valueShape, GENERIC_HEAD_WORDS, AMBIGUOUS_WORDS } from './matching.js';
 import { classify } from './ledger.js';
+import { classifyConcept, slotConcept, conceptFitsControl } from './canonical.js';
 
 const AUTO_THRESHOLD = 0.75;   // 绿：直接填
 const REVIEW_THRESHOLD = 0.52; // 黄：填了但要求你复核
@@ -554,6 +555,51 @@ export function planFill(pageFields, profile, opts = {}) {
       // 折中：问句只允许 bool/enum 目标，或字面/主干命中（≥0.95）的文本目标。
       if (questionish && s < 0.95 && sf.type !== 'bool' && sf.type !== 'enum') continue;
       if (s >= REVIEW_THRESHOLD) candidates.push({ c, sf, value, s });
+    }
+
+    /**
+     * S2 概念层：先问"这一栏是什么东西"（封闭概念），再让**概念对上号**的槽位受益、
+     * 概念明确是别的东西的槽位让位。以前只有一步"519 个路径里挑分数最高的"，
+     * 于是 `School Name` 能靠中心词 name 抢走姓名（0.695 > 0.553）。
+     * 三条自律：
+     *  · 只有**唯一**概念命中才动手；两个概念并列命中就什么都不做（ambiguous）；
+     *  · 站点自己写了 autocomplete → 确定性（WCAG 1.3.5 那条），直接顶到 auto 档；
+     *    只有属性文本/标签命中 → 顶到 0.84（仍要求别的证据不反对它）；
+     *  · 概念与控件不相容（work-permit 长不出 textarea）的候选直接出局。
+     */
+    const cHit = classifyConcept(pf);
+    if (cHit && cHit.concept) {
+      const byAutocomplete = cHit.source === 'autocomplete';
+      const matches = candidates.filter(c => slotConcept(c.sf) === cHit.concept);
+      const sections = new Set(matches.map(c => c.sf.section));
+      /**
+       * 一个概念跨板块时（'work-summary' 同时是工作总结、项目描述、实习职责），
+       * 光有概念还不够 —— 这时**只有页面说了它在哪一块**才敢抬，否则不插手。
+       * 这条是给判分实测补的：moka 的「项目职责」被概念层抬进了 work.0.summary，
+       * 因为 projects.0.role 与 work.0.summary 是同一个概念的两个主人。
+       */
+      const multiSection = sections.size > 1;
+      const canBoost = matches.length && (!multiSection || pf.sectionHint);
+      if (canBoost) {
+        const boostTo = byAutocomplete ? 0.9 : 0.84;
+        for (const cand of candidates) {
+          const sc = slotConcept(cand.sf);
+          if (!sc) continue;                        // 概念层不认识这个槽位：不插手
+          if (sc === cHit.concept) {
+            if (!conceptFitsControl(sc, pf.kind)) { cand.s = Math.min(cand.s, 0.3); continue; }
+            const inBlock = !multiSection || cand.sf.section === pf.sectionHint;
+            if (!inBlock) { cand.s = Math.min(cand.s, 0.6); continue; }   // 页面说了在别块，这块就出局
+            if (cand.s < boostTo) {
+              cand.s = boostTo;
+              cand.conceptNote = `概念「${cHit.concept}」由${byAutocomplete ? '站点的 autocomplete 声明' : '属性文本'}确定`;
+            }
+          } else if (byAutocomplete) {
+            // 只有站点自己声明了字段用途时才压别人：那是页面向我们自证，不是我们猜的。
+            // 概念来自属性文本时不压 —— 判分实测证明"不认识就当错"会把对的栏位做没（一次掉 5 条）。
+            cand.s = Math.min(cand.s, 0.6);
+          }
+        }
+      }
     }
     candidates.sort((a, b) => b.s - a.s);
     /**

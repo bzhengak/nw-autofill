@@ -6,7 +6,7 @@ let mods = null;
 async function loadModules() {
   if (mods) return mods;
   const u = p => chrome.runtime.getURL(p);
-  const [scanner, filler, safety, matcher, schema, matching, probe, ai, optionMap, build, ledger, canonical] = await Promise.all([
+  const [scanner, filler, safety, matcher, schema, matching, probe, ai, optionMap, build, ledger, canonical, mappingTable, planCheck] = await Promise.all([
     import(u('dom/scanner.js')),
     import(u('dom/filler.js')),
     import(u('dom/safety.js')),
@@ -19,8 +19,10 @@ async function loadModules() {
     import(u('core/build.js')),
     import(u('core/ledger.js')),
     import(u('core/canonical.js')),
+    import(u('core/mapping-table.js')),
+    import(u('core/plan-check.js')),
   ]);
-  mods = { scanner, filler, safety, matcher, schema, matching, probe, ai, optionMap, build, ledger, canonical };
+  mods = { scanner, filler, safety, matcher, schema, matching, probe, ai, optionMap, build, ledger, canonical, mappingTable, planCheck };
   return mods;
 }
 
@@ -58,8 +60,8 @@ if (!window.__nwSubmitListener) {
   });
 }
 
-async function handleScan({ profile, mode = 'full', dryRun = false, adapter = null, fillSensitive = false, allowCustomSelect = false, aiCandidates = null, enMissingMode = 'strict', allowNonApplication = false }) {
-  const { scanner, filler, matcher, safety, schema, ledger, canonical } = await loadModules();
+async function handleScan({ profile, mode = 'full', dryRun = false, adapter = null, fillSensitive = false, allowCustomSelect = false, aiCandidates = null, enMissingMode = 'strict', allowNonApplication = false, siteRules = null, temporaryFps = [] }) {
+  const { scanner, filler, matcher, safety, schema, ledger, canonical, mappingTable, planCheck } = await loadModules();
   safety.armSubmitGuard(window, auditLog);
   const fields = scanner.scanForm(document);
   /**
@@ -80,6 +82,8 @@ async function handleScan({ profile, mode = 'full', dryRun = false, adapter = nu
     return {
       stats: { scanned: fields.length, planned: 0, auto: 0, review: 0, gaps: 0, profileFilled: schema.countFilled(profile || {}) },
       results: [], gaps: [], aiFields: [], auditLog,
+      mapping: { rows: [], stats: { fields: fields.length, decided: 0 } },
+      planCheck: { warnings: [], ok: false },
       pagePurpose: purpose, purposeBlocked: true,
     };
   }
@@ -94,7 +98,7 @@ async function handleScan({ profile, mode = 'full', dryRun = false, adapter = nu
   if (/^https?:$/.test(location.protocol)) {
     fillLedger = (await chrome.runtime.sendMessage({ type: 'nw:ledgerGet' }).catch(() => null))?.ledger || {};
   }
-  const plan = matcher.planFill(fields, profile, { mode, adapter, fillSensitive, allowCustomSelect, enMissingMode, ledger: fillLedger, pageOrigin: location.origin });
+  const plan = matcher.planFill(fields, profile, { mode, adapter, fillSensitive, allowCustomSelect, enMissingMode, ledger: fillLedger, pageOrigin: location.origin, siteRules: siteRules || null });
   // AI 候选在这里落地：路径白名单与"空槽/敏感槽"的判断都交给 core/ai.js，
   // 内容脚本只负责把结果并进 plan，再走同一条 applyPlan（写入与回读口径不另开一套）。
   let aiApplied = 0;
@@ -172,10 +176,22 @@ async function handleScan({ profile, mode = 'full', dryRun = false, adapter = nu
   // "计划填 0"有两种完全不同的原因：没资料 vs 页面确实填不了。
   // 不区分就会让人去调词典，而真正的问题是 profile 是空的（Klook 实测踩过）。
   const profileFilled = schema.countFilled(profile);
+  /**
+   * S6 映射表 + 计划校验：这一页每一栏「我们判给了谁、凭什么、现在是谁写的」，
+   * 以及整页算下来有没有对不上的地方（段数、重复占用、必填没安排）。
+   * 这两份都建立在**合并 AI 候选之后**的计划上 —— 面板看到的必须就是将要写的那一份。
+   */
+  const schemaFields = schema.buildFields();
+  const mapping = mappingTable.buildMappingTable({
+    fields, plan, results: applied.results, ledger: fillLedger,
+    origin: location.origin, siteRules: siteRules || {}, temporaryFps, schemaFields,
+  });
+  const check = planCheck.checkPlan({ fields, plan, profile, schemaFields, table: mapping });
   return {
     stats: { ...applied.summary, ...plan.stats, profileFilled, aiApplied },
     results: applied.results.map(r => ({ path: r.path, label: r.label, score: r.score, status: r.status, reason: r.failReason || '', note: r.note || '', actual: r.actual, sensitive: r.sensitive, aiChosen: r.aiChosen, evidence: r.evidence || [], weakEvidence: Boolean(r.weakEvidence), notOurs: r.notOurs || '', overwrites: r.overwrites || '' })),
     gaps: plan.gaps.map(g => ({ index: g.index, label: g.label, reason: g.reason, kind: g.kind, note: g.note || '' })),
+    mapping, planCheck: check,
     aiFields,
     auditLog,
   };
@@ -194,6 +210,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           // 缺英文值时的处理口径来自设置，不在这里改写：面板勾选与真实填写必须是同一个值
           enMissingMode: settings ? settings.enMissingMode : 'strict',
           allowNonApplication: msg.allowNonApplication === true,
+          // 改判规则由后台按 tabId 反查 origin 后合流下发（自报的一律不用）
+          siteRules: msg.siteRules || null,
+          temporaryFps: Array.isArray(msg.temporaryFps) ? msg.temporaryFps : [],
         }) });
       } else if (msg?.type === 'nw:undo') {
         const last = window.__nwLast;

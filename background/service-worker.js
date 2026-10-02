@@ -17,6 +17,8 @@ import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, findLea
 import { callChatEndpoint, pingAiEndpoint } from '../core/ai-endpoint.js';
 import { ensureEnSkeleton } from '../core/profile-schema.js';
 import { LEDGER_BUCKET, recordWrites, forgetWrites } from '../core/ledger.js';
+import { RULES_BUCKET, rulesForOrigin, putRules, dropRule, dropSiteRules, normalizeRule } from '../core/site-rules.js';
+import { buildFields } from '../core/profile-schema.js';
 
 // 默认等 180 秒：reasoning 模型 + 几十个缺口的 JSON 回答，旧的 20 秒几乎必然超时，
 // 而超时是最难归因的失败——用户只看到"没反应"，其实是模型还没答完。
@@ -68,6 +70,29 @@ async function originOfTab(id) {
   let u;
   try { u = new URL(tab?.url || ''); } catch { return ''; }
   return /^https?:$/.test(u.protocol) ? u.origin : '';
+}
+
+/** 站点改判规则（S6）：与台账同一套"按 origin 分桶、只回本桶"的做法。
+ *  这里读的是整桶，但**对外只暴露当前站点那一份** —— 内容脚本与侧边栏都不需要
+ *  知道用户在别的招聘站点改过什么（那是"投过哪些公司"级别的行踪）。 */
+async function readRulesBucket() {
+  const bucket = (await chrome.storage.local.get([RULES_BUCKET]))[RULES_BUCKET];
+  return bucket && typeof bucket === 'object' ? bucket : {};
+}
+async function writeRulesBucket(map) {
+  await chrome.storage.local.set({ [RULES_BUCKET]: map || {} });
+}
+const SLOTS = () => buildFields();
+/** 本轮映射表上点下来的确认：校验后变成 {fp → rule}，但**不落盘**（用户没勾"记住到本站"就不该留痕） */
+function confirmToRules(confirmed = []) {
+  const out = {};
+  const rejected = [];
+  for (const entry of (Array.isArray(confirmed) ? confirmed : [])) {
+    const r = normalizeRule(entry, SLOTS());
+    if (!r.ok) { rejected.push({ fp: String(entry?.fp || ''), why: r.why }); continue; }
+    out[r.rule.fp] = { ...r.rule, at: Date.now(), build: BUILD, temporary: true };
+  }
+  return { rules: out, rejected };
 }
 
 /** 组装请求；把"取值不许外发"的自检放在真正出网之前 */
@@ -553,6 +578,31 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       await chrome.storage.local.set({ [LEDGER_BUCKET]: after });
       sendResponse({ ok: true, ledger: after, count: Object.keys(after[origin] || {}).length });
+    } else if (msg.type === 'nw:siteRulesGet' || msg.type === 'nw:siteRulesPut' || msg.type === 'nw:siteRulesDrop' || msg.type === 'nw:siteRulesForgetSite') {
+      /**
+       * S6 改判规则的读写。origin **只**由 tabId 反查（`originOfTab`），
+       * 消息体里自报的一律不用：否则任何页面都能把"我在这一栏改过判"写到别的招聘站点账上，
+       * 或反过来把别站的规则灌进这一页 —— 那等于让一个站点遥控另一个站点的填写行为。
+       */
+      const pageOrigin = await originOfTab(tabId);
+      if (!pageOrigin) { sendResponse({ ok: false, error: 'no_origin' }); return; }
+      const bucket = await readRulesBucket();
+      if (msg.type === 'nw:siteRulesGet') {
+        const mine = rulesForOrigin(bucket, pageOrigin);
+        sendResponse({ ok: true, origin: pageOrigin, rules: mine, count: Object.keys(mine).length, build: BUILD });
+        return;
+      }
+      if (msg.type === 'nw:siteRulesPut') {
+        const { rules, accepted, rejected } = putRules(bucket, pageOrigin, msg.entries || [], { schemaFields: SLOTS() });
+        await writeRulesBucket(rules);
+        sendResponse({ ok: true, accepted, rejected, origin: pageOrigin, count: Object.keys(rulesForOrigin(rules, pageOrigin)).length });
+        return;
+      }
+      const after = msg.type === 'nw:siteRulesDrop'
+        ? dropRule(bucket, pageOrigin, msg.fps || [])
+        : dropSiteRules(bucket, pageOrigin);
+      await writeRulesBucket(after);
+      sendResponse({ ok: true, origin: pageOrigin, count: Object.keys(rulesForOrigin(after, pageOrigin)).length });
     } else if (msg.type === 'nw:keepAlive') {
       // 长等待期间侧边栏每十几秒发一次心跳：MV3 的 service worker 空闲约 30 秒会被回收，
       // 一旦它在 fetch 还没回来时被杀掉，sendResponse 就永远不会响应——
@@ -567,11 +617,34 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const resolver = await getAdapterResolver();
         const adapter = resolver.resolve(tab?.url || '');
         payload = { ...msg, adapter: adapter || null };
+        /**
+         * S6：这一站的改判规则（含本轮映射表上刚点下来、没勾"记住"的临时确认）
+         * 也从这里下发。放在后台合流有两个理由：① 内容脚本读不到 storage 之外的桶，
+         * 且不该读到别的站点；② 确认项要在落笔前过一次"槽位必须真实存在"的校验，
+         * 校验只写一处（core/site-rules.js），页面侧不复制一份规则。
+         */
+        if (msg.type === 'nw:scan') {
+          const pageOrigin = await originOfTab(tabId);
+          const stored = pageOrigin ? rulesForOrigin(await readRulesBucket(), pageOrigin) : {};
+          const now = confirmToRules(msg.confirmed);
+          payload = {
+            ...payload,
+            siteRules: { ...stored, ...now.rules },
+            // 哪些是"本轮点下来的、没勾记住"：映射表上要分开说"按你本轮的确认"和"按本站已记住的"，
+            // 因为前者关掉这一页就没了，后者会跟着这个站点活下去。
+            temporaryFps: Object.keys(now.rules),
+            confirmationRejected: now.rejected,
+          };
+        }
       }
       const res = await sendToTab(tabId, payload);
       if (payload.adapter && res && typeof res === 'object') res.adapterId = payload.adapter.id;
       // 适配器没生效时不能只安静地"按通用规则匹配"：把加载诊断带回去，侧边栏直接说原因
-      if (msg.type === 'nw:scan' && res && typeof res === 'object') res.adapterInfo = adapterDiagnostics();
+      if (msg.type === 'nw:scan' && res && typeof res === 'object') {
+        res.adapterInfo = adapterDiagnostics();
+        if (payload.siteRules) res.siteRuleCount = Object.keys(payload.siteRules).length;
+        if (payload.confirmationRejected?.length) res.confirmationRejected = payload.confirmationRejected;
+      }
       sendResponse(res);
     } else {
       sendResponse({ ok: false, error: 'unknown_message', build: BUILD });

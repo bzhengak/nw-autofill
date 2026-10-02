@@ -5,6 +5,7 @@ import { buildFields, getValueByPath, equivalentsOf, isLangNeutral, geoEnglishFo
 import { planFromAdapter, dateFormatOverride } from './adapters.js';
 import { assignMaxWeight, scorePair, normalize, core, inferDateFormat, boolLike, signals, negationMismatch, AMBIGUOUS_SECTIONS, dateParts, isQuestionLabel, labelEvidence, shapeMismatch, valueShape, GENERIC_HEAD_WORDS, AMBIGUOUS_WORDS } from './matching.js';
 import { classify } from './ledger.js';
+import { applySiteRules } from './site-rules.js';
 import { classifyConcept, slotConcept, conceptFitsControl } from './canonical.js';
 
 const AUTO_THRESHOLD = 0.75;   // 绿：直接填
@@ -107,6 +108,7 @@ export const GAP_REASON_ZH = {
   empty_value: '这一栏我们没拿到要写的值（资料里是空的），已跳过 —— 不会往页面写 undefined 之类的占位文字',
   shape_mismatch: '这一栏控件的形状（电话/邮箱/数字/日期）与要写的值明显对不上：多半是这一栏配错了槽位，已故意不写 —— 在映射表里改判到正确的槽位',
   not_ours: '这一栏已经有值，但不是我们写的（站点预填或你自己填的）—— 按你定的覆盖口径不动它；要改请在映射表里改判',
+  user_excluded: '这一栏你在映射表里勾了「不自动填」，所以我们不动它 —— 想恢复就在映射表取消这条改判',
   slot_empty: '页面这一栏最匹配的资料位是空的：我们没有拿别的栏位顶替（顶替就是错填），去资料里补上再扫',
   pinned_field_empty: '这一栏被站点题目钉死到某个资料位，而那个资料位是空的 —— 去资料里补这一栏，我们不拿别的东西顶',
   block_ambiguous: '这一栏的标签在资料里好几个板块都有同名位，页面上又没有板块标题可依 —— 按资料顺序轮值是猜，交给你手动选',
@@ -414,6 +416,23 @@ export function planFill(pageFields, profile, opts = {}) {
   };
   const { pins, skip, slotPins, optionRules } = planFromAdapter(pageFields, opts.adapter);
   /**
+   * 用户在这站点的手工改判（S6：映射表里点「记住到本站」沉淀下来的规则）。
+   * 优先级排在适配器钉位**之前**：适配器是我们总结的站点规律，改判是他对着这一栏点出来的决定。
+   * 但改判只回答"这一格是什么"——取值仍走同一套规矩：资料里空着就照旧空着、
+   * 敏感字段照旧要「允许填写敏感字段」、验证码/声明/附件这类"永不代做"照旧拦下
+   * （那些检查在这之前，改判绕不过去，这是刻意的）。
+   */
+  const pinSource = new Map();       // index → { path|skip, note, shared }：这一栏是被谁钉住的
+  const siteRulesByFp = opts.siteRules || null;
+  if (siteRulesByFp && Object.keys(siteRulesByFp).length) {
+    const { pins: rulePins } = applySiteRules(pageFields, siteRulesByFp);
+    for (const [index, r] of rulePins) {
+      pinSource.set(index, r);
+      if (r.skip) { skip.set(index, 'user_excluded'); pins.delete(index); continue; }
+      pins.set(index, r.path);
+    }
+  }
+  /**
    * S1：先把"这一栏现在的值是谁写的"整体算一遍。
    * 每条出口（钉位、打分、增量跳过）都要能引用同一个答案，不能各算各的 ——
    * 否则会出现"增量模式认为该跳过、写入模式认为该覆盖"这种自相矛盾。
@@ -503,7 +522,15 @@ export function planFill(pageFields, profile, opts = {}) {
       return;
     }
     if (skip.has(index)) {
-      gaps.push({ index, label: pf.label || '(无标签)', reason: skip.get(index), kind: pf.kind });
+      const reason = skip.get(index);
+      const src = pinSource.get(index);
+      const mine = src && src.skip;
+      gaps.push({
+        index, label: pf.label || '(无标签)', reason, kind: pf.kind,
+        note: mine
+          ? `按你在这站点的改判，这一栏不自动填${src.note ? `（你当时写的理由：${src.note}）` : ''}；要恢复自动判断，在映射表里取消记住`
+          : '',
+      });
       return;
     }
     const slot = (slotPins || new Map()).get(index);
@@ -529,6 +556,20 @@ export function planFill(pageFields, profile, opts = {}) {
     if (pinPath) {
       const pinField = schemaFields.find(f => f.path === pinPath);
       const pinValue = String(getValueByPath(profile, pinPath) ?? '').trim();
+      /**
+       * 这一格的来历要说得出口：适配器钉的？还是用户在这站点改判的？
+       * 改判还可能有第二种味道 —— 两栏自述完全相同时，一条规则会同时落到它们身上，
+       * 那种"我明明只改了一栏"的误会必须在界面上先自己承认（shared = 撞车的栏数）。
+       */
+      const src = pinSource.get(index);
+      const byRule = src && !src.skip && src.path === pinPath ? src : null;
+      const ruleNote = byRule
+        ? `按你在这站点的改判钉到「${pinField?.zh || pinPath}」${byRule.note ? `（你当时写的理由：${byRule.note}）` : ''}`
+        : '';
+      const sharedNote = byRule && byRule.shared > 1
+        ? `这一页有 ${byRule.shared} 栏的自述完全相同，这条改判对它们一起生效 —— 要分开就只改这一条并别记本站`
+        : '';
+      const provenance = [ruleNote, sharedNote].filter(Boolean).join('；');
       if (pinField && pinValue && withheld(pinField)) {
         gaps.push({ index, label: pf.label || '(无标签)', reason: 'sensitive_withheld', kind: pf.kind, note: '敏感字段默认不自动写，勾选后才填' });
         return;
@@ -537,13 +578,17 @@ export function planFill(pageFields, profile, opts = {}) {
         pinned.push({
           index, path: pinPath, zh: pinField.zh, label: pf.label || '', score: 1, value: pinValue,
           profileType: pinField.type, sensitive: pinField.sensitive,
-          tier: pinField.sensitive ? 'review' : 'auto', pinned: true,
+          // 改判来的槽位仍然算"人工定过"，但**撞车那条必须黄字**：一条规则代表多栏时，
+          // 用户对其中一栏点的确认并不覆盖另一栏。
+          tier: pinField.sensitive || (byRule && byRule.shared > 1) ? 'review' : 'auto', pinned: true,
+          note: provenance,
+          pinnedBy: byRule ? 'siteRule' : 'adapter',
         });
       } else {
         gaps.push({
           index, label: pf.label || '(无标签)', reason: 'pinned_field_empty', kind: pf.kind,
           slotPath: pinPath,
-          note: `这一栏按站点题目对应到「${pinField.zh || pinPath}」，但你资料里那一栏是空的 —— 补上再扫（适配器钉住了槽位，我们没有拿别的栏位顶替）`,
+          note: `这一栏对应到「${pinField?.zh || pinPath}」，但你资料里那一栏是空的 —— 补上再扫（钉住了槽位，我们没有拿别的栏位顶替）${byRule ? '；这条对应来自你在这站点的改判' : ''}`,
         });
       }
       return;

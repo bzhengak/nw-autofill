@@ -387,3 +387,16 @@ test('认不出站点（chrome:// 这类）就不发：绝不"当作已确认"',
   assert.equal(res.error, 'no_page_origin', JSON.stringify(res));
   assert.equal(calls.length, 0);
 });
+
+/** 模型答"这一栏认不出"时，界面要能说清是哪一栏、它自己给的理由是什么 */
+test('declined 一路带回侧边栏：AI 的"认不出"不是丢弃，也不是空回', async () => {
+  const { send } = await bootSw([okJson('{"matches":[{"index":0,"path":null,"reason":"这一栏没有任何标签"}]}')]);
+  await configure(send, null);
+  const res = await send(ASK_MSG);
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.candidates.length, 0);
+  assert.deepEqual(res.dropped, [], '说不知道不该记成丢弃');
+  assert.equal(res.declined.length, 1);
+  assert.equal(res.declined[0].reason, '这一栏没有任何标签');
+  assert.equal(res.declined[0].label, 'Full Name', '要把标签带回去，用户才知道是哪一栏');
+});

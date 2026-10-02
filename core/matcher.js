@@ -100,9 +100,11 @@ export const GAP_REASON_ZH = {
   sensitive_withheld: '敏感字段（证件号等）默认不自动写，勾选「允许填写敏感字段」后才会写',
   ai_empty_slot: 'AI 指认的槽位在你资料里是空的 —— 去资料里补上再扫',
   choice_required: '选项列表里没有和资料对得上的项，需要你人工选一个',
+  panel_ambiguous: '点下去之后没能确认"哪个弹层属于这一栏"（这一屏同排着好几个下拉）—— 为了不误点到别栏的选项，这一栏交给你手点',
   dial_code_only: '这一整列选项都是电话区号（+86 / +852…），说明它是"国家/地区区号"下拉，不是资料里那个值该去的地方 —— 已故意不选，去检查这一格配的是哪个槽位',
   empty_value: '这一栏我们没拿到要写的值（资料里是空的），已跳过 —— 不会往页面写 undefined 之类的占位文字',
   slot_empty: '页面这一栏最匹配的资料位是空的：我们没有拿别的栏位顶替（顶替就是错填），去资料里补上再扫',
+  pinned_field_empty: '这一栏被站点题目钉死到某个资料位，而那个资料位是空的 —— 去资料里补这一栏，我们不拿别的东西顶',
   block_ambiguous: '这一栏的标签在资料里好几个板块都有同名位，页面上又没有板块标题可依 —— 按资料顺序轮值是猜，交给你手动选',
   language_slot_unresolved: '这一栏的标题是一种语言或考试名（IELTS / 粤语…），但你资料的语言栏里没有对应那一行 —— 去「分类编辑 · 语言」补一行，我不按顺序猜',
 };
@@ -437,7 +439,11 @@ export function planFill(pageFields, profile, opts = {}) {
           tier: pinField.sensitive ? 'review' : 'auto', pinned: true,
         });
       } else {
-        gaps.push({ index, label: pf.label || '(无标签)', reason: 'pinned_field_empty', kind: pf.kind });
+        gaps.push({
+          index, label: pf.label || '(无标签)', reason: 'pinned_field_empty', kind: pf.kind,
+          slotPath: pinPath,
+          note: `这一栏按站点题目对应到「${pinField.zh || pinPath}」，但你资料里那一栏是空的 —— 补上再扫（适配器钉住了槽位，我们没有拿别的栏位顶替）`,
+        });
       }
       return;
     }
@@ -481,6 +487,36 @@ export function planFill(pageFields, profile, opts = {}) {
       if (s >= REVIEW_THRESHOLD) candidates.push({ c, sf, value, s });
     }
     candidates.sort((a, b) => b.s - a.s);
+    /**
+     * 「定语说了算」：英文标签是右分支结构，School Name / Referrer Name / Organization Name
+     * 的中心词都是那个通用词 name，但**问的是定语那一个**。scorePair 是成对打分、看不见对手，
+     * 于是裸词 name 的槽位（姓名 0.695）会压过真正被点名的槽位（学校 0.553）——
+     * 用户在埃森哲页连说四遍的"school name 就是 school name"就是这个现象。
+     * 这里在候选之间补这一刀：标签是纯拉丁多词、末词是通用词时，谁的别名里带着那个**定语**，
+     * 谁抬到 auto 档；只靠通用词蹭上的压回 review 以下。定语谁都不命中时完全不动（保持原行为），
+     * 避免把"Organization Name"这种我们没词的栏位硬塞进某个槽位 —— 那种照旧走缺口/AI，不猜。
+     */
+    {
+      const lc = core(normalize(pf.labelRaw || pf.label));
+      const lw = lc.split(' ').filter(Boolean);
+      const head = lw[lw.length - 1] || '';
+      const GENERIC_HEAD = new Set(['name', 'number', 'score', 'date', 'type', 'level', 'status', 'title', 'location']);
+      if (/^[a-z0-9 ]+$/.test(lc) && lw.length >= 2 && GENERIC_HEAD.has(head)) {
+        const quals = lw.slice(0, -1).filter(t => t.length >= 3);
+        const coversQual = sf => (sf.labels || []).some(al => {
+          const aw = core(normalize(al)).split(' ').filter(Boolean);
+          return quals.some(q => aw.some(w => w === q || w.startsWith(q) || q.startsWith(w)));
+        }) || quals.some(q => core(normalize(sf.zh || '')).includes(q));
+        const hitters = candidates.filter(c => coversQual(c.sf));
+        if (hitters.length === 1) {
+          for (const c of candidates) {
+            if (c === hitters[0]) c.s = Math.max(c.s, 0.86);
+            else c.s = Math.min(c.s, 0.7);
+          }
+          candidates.sort((a, b) => b.s - a.s);
+        }
+      }
+    }
     // 空槽优先于"退而求其次"：这一栏按标签最匹配的槽位在资料里是空的，就绝不能拿别的栏位顶上。
     // 用户 2026-10-02 看到的「Name 被写成 AWS Certified AI Practitioner」正是这条缺失造成的：
     // basics.name 没填 → 它根本不进候选 → 谁有值就用谁（证书名称 0.855 赢）。
@@ -499,13 +535,20 @@ export function planFill(pageFields, profile, opts = {}) {
         && (emptyBest.sf.section !== bestFilled.sf.section || emptyBest.sf.key !== bestFilled.sf.key);
       if (substitution && emptyBest.s >= bestFilled.s + 0.05) {
         const zh = emptyBest.sf.zh || emptyBest.sf.path;
+        // 「空」有两种，下一步完全不同：资料里真没写 vs 只写了中文、这页是英文表单。
+        // 用户 2026-10-02 的导出里同一页就同时出现两种归因：index 0「name」报 slot_empty、
+        // index 25「referrer name」报 missing_english_value —— 都是 basics.name 只有中文值。
+        // 只写中文的人被告知"去资料里补上"会再补一遍中文，正确动作是切到 English 表单。
+        const onlyChinese = pageLang === 'en' && missingEnglish.has(emptyBest.sf.path);
         gaps.push({
           index,
           label: pf.label || '(未命名字段)',
-          reason: 'slot_empty',
+          reason: onlyChinese ? 'missing_english_value' : 'slot_empty',
           kind: pf.kind,
           slotPath: emptyBest.sf.path,
-          note: `这一栏按标签最匹配的是「${zh}」，但你资料里那一栏是空的 —— 没有拿别的栏位的值顶上（顶替就是错填）`,
+          note: onlyChinese
+            ? `这一栏按标签对应到「${zh}」，但你只填了中文写法；英文表单需要英文写法 —— 在侧边栏切到 English 表单补齐（没有拿别的栏位顶替）`
+            : `这一栏按标签最匹配的是「${zh}」，但你资料里那一栏是空的 —— 没有拿别的栏位的值顶上（顶替就是错填）`,
         });
         return;
       }
@@ -558,7 +601,7 @@ export function planFill(pageFields, profile, opts = {}) {
       // 一个候选都没有，但标签其实**点名**要某个栏位、只是资料里那一栏空着：
       // 报"我们没有这个词"会把人赶去补别名，而真正该补的是资料本身
       // （途普那张页面上 Address / Name 空着时就是这种情况）。
-      if (item.emptyBest && item.emptyBest.s >= 0.9) {
+      if (item.emptyBest && item.emptyBest.s >= 0.9 && !missingEnglish.has(item.emptyBest.sf.path)) {
         const ebZh = item.emptyBest.sf.zh || item.emptyBest.sf.path;
         gaps.push({
           index: item.index, label: pf.label || '(未命名字段)',

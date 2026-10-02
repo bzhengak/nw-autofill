@@ -402,3 +402,33 @@ test('归并后自检仍然拦得住取值：目录豁免只盖住目录那一�
   const clean = assertNoProfileValues(req.text, p, { exempt: [req.slotSection] });
   assert.equal(clean.length, 0, '正常请求被自己的豁免规则误拦（归并改动过目录形状）');
 });
+
+/**
+ * 模型答"这一栏我认不出"（path:null）不是丢弃，是一次有内容的回答。
+ * 用户 2026-10-02 看到的那句"AI 回了 115 字，但没有一条能落进白名单（丢弃 0 条）"
+ * 之所以最难懂，就是这一类回答被静默跳过了。
+ */
+test('AI 明确说不确定的栏位单独记一份 declined（带它的理由），不算丢弃', () => {
+  const allowed = new Set(aiSlotCatalog(createEmptyProfile()).map(s => s.path));
+  const asked = new Set([18, 26]);
+  const r = parseAiResponse(
+    '{"matches":[{"index":18,"path":null,"reason":"无法识别字段含义"},{"index":26,"path":null,"reason":"没有标签"}]}',
+    { allowedPaths: allowed, askedIndexes: asked },
+  );
+  assert.equal(r.candidates.length, 0);
+  assert.deepEqual(r.dropped, [], '模型老实地说不知道，不该记成"被我们丢弃"');
+  assert.equal(r.declined.length, 2, JSON.stringify(r));
+  assert.deepEqual(r.declined.map(d => d.index), [18, 26]);
+  assert.equal(r.declined[0].reason, '无法识别字段含义');
+  // 空字符串 / "none" 这类写法也一律算"认不出"
+  const r2 = parseAiResponse('[{"index":18,"path":""},{"index":26,"path":"none"}]', { allowedPaths: allowed, askedIndexes: asked });
+  assert.equal(r2.declined.length, 2);
+  // 混在一个响应里：一条给了路径、一条认不出，两边都要各自的记录
+  const r3 = parseAiResponse('[{"index":18,"path":"basics.name"},{"index":26,"path":null,"reason":"没标签"}]', { allowedPaths: allowed, askedIndexes: asked });
+  assert.equal(r3.candidates.length, 1);
+  assert.equal(r3.declined.length, 1);
+  // 越界的 index 仍然算 unknown_index，不能混进 declined
+  const r4 = parseAiResponse('[{"index":99,"path":null}]', { allowedPaths: allowed, askedIndexes: asked });
+  assert.equal(r4.declined.length, 0);
+  assert.equal(r4.dropped[0].reason, 'unknown_index');
+});

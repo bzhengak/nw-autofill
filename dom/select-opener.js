@@ -120,11 +120,19 @@ export function openOptions(el, doc, hints) {
   // 新出现的弹层 + 本来就存在但从 hidden 翻回可见的弹层（AntD 复用一个节点只切类名）
   const nowVisible = visiblePanels(doc, sig);
   const fresh = nowVisible.filter(p => !before.has(p));
-  const mine = fresh.length ? fresh : nowVisible.filter(p => p.contains?.(wrapper) || wrapper.contains?.(p));
-  const pools = mine.length ? mine : nowVisible;
-  const options = collectOptions(doc, sig, pools);
+  const inShell = nowVisible.filter(p => p.contains?.(wrapper) || wrapper.contains?.(p));
+  const mine = [...new Set([...fresh, ...inShell])];
+  // 差集为空 = 我们这一下点击**没有打开任何东西**。这时候绝不能退回"扫全页可见弹层"：
+  // 途普那张页面同一屏有十来个 AntD 下拉，上一个还开着、下一个没点开时，全页扫描读到的
+  // 正是别栏的选项列表（2026-10-02 用户导出：highest education / cantonese / english /
+  // mandarin / ielts type 五栏一起报 dial_code_only —— 它们读到的是电话区号那一列）。
+  // 误读比读不到危险：接着 matchOption 就可能真的一头点进别栏的选项里，改了页面别的状态。
+  if (!mine.length) {
+    return { ok: false, reason: 'panel_ambiguous', trigger: wrapper, options: [], visiblePanels: nowVisible.length };
+  }
+  const options = collectOptions(doc, sig, mine);
   if (!options.length) return { ok: false, reason: 'no_options_rendered', trigger: wrapper, options: [] };
-  return { ok: true, trigger: wrapper, options, signature: sig.name, panels: pools };
+  return { ok: true, trigger: wrapper, options, signature: sig.name, panels: mine };
 }
 
 /**
@@ -175,10 +183,11 @@ function pickSignature(trigger, doc, hints) {
 function collectOptions(doc, sig, panels) {
   const pools = [];
   for (const panel of panels || []) pools.push(...safeQueryAll(panel, sig.option));
-  // 有些实现不用框架类名的容器，选项直接是 role=option 挂在任意弹层里：退回全局扫描
+  // 框架类名没认出来的弹层：选项仍按 ARIA 找，但**只在这几个已确认属于本栏的容器里找**。
+  // 以前这里退成全页扫描 —— 同屏有多个下拉时，读到的是别人家的选项列表（见 openOptions 的注释）。
   if (!pools.length) {
-    for (const opt of doc.querySelectorAll?.('[role="option"],[role="menuitem"]') || []) {
-      if (visible(opt)) pools.push(opt);
+    for (const panel of panels || []) {
+      for (const opt of safeQueryAll(panel, '[role="option"],[role="menuitem"]')) pools.push(opt);
     }
   }
   const seen = new Set();

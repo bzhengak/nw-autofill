@@ -670,11 +670,20 @@ $('btnAiAsk').onclick = async () => {
     if (!res.candidates.length) {
       const box = $('aiPreviewText');
       box.hidden = false;
-      box.textContent = `AI 回了 ${res.rawChars} 字，但没有一条能落进白名单（丢弃 ${res.dropped.length} 条：`
-        + [...new Set(res.dropped.map(d => d.reason))].join('、') + '）'
+      const declined = res.declined || [];
+      // "回了 N 字、丢弃 0 条"是最难看懂的一句：模型其实答了，答的是"这一栏我认不出"。
+      // 把是哪一栏、它自己给的理由念出来，用户才知道下一步该补标签还是补资料，而不是再点一次。
+      const declinedText = declined.length
+        ? `AI 明确说认不出 ${declined.length} 栏：` + declined.map(d => `「${d.label || '(页面上没标签)'}」${d.reason ? `（${d.reason}）` : ''}`).join('、')
+          + '\n这些栏我们什么都没收，也不会乱填 —— 如果它标签是空的，那是我们没抓到标签，导出「页面结构探针」我就能定位。'
+        : `AI 回了 ${res.rawChars} 字，但没有一条能落进白名单（丢弃 ${res.dropped.length} 条：`
+          + [...new Set(res.dropped.map(d => d.reason))].join('、') + '）';
+      box.textContent = declinedText
         + (res.finishReason ? `\nfinish_reason=${res.finishReason}` : '')
         + `\n它原样回的前 200 字：\n${res.snippet || '（空）'}`;
-      $('aiStatus').textContent = `AI 没有给出可用建议（丢弃 ${res.dropped.length} 条）—— 下面有原始回显`;
+      $('aiStatus').textContent = declined.length
+        ? `AI 认不出 ${declined.length} 栏（都留着没填）—— 下面有它的原话`
+        : `AI 没有给出可用建议（丢弃 ${res.dropped.length} 条）—— 下面有原始回显`;
       return;
     }
     await run('preview', { aiCandidates: res.candidates });

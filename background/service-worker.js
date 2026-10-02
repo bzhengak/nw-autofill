@@ -314,6 +314,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         ok: true,
         candidates: parsed.candidates.map(c => ({ ...c, label: labelOf.get(c.index) || '' })),
         dropped: parsed.dropped,
+        // 模型明确说"这一栏认不出"的那些：有 index、有它的理由，界面必须念出来。
+        // 它们既不是候选也不是丢弃，以前被静默跳过，用户只看到"回了 115 字，丢弃 0 条"。
+        declined: (parsed.declined || []).map(d => ({ ...d, label: labelOf.get(d.index) || '' })),
         endpoint: call.endpoint || target.url,
         timing: call.timing,
         // 流式退回过普通收法 / 第一个字节什么时候到：这两个事实说明"这次到底是怎么通的"

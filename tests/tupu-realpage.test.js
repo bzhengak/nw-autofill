@@ -14,7 +14,7 @@ import { scanForm } from '../dom/scanner.js';
 import { pickCustomSelect, adapterHints } from '../dom/select-opener.js';
 import { applyPlan } from '../dom/filler.js';
 import { planFill, gapReasonLabel } from '../core/matcher.js';
-import { createEmptyProfile, setValueByPath } from '../core/profile-schema.js';
+import { createEmptyProfile, setValueByPath, writeLang } from '../core/profile-schema.js';
 import tupuAdapter from '../adapters/tupu-antd.json' with { type: 'json' };
 
 /** 真实 DOM 的等比缩样：text-muted 一行一栏，里面套小 form，组件壳 ddf_wrapper 里有触发器和面板 */
@@ -317,4 +317,107 @@ test('选项对照只管它写明的那个槽位：资料空着时也不会替�
   const { entry, gap } = workPermitPlan('');
   assert.ok(!entry, `资料空着就不该有落笔：${JSON.stringify(entry)}`);
   assert.ok(gap, '空资料要留一条看得懂的缺口');
+});
+
+/**
+ * 用户 2026-10-02 真实导出（build 2026-10-02-8）里最刺眼的一栏：
+ * "highest education / cantonese / english / mandarin / ielts type" 五栏一起报 dial_code_only ——
+ * 它们读到的是**电话区号那一列**。原因是点开没反应时会退回"扫全页可见弹层"，
+ * 于是别栏还开着的弹层被当成自己的。误读比读不到危险：下一步就是真点进别栏的选项。
+ */
+test('点不开就不读：别栏还开着的弹层绝不当成自己的选项', async () => {
+  const html = `<div><span class="field-label">primary cell number</span>
+      <div class="ant-select ant-select-enabled"><div class="ant-select-selection" role="combobox">
+        <div class="ant-select-selection__rendered"><span class="ant-select-selection-selected-value"></span></div>
+      </div>
+      <div class="ant-select-dropdown"><ul role="listbox" class="ant-select-dropdown-menu">
+        <li class="ant-select-dropdown-menu-item">中国大陆 +86</li>
+        <li class="ant-select-dropdown-menu-item">中国香港 +852</li>
+        <li class="ant-select-dropdown-menu-item">中国澳门 +853</li>
+      </ul></div></div></div>
+    <div><span class="field-label">highest education</span>
+      <div class="ant-select ant-select-enabled"><div class="ant-select-selection" role="combobox">
+        <div class="ant-select-selection__rendered"><span class="ant-select-selection-selected-value"></span></div>
+      </div></div></div>`;   // 第二个下拉**没有**弹层：点开失败的那一栏
+  const dom = new JSDOM(`<!doctype html><html><body>${html}</body></html>`, { url: 'https://careersite.tupu360.test/x', pretendToBeVisual: true });
+  const fields = scanForm(dom.window.document);
+  const boxes = fields.filter(f => f.kind === 'combobox');
+  assert.equal(boxes.length, 2, `两个自定义下拉该各算一栏：${fields.length}`);
+  const edu = boxes[1];
+  const r = await pickCustomSelect(edu, 'Master', { hints: adapterHints(tupuAdapter), path: 'education.0.degree' });
+  assert.equal(r.ok, false, '这一栏根本没点开，不能报成功');
+  assert.equal(r.reason, 'panel_ambiguous', `该说"确认不了弹层归属"，实得 ${JSON.stringify(r)}`);
+  // 一个选项都不该被点：区号那一列的显示值仍然空着
+  const shown = dom.window.document.querySelector('.ant-select-selection-selected-value').textContent.trim();
+  assert.equal(shown, '', '别栏的弹层被点了：' + shown);
+  assert.ok(/弹层/.test(gapReasonLabel('panel_ambiguous')), '缺口原因要说人话');
+});
+
+/**
+ * "school name 就是 school name"（用户原话，连说四遍的那一条）：
+ * 英文标签的中心词是通用词（name/number/score…），**问的却是前面那个定语**。
+ * 成对打分看不见对手，裸词 name 的槽位会压过真正被点名的槽位。
+ */
+test('带定语的英文标签由定语说了算：school name / referrer name 不再全归姓名', () => {
+  const html = `<form>
+    <label for="a">School Name</label><input id="a" type="text">
+    <label for="b">Referrer Name</label><input id="b" type="text">
+    <label for="c">Name</label><input id="c" type="text">
+    <label for="d">Last Name</label><input id="d" type="text">
+  </form>`;
+  const dom = new JSDOM(`<!doctype html><html><body>${html}</body></html>`, { url: 'https://careersite.tupu360.test/x', pretendToBeVisual: true });
+  const fields = scanForm(dom.window.document);
+  const p = createEmptyProfile();
+  writeLang(p, 'basics.name', 'en', 'OUYANG Zhonghua');
+  writeLang(p, 'basics.lastName', 'en', 'OUYANG');
+  writeLang(p, 'education.0.school', 'en', 'South China University of Technology');
+  writeLang(p, 'intent.referralName', 'en', 'Li Neitui');
+  const plan = planFill(fields, p, { mode: 'full', fillSensitive: true });
+  const pathOf = label => {
+    const f = fields.find(x => x.label === label);
+    const a = plan.assignments.find(x => x.index === fields.indexOf(f) && !x.skip);
+    return a ? a.path : '';
+  };
+  assert.equal(pathOf('school name'), 'education.0.school', `school name 该归学校：${JSON.stringify(plan.assignments)}`);
+  assert.equal(pathOf('referrer name'), 'intent.referralName', 'referrer name 该归内推人姓名');
+  assert.equal(pathOf('name'), 'basics.name', '单独一个 name 还是本人姓名，不动它');
+  assert.equal(pathOf('last name'), 'basics.lastName', 'last name 该是姓');
+});
+
+/**
+ * 同一份导出里的归因 bug：index 0「name」报 slot_empty（"去资料里补上"），
+ * index 25「referrer name」报 missing_english_value —— 真因是 basics.name 只有中文值。
+ * 只写中文的人被告知"去补资料"会再补一遍中文，正确动作是切到 English 表单。
+ */
+test('只有中文值时归因说"去补英文"，不说"资料里是空的"', () => {
+  const html = `<form>
+    <label for="a">Name</label><input id="a" type="text">
+    <label for="b">Address</label><input id="b" type="text">
+  </form>`;
+  const dom = new JSDOM(`<!doctype html><html><body>${html}</body></html>`, { url: 'https://careersite.tupu360.test/x', pretendToBeVisual: true });
+  const fields = scanForm(dom.window.document);
+  const p = createEmptyProfile();
+  setValueByPath(p, 'basics.name', '欧阳中文');            // 只有中文，没有英文
+  const plan = planFill(fields, p, { mode: 'full' });
+  const g = plan.gaps.find(x => x.label === 'name');
+  assert.equal(g.reason, 'missing_english_value', `该说"补英文写法"：${JSON.stringify(g)}`);
+  assert.match(g.note, /English|英文/);
+  // 地址是真没填 —— 那一栏仍该报 slot_empty，两种归因不能混成一个
+  const g2 = plan.gaps.find(x => x.label === 'address');
+  assert.equal(g2.reason, 'slot_empty', JSON.stringify(g2));
+});
+
+/** 钉位钉到一个空资料位：note 要念出是哪个槽位，不能留一行空白（导出里 index 13 就是空的） */
+test('pinned_field_empty 要写出钉到了哪个槽位', () => {
+  const html = `<div><span class="field-label">Work Permit</span>
+    <span><label><input type="radio" name="wp" value="Y">Yes</label>
+      <label><input type="radio" name="wp" value="N">No</label></span></div>`;
+  const dom = new JSDOM(`<!doctype html><html><body>${html}</body></html>`, { url: 'https://careersite.tupu360.test/x', pretendToBeVisual: true });
+  const fields = scanForm(dom.window.document);
+  const plan = planFill(fields, createEmptyProfile(), { mode: 'full', adapter: tupuAdapter });
+  const g = plan.gaps.find(x => x.reason === 'pinned_field_empty');
+  assert.ok(g, JSON.stringify(plan.gaps));
+  assert.equal(g.slotPath, 'hkGlobal.workAuth');
+  assert.match(g.note, /工作许可/, `note 要念出槽位中文名：${JSON.stringify(g)}`);
+  assert.notEqual(gapReasonLabel('pinned_field_empty'), 'pinned_field_empty', '这条原因也得有中文说明');
 });

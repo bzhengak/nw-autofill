@@ -293,7 +293,7 @@ const WHY_KEYS = ['reason', 'why', 'note'];
 
 /** 解析响应：只接受白名单 path、只接受本次问过的 index；其余全部丢弃并说明原因 */
 export function parseAiResponse(raw, { allowedPaths, askedIndexes }) {
-  const out = { candidates: [], dropped: [] };
+  const out = { candidates: [], dropped: [], declined: [] };
   let parsed = null;
   if (typeof raw === 'string') {
     const fenced = raw.match(JSON_FENCE);
@@ -321,7 +321,14 @@ export function parseAiResponse(raw, { allowedPaths, askedIndexes }) {
       continue;
     }
     if (path === null || path === 'null' || path === '' || path === 'none' || path === '不确定') {
-      continue;                                        // AI 明确说"不知道"，正常
+      // AI 明确说"这一栏我认不出"。这**不是丢弃**，是一次有内容的回答：
+      // 用户 2026-10-02 看到的"回了 115 字但一条都没落进白名单（丢弃 0 条）"就是它，
+      // 界面把"模型答认不出"说成"没落进白名单"，等于把最有用的线索（哪一栏、为什么）藏掉了。
+      out.declined.push({
+        index,
+        reason: String(pick(WHY_KEYS) || '').slice(0, 60),
+      });
+      continue;
     }
     // 目录是归并过的（work.N.company），模型可能原样交回带 N 的路径。
     // 这里补成该段第一条，并把"序号是我们补的"记在候选上 —— 白名单本身一个字节都没放宽。

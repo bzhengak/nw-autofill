@@ -5,9 +5,11 @@
 //     任何简历取值都不许离开本机 —— 所以本模块只吃 plan，不吃 profile 的值。
 //     assertNoProfileValues() 是这条边界的运行时自证：一旦取值出现在待发送文本里就拒绝发送。
 //  2. AI 只能"选路径"，不能"造值"。返回的 path 必须在白名单里，值永远由本地从 profile 取。
-//  3. AI 的结果永远是 review（黄字），永不自动写；敏感/声明/附件/验证码类控件根本不进候选。
+//  3. AI 只能指认槽位，不能造值：非敏感栏按正常档位（用户 2026-10-02 改判，不再一律黄字），
+//     敏感/声明/附件/验证码类控件根本不进候选。
 
 import { buildFields, getValueByPath } from './profile-schema.js';
+import { CONCEPTS, isKnownConcept, slotConcept } from './canonical.js';
 
 /** 允许参与 AI 的缺口原因：本地词典答不上来的那三种 */
 export const AI_ELIGIBLE_REASONS = new Set(['no_candidate', 'required_no_candidate', 'conflict_unresolved']);
@@ -183,10 +185,12 @@ export function buildAiRequest({ plan, profile, pageFields, locale = 'zh', limit
  *
  * 判据（放宽的只有"不构成身份"的那一类）：
  *  - 纯数字/日期形状的短值（≤8 位：'12'、'2021-09'、'3.8'、'175'）不算身份；
+ *    带 + 与括号的也一样（'+86' 是国际区号，页面自己的选项里就写着它，
+ *    第一次整页映射就是被它假拦下一次，差点把"零取值"的自检变成永远拒发）；
  *  - 长数字串仍然是身份：手机号 11 位、证件号 15~18 位照样拦。
  *  - 两三个字的中文姓名（'张伟'）是身份，不放宽。
  */
-const NUMERICISH = /^[\d\s.,:~\-/年月日]+$/;
+const NUMERICISH = /^[\d\s.,:~\-/+()年月日]+$/;
 export function isIdentifyingValue(s) {
   const v = String(s ?? '').trim();
   if (v.length < 2) return false;
@@ -407,4 +411,117 @@ export function applyAiCandidates(plan, profile, candidates = [], opts = {}) {
     added,
     stale,
   };
+}
+
+/**
+ * S5 · 整页概念映射（两层映射的第一跳）。
+ *
+ * 与"问 AI 补缺口"的区别不只是范围：**AI 交回的不再是 519 条槽位路径，而是约 60 个概念之一**
+ * （core/canonical.js）。选择空间小一个数量级，于是三件事同时变好：
+ *  ① 模型更容易答对（也不用把整份槽位目录发出去，请求体显著变小）；
+ *  ② 概念→槽位由本地确定性展开，"到底准备写哪一栏"永远是我们自己决定的；
+ *  ③ 答错了也解释得清 —— 概念名可以印在映射表上，用户一眼看出"它把这一栏当成了 surname"。
+ *
+ * 取值仍然一个字节都不发：currentValue 只发"这栏现在算谁写的"这一种状态词。
+ */
+export function buildPageMapRequest({ pageFields = [], concepts = null, maxBytes = AI_MAX_BYTES, valueStates = {} } = {}) {
+  const list = concepts || Object.keys(CONCEPTS);
+  const system = [
+    '你在帮助填写一份**求职网申表单**。你看不到候选人的任何真实信息，这是刻意的。',
+    '你的任务只有一个：为下面每个页面字段，选出**它问的是哪一种东西**（概念）。',
+    '规则：',
+    `1) concept 只能从这份清单里选，一字不改：${JSON.stringify(list)}`,
+    '2) 拿不准、清单里没有合适的、或这一栏属于"是否同意/声明/证件号/薪酬期望"，就返回 null（不要勉强挑）。',
+    '3) 绝不生成、猜测、改写任何取值；你不掌握取值，也不需要提供取值。',
+    '4) 每个字段都带了它自己的说明文字、所在板块、控件类型与页面选项（文案=码值）；请综合这些判断，别只看标签那一个词。',
+    '5) 只输出 JSON：{"matches":[{"index":<数字>,"concept":"<概念或null>","reason":"<不超过20字>"}]}',
+  ].join('\n');
+  const conceptSection = JSON.stringify(list);
+  const bytes = s => new TextEncoder().encode(s).length;
+  const caps = [{ o: 24, oc: 40, n: 3, d: 160 }, { o: 8, oc: 24, n: 2, d: 90 }, { o: 0, oc: 0, n: 0, d: 48 }];
+  let level = 0, questions, text;
+  const build = () => {
+    const cap = caps[level];
+    questions = pageFields.map((f, i) => {
+      const q = {
+        index: i,
+        label: String(f.labelRaw || f.label || '').slice(0, cap.d),
+        kind: f.kind || 'text',
+        required: Boolean(f.required),
+        desc: String(f.description || '').slice(0, cap.d),
+        section: String(f.sectionTitle || f.sectionHint || '').slice(0, 40),
+        valueState: valueStates[i] || 'empty',
+      };
+      if (cap.o) q.options = (f.options || []).map(o => {
+        const t = String(o?.text ?? o ?? '').slice(0, cap.oc);
+        const v = String(o?.value ?? '').slice(0, 20);
+        return v && v !== t ? t + '=' + v : t;
+      }).filter(Boolean).slice(0, cap.o);
+      if (cap.n) q.nearby = (f.nearbyLabels || []).slice(0, cap.n);
+      return q;
+    });
+    text = `${system}\n\n${JSON.stringify({ fields: questions, concepts: conceptSection })}`;
+  };
+  build();
+  while (bytes(text) > maxBytes && level < caps.length - 1) { level++; build(); }
+  const dropped = bytes(text) > maxBytes ? pageFields.length : 0;
+  if (dropped) { questions = []; text = `${system}\n\n${JSON.stringify({ fields: [], concepts: conceptSection })}`; }
+  const pageTokens = questions.flatMap(q => [
+    q.label, ...(q.options || []).map(o => String(o).split('=')[0]), ...(q.nearby || []),
+  ]).map(t => String(t ?? '').trim()).filter(Boolean);
+  return {
+    system, text, pageTokens, conceptSection,
+    trim: { level, why: ['完整档案', '选项削到 8 条', '只留标签与板块'][level], droppedFields: dropped },
+    count: questions.length,
+  };
+}
+
+/**
+ * 解析整页概念映射：概念必须在封闭清单内，越界一律丢弃（宁可这一栏没结论，
+ * 也不接受一个我们不认识的词 —— 那等于把白名单放宽）。
+ * null 是有效回答，单独记 declined，界面能念出"模型说这一栏认不出"。
+ */
+export function parsePageMapResponse(raw, { askedIndexes = null, concepts = null } = {}) {
+  const known = new Set(concepts || Object.keys(CONCEPTS));
+  const out = { mapping: [], dropped: [], declined: [] };
+  let parsed = null;
+  if (typeof raw === 'string') {
+    const fenced = raw.match(JSON_FENCE);
+    const body = fenced ? fenced[1] : raw;
+    for (const [open, close] of [['{', '}'], ['[', ']']]) {
+      const start = body.indexOf(open);
+      const end = body.lastIndexOf(close);
+      if (start < 0 || end <= start) continue;
+      try { parsed = JSON.parse(body.slice(start, end + 1)); break; } catch { /* 试下一种 */ }
+    }
+  } else if (raw && typeof raw === 'object') parsed = raw;
+  const list = coerceList(parsed);
+  if (!Array.isArray(list)) {
+    out.dropped.push({ reason: 'unparsable', detail: '响应里没有可解析的 JSON 数组或 {"matches":[...]}' });
+    return out;
+  }
+  for (const m of list) {
+    const index = Number(m?.index ?? m?.i ?? m?.field);
+    if (!Number.isInteger(index) || (askedIndexes && !askedIndexes.has(index))) {
+      out.dropped.push({ index: Number.isInteger(index) ? index : null, reason: 'unknown_index' });
+      continue;
+    }
+    const c = String(m?.concept ?? m?.c ?? m?.type ?? '').trim();
+    const reason = String(m?.reason ?? m?.why ?? '').slice(0, 60);
+    if (!c || c === 'null' || c === 'none') { out.declined.push({ index, reason }); continue; }
+    if (!known.has(c)) { out.dropped.push({ index, concept: c.slice(0, 40), reason: 'unknown_concept' }); continue; }
+    out.mapping.push({ index, concept: c, reason });
+  }
+  return out;
+}
+
+/** 概念 → 本地槽位（有值优先，多命中就交映射表，绝不自己挑一个） */
+export function expandConceptToSlots(profile, concept) {
+  if (!concept || !isKnownConcept(concept)) return { path: '', candidates: [] };
+  const pool = buildFields().filter(f => !AI_FORBIDDEN_SECTION.has(f.section) && !AI_FORBIDDEN_KEY.test(f.path));
+  const hit = pool.filter(f => slotConcept(f) === concept);
+  const filled = hit.filter(f => String(getValueByPath(profile, f.path) ?? '').trim());
+  const chosen = filled.length ? filled : hit;
+  if (chosen.length === 1) return { path: chosen[0].path, candidates: chosen.map(f => f.path), empty: !filled.length };
+  return { path: '', candidates: chosen.map(f => f.path), ambiguous: chosen.length > 1, empty: !filled.length };
 }

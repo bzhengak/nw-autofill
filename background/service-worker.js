@@ -11,7 +11,7 @@
 
 import { compileAdapters } from '../core/adapters.js';
 import { BUILD } from '../core/build.js';
-import { buildAiRequest, assertNoProfileValues, parseAiResponse, aiSlotCatalog, AI_MAX_BYTES } from '../core/ai.js';
+import { buildAiRequest, assertNoProfileValues, parseAiResponse, aiSlotCatalog, AI_MAX_BYTES, buildPageMapRequest, parsePageMapResponse, expandConceptToSlots } from '../core/ai.js';
 import { extractFragments, buildExtractRequest, parseExtractResponse } from '../core/ai-extract.js';
 import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, findLeaksInExport, SECRETS_BUCKET, consentAfterSettingsPatch, siteConsentCheck, withSiteConsent, siteConsentAfterEndpoint, SITE_CONSENT_BUCKET, effectiveTimeoutSec, effectiveMaxTokens, effectiveStream, AI_TIMEOUT_DEFAULT_SEC, AI_MAX_TOKENS_DEFAULT, chatEndpointCandidates } from '../core/ai-security.js';
 import { callChatEndpoint, pingAiEndpoint } from '../core/ai-endpoint.js';
@@ -261,6 +261,52 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // 面板拿这个和自己的版本号对：不一致就是"重载没生效"，别再互相猜
         build: BUILD,
         tabId,
+      });
+    } else if (msg.type === 'nw:aiMapPage') {
+      /**
+       * S5 整页概念映射：一次问全页，AI 只回答"这一栏是哪种东西（概念）"。
+       * 与 aiAsk 的三处不同：范围是全页而不是缺口、选择集是约 60 个概念而不是 519 条路径、
+       * **结果不直接写页面** —— 展开成槽位后交给映射表（S6），由用户点头才落笔。
+       * 三道闸一道不少：取值自检、端点确认、站点确认。
+       */
+      const pageFields = Array.isArray(msg.fields) ? msg.fields : [];
+      if (!pageFields.length) { sendResponse({ ok: false, error: 'no_fields' }); return; }
+      const mapReq = buildPageMapRequest({ pageFields, valueStates: msg.valueStates || {} });
+      const leaks = assertNoProfileValues(mapReq.text, msg.profile || {}, { exempt: [mapReq.conceptSection], pageTokens: mapReq.pageTokens });
+      if (leaks.length) { sendResponse({ ok: false, error: 'value_leak', leaks: leaks.slice(0, 8) }); return; }
+      const upBytes = new TextEncoder().encode(mapReq.text).length;
+      if (upBytes > AI_MAX_BYTES) { sendResponse({ ok: false, error: 'payload_too_large', bytes: upBytes, trim: mapReq.trim }); return; }
+      if (msg.preview) {
+        sendResponse({ ok: true, preview: true, text: mapReq.text, bytes: upBytes, count: mapReq.count, trim: mapReq.trim });
+        return;
+      }
+      const mSettings = (await chrome.storage.local.get('settings')).settings || {};
+      const mTarget = normalizeBaseUrl(mSettings.aiBaseUrl);
+      const mSess = await readAiSession();
+      if (!mTarget.ok) { sendResponse({ ok: false, error: `endpoint_${mTarget.error}` }); return; }
+      if (!mSettings.aiModel || !mSess.key) { sendResponse({ ok: false, error: 'ai_not_configured' }); return; }
+      const mGate = maySendKey({ keyOrigin: mSess.keyOrigin, targetOrigin: mTarget.origin, consentOrigin: mSettings.aiConsentOrigin });
+      if (!mGate.ok) { sendResponse({ ok: false, error: mGate.error }); return; }
+      const mOrigin = await originOfTab(tabId);
+      const mSite = siteConsentCheck({ consents: await readSiteConsents(), pageOrigin: mOrigin, targetOrigin: mTarget.origin });
+      if (!mSite.ok) { sendResponse({ ok: false, error: mSite.error, pageOrigin: mOrigin }); return; }
+      const mCall = await callAiEndpoint({ baseUrl: mSettings.aiBaseUrl, model: mSettings.aiModel, key: mSess.key, text: mapReq.text, timeoutSec: effectiveTimeoutSec(mSettings), maxTokens: effectiveMaxTokens(mSettings), stream: effectiveStream(mSettings) });
+      if (!mCall.ok) {
+        sendResponse({ ok: false, error: mCall.error, detail: mCall.detail, finishReason: mCall.finishReason, attempted: mCall.attempted, endpoint: mCall.endpoint, timing: mCall.timing, bytes: upBytes });
+        return;
+      }
+      const mParsed = parsePageMapResponse(mCall.content, { askedIndexes: new Set(pageFields.map((f, i) => i)) });
+      const labelAt = i => String(pageFields[i]?.labelRaw || pageFields[i]?.label || '').slice(0, 60);
+      sendResponse({
+        ok: true,
+        // 概念 → 本地槽位：多命中/空槽一律不猜，交映射表点名（path 为空就是这个意思）
+        mapping: mParsed.mapping.map(m => ({ ...m, ...expandConceptToSlots(msg.profile || {}, m.concept), label: labelAt(m.index) })),
+        declined: mParsed.declined.map(d => ({ ...d, label: labelAt(d.index) })),
+        dropped: mParsed.dropped,
+        bytes: upBytes, trim: mapReq.trim, count: mapReq.count,
+        endpoint: mCall.endpoint || mTarget.url, timing: mCall.timing,
+        streamFallback: Boolean(mCall.streamFallback), firstChunkMs: mCall.firstChunkMs ?? null,
+        rawChars: String(mCall.content || '').length,
       });
     } else if (msg.type === 'nw:aiPreview' || msg.type === 'nw:aiAsk') {
       // 预览与真正发送共用同一次构造：看到的就必须是发出去的，不能两套逻辑

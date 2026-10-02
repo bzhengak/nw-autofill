@@ -400,3 +400,58 @@ test('declined 一路带回侧边栏：AI 的"认不出"不是丢弃，也不是
   assert.equal(res.declined[0].reason, '这一栏没有任何标签');
   assert.equal(res.declined[0].label, 'Full Name', '要把标签带回去，用户才知道是哪一栏');
 });
+
+/**
+ * S5 整页概念映射的后台链路：只发栏位档案与概念清单，
+ * 展开成槽位是本地的事，答案没点头也不写页面（那是 S6 映射表的活）。
+ */
+const MAP_MSG = {
+  type: 'nw:aiMapPage',
+  profile: { basics: { name: '欧阳中华', lastName: '欧阳', idNumber: '330105199912034567' }, contact: { phone: '13900002222' }, hkGlobal: {} },
+  fields: [
+    { labelRaw: 'Family Name', label: 'family name', kind: 'text', required: true, description: 'Surname as in passport', sectionTitle: 'Basics', options: [], nearbyLabels: [] },
+    { labelRaw: 'Work Permit', label: 'work permit', kind: 'radio', options: [{ text: 'Yes', value: 'Y' }, { text: 'No', value: 'N' }] },
+  ],
+  valueStates: { 0: 'empty', 1: 'site' },
+};
+
+test('整页映射：AI 交回概念，本地展开成槽位；说认不出的那栏带着它自己的理由回来', async () => {
+  const { send } = await bootSw([okJson('{"matches":[{"index":0,"concept":"name.family","reason":"passport surname"},{"index":1,"concept":null,"reason":"合规声明需本人表态"}]}')]);
+  await configure(send, null);
+  const res = await send(MAP_MSG);
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.mapping.length, 1);
+  assert.equal(res.mapping[0].concept, 'name.family');
+  assert.equal(res.mapping[0].path, 'basics.lastName', '概念→槽位是本地展开的，AI 从没见过这条路径');
+  assert.equal(res.mapping[0].label, 'Family Name');
+  assert.equal(res.declined.length, 1);
+  assert.equal(res.declined[0].reason, '合规声明需本人表态');
+  assert.equal(res.declined[0].label, 'Work Permit');
+});
+
+test('整页映射不认越界概念，也不接受我们清单外的路径', async () => {
+  const { send } = await bootSw([okJson('{"matches":[{"index":0,"concept":"basics.lastName","reason":"直接给路径"},{"index":1,"concept":"made-up-thing"}]}')]);
+  await configure(send, null);
+  const res = await send(MAP_MSG);
+  assert.equal(res.mapping.length, 0, '越界概念被当成有效结论了');
+  assert.deepEqual(res.dropped.map(d => d.reason).sort(), ['unknown_concept', 'unknown_concept']);
+});
+
+test('整页映射同一道站点闸：没确认过这一站就一个字节都不发', async () => {
+  const { send, calls } = await bootSw([okJson('{"matches":[]}')]);
+  await configure(send, null, { site: false });
+  const res = await send(MAP_MSG);
+  assert.equal(res.error, 'needs_site_consent');
+  assert.equal(calls.length, 0, '整页映射绕过了站点确认');
+});
+
+test('整页映射的预览不发请求，但把要发出去的全文给出来', async () => {
+  const { send, calls } = await bootSw([okJson('{"matches":[]}')]);
+  await configure(send, null);
+  const res = await send({ ...MAP_MSG, preview: true });
+  assert.equal(res.ok, true);
+  assert.equal(res.preview, true);
+  assert.ok(/Family Name/.test(res.text) && /name\.family/.test(res.text), '预览里没有栏位档案或概念清单');
+  assert.ok(!/欧阳中华|330105199912034567/.test(res.text), '预览文本里出现了取值');
+  assert.equal(calls.length, 0, '预览不该出网');
+});

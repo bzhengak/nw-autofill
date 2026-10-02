@@ -796,3 +796,27 @@ AI 通了之后第一句反馈是「看不到允许填入敏感字段的勾选�
 页面选项**必须恰好落一项**（两项都命中同样不选），拉丁别名整词命中（`no` 不落进 `Note`），
 否定式选项走 `negationMismatch`（`是` 不落进`不是`），并且这一栏最后拿到的槽位必须等于规则写的槽位。
 任何一条不满足 → 照旧 `needsChoice` 交人工，即"选不出就放那"。
+
+## 2026-10-02（再续）· 第一份「导出没填的字段与选项」回来：四处一起现形，其中一处是危险的那类
+
+用户重载后（build `2026-10-02-8`）在同一张途普/埃森哲页面点了「导出没填的字段与选项」，
+`byReason` 里 **`dial_code_only` 有 5 条**，而且落在 `highest education / cantonese / english /
+mandarin / ielts type` 上 —— 这些跟电话区号毫无关系。真正的区号栏（index 7/9）报的却是 `choice_required`。
+
+| 现象 | 根因 | 改法 |
+| --- | --- | --- |
+| 五栏"读到"了区号那一列 | `openOptions` 在"点了没出现新弹层"时退回 `nowVisible` **全页扫描可见弹层**；同屏十几个 AntD 下拉，上一个还开着就被当成自己的 | 只认「这次点击新出现的」或「在自己壳子里的」弹层；一个都没有 → 新原因 `panel_ambiguous`，**一个选项都不点**。`collectOptions` 那条全页 `role=option` 退回同样收进本栏容器 |
+| `School Name` / `Referrer Name` 全归"姓名" | 上一轮只删了别名表里的裸词 `name`，但 `scorePair` 是**成对**打分、看不见对手：末词命中 `label.endsWith('name')` 给到 0.695，压过真正被定语点名的 0.553 | 候选之间补一刀：纯拉丁多词标签 + 末词是通用词时，别名带定语的抬到 0.86，只靠通用词蹭的压到 0.7；**定语谁都不命中时完全不动**（不把 `Organization Name` 硬塞进某个槽） |
+| 同一页 index 0 报 `slot_empty`、index 25 报 `missing_english_value` | 真因都是 `basics.name` 只有中文值。两个 `slot_empty` 出口都没区分"没填"与"只写了中文" | 两处都先问 `missingEnglish`，只写了中文就说"切到 English 表单补这一栏" |
+| `pinned_field_empty` 的 note 是空的（index 13 work permit） | 这条原因压根没进 `GAP_REASON_ZH`，表格直接印内部 token | 写出钉到了哪个槽位（`hkGlobal.workAuth`）并补中文说明 |
+
+另一句用户原话值得单独记：**"AI 回了 115 字，但没有一条能落进白名单（丢弃 0 条）"**。
+模型答的是 `{"index":18,"path":null,"reason":"无法识别字段含义"}` —— 它没坏，是我们发出去的档案真的空的：
+那两栏 `label / labelRaw / placeholder / nearbyLabels / sectionTitle / options` 六项全空（`id="value"` 的
+`ant-input`），什么线索都没有。**这是扫描器丢了标签，不是模型不行**，要拿同一页的「页面结构探针」
+看这两栏的祖先链才知道标签在 DOM 哪儿。同时把这类回答从静默跳过改成显式 `declined`（带 index、标签、
+模型自己给的理由），界面念出来 —— "回了字却像没回"最难懂的那句从此有据可依。
+
+判分 191/191、越界 0；366 条测试全绿。四条改动各自摘掉实现跑过都会红 ——
+其中"定语说了算"那条第一版用例**摘掉规则也是绿的**（多栏页面靠匈牙利分配自己就对了），
+补成"每类标签各建一个单栏页面"才真的钉住：途普是分步表单，一步一两栏，没有别的行帮忙分流。

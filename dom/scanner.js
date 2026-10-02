@@ -200,6 +200,30 @@ export function optionTextOf(box) {
   return clean(box.getAttribute('aria-label') || box.getAttribute('title') || box.value || '');
 }
 
+/**
+ * 没有 name 的单选/复选：按"装着同类控件的最小容器"合成一组。
+ *
+ * 用户 2026-10-02 的导出证实：途普那一页的 gender 是**三个独立字段**
+ * （male / female / prefer not to disclose），因为 AntD v3 的 radio 一个 name 都不写。
+ * 一题被拆成三栏之后：两栏报"候选势均力敌"、第三栏被单独勾上 —— 用户看到的是
+ * "我存的是 male，它给我填成 female"。这不是打分问题，是**根本没把它当一题**。
+ *
+ * 组边界只认"同一容器里≥2个同类控件"，最多向上四层；整页只剩一个控件时仍自成一组，
+ * 不硬并到隔壁题里（并错组的代价是把别人的选项当成自己的选项）。
+ */
+export function groupByContainer(el, kind) {
+  const sel = kind === 'radio' ? 'input[type="radio"]' : 'input[type="checkbox"]';
+  const pools = [];
+  const named = el.closest?.('[role="radiogroup"],[role="group"],[class*="radio-group"],[class*="checkbox-group"],fieldset');
+  if (named) pools.push(named);
+  for (let n = el.parentElement, up = 0; n && up < 4; n = n.parentElement, up++) pools.push(n);
+  for (const pool of pools) {
+    const same = Array.from(pool.querySelectorAll?.(sel) || []).filter(x => !x.getAttribute('name'));
+    if (same.length >= 2 && same.includes(el)) return same;
+  }
+  return [el];
+}
+
 function visible(el, doc) {
   if (!el) return false;
   if (el.disabled) return false;
@@ -597,8 +621,18 @@ export function scanForm(root = document) {
     if (kind === 'radio' || kind === 'checkbox') {
       const gkey = `${kind}:${name || el.getAttribute('aria-labelledby') || ''}:${blockOf(el, blockIndex)}`;
       if (name && seenGroups.has(gkey)) continue;
+      // 无名组：由组里第一个控件代表整题，其余成员不再单独成栏（见 groupByContainer 的注释）。
+      const anonEls = name ? null : groupByContainer(el, kind);
+      if (anonEls && anonEls.length > 1) {
+        if (anonEls[0] !== el) continue;
+        const akey = `${kind}:anon-group:${blockOf(el, blockIndex)}:${anonEls.indexOf(el)}`;
+        if (seenGroups.has(akey)) continue;
+        seenGroups.add(akey);
+      }
       if (name) seenGroups.add(gkey);
-      const groupEls = name ? Array.from(doc.querySelectorAll(`${kind === 'radio' ? 'input[type="radio"]' : 'input[type="checkbox"]'}[name="${CSS_escape(name)}"]`)) : [el];
+      const groupEls = name
+        ? Array.from(doc.querySelectorAll(`${kind === 'radio' ? 'input[type="radio"]' : 'input[type="checkbox"]'}[name="${CSS_escape(name)}"]`))
+        : (anonEls && anonEls.length > 1 ? anonEls : [el]);
       const groupLabel = groupLabelOf(el, groupEls, doc);
       // 途普 Declaration 那一块的真实形状（用户 2026-10-01 补充）：**整页没有任何 <label> 元素**，
       // 题目写在字段壳子的另一支上，还在"每字段一个小 form"的外面。
@@ -607,10 +641,12 @@ export function scanForm(root = document) {
       // 所以两条路都算，再用同一把标签打分尺比一比，谁更像字段名用谁。
       const optionWords = groupEls.map(x => normalize(optionTextOf(x))).filter(Boolean);
       const alone = labelFor(el, doc, { exclude: optionWords });
-      // "组标签"如果只是选项首尾相接（男+女='男女'、未婚+已婚='未婚已婚'、是+否='是否'），
+      // "组标签"如果只是选项本身或选项首尾相接（'male'、男+女='男女'、是+否='是否'），
       // 那不是题目，是 groupLabelOf 减不掉选项时剩下的空壳 —— 这种一律让位给邻近规则。
       const joined = optionWords.join('');
-      const groupIsJustOptions = !!groupLabel.text && joined.length >= 2 && normalize(groupLabel.text) === joined;
+      const gNorm = normalize(groupLabel.text || '');
+      const groupIsJustOptions = !!groupLabel.text && gNorm.length >= 2
+        && (gNorm === joined || optionWords.includes(gNorm));
       const g = groupIsJustOptions ? '' : String(groupLabel.text || '');
       const a = String(alone.text || '');
       // 只在"组标签本身就是选项拼起来的"或"组标签为空"时改用手近的邻近规则，不做打分比武：

@@ -118,3 +118,31 @@ test('单选 Male/Female：要 male 就勾 male，词边界不能放过 female',
   assert.equal(female.checked, false, '勾成 female 了：' + JSON.stringify(results[0]));
   assert.ok(results[0].ok ?? results[0].status === 'green', `回读没确认成功：${JSON.stringify(results[0])}`);
 });
+
+/**
+ * 用户 2026-10-02 的导出证实：这一页的 gender 是**三个独立字段**（male / female /
+ * prefer not to disclose），因为 AntD v3 的 radio 一个 name 都不写。一题被拆成三栏之后
+ * 两栏"候选势均力敌"、第三栏被单独勾上 —— 他看到的"存 male 填成 female"就是这么来的。
+ */
+test('无名 radio 一题只算一栏：gender 的三个选项是一题，不是三栏', async () => {
+  const html = `<div class="text-muted"><span class="field-label">gender</span>
+    <span class="field-value field-editor"><form class="ant-form ant-form-horizontal specialSelect">
+      <div class="ant-row ant-form-item"><span class="ant-form-item-children">
+        <label class="ant-radio-wrapper"><span class="ant-radio"><input type="radio" class="ant-radio-input" value="M" style="opacity: 0"></span><span>Male</span></label>
+        <label class="ant-radio-wrapper"><span class="ant-radio"><input type="radio" class="ant-radio-input" value="F" style="opacity: 0"></span><span>Female</span></label>
+        <label class="ant-radio-wrapper"><span class="ant-radio"><input type="radio" class="ant-radio-input" value="X" style="opacity: 0"></span><span>Prefer not to disclose</span></label>
+      </span></div></form></span></div>`;   // 真实形状：题目在"每栏一个小 form"的外面（导出第 4/5/6 行）
+  const dom = new JSDOM(`<!doctype html><html><body>${html}</body></html>`, { url: 'https://careersite.tupu360.test/x', pretendToBeVisual: true });
+  const fields = scanForm(dom.window.document);
+  const radios = fields.filter(f => f.kind === 'radio');
+  assert.equal(radios.length, 1, `一题被拆成 ${radios.length} 栏`);
+  assert.deepEqual(radios[0].options.map(o => o.text), ['male', 'female', 'prefer not to disclose']);
+  assert.equal(radios[0].label, 'gender');
+  const g = radios[0];
+  const { results } = await applyPlan(fields, [{ index: fields.indexOf(g), path: 'basics.gender', label: 'gender', value: 'Male', optionValue: 'Male', tier: 'auto' }], {});
+  const boxes = [...dom.window.document.querySelectorAll('input[type=radio]')];
+  assert.equal(boxes[0].checked, true, 'male 该被勾上');
+  assert.equal(boxes[1].checked, false, 'female 被勾了');
+  assert.equal(boxes[2].checked, false, 'prefer not to disclose 被勾了');
+  assert.ok(results[0].ok ?? results[0].status === 'green', `回读没确认：${JSON.stringify(results[0])}`);
+});

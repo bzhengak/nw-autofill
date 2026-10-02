@@ -9,6 +9,9 @@ import { normalizeBaseUrl, sanityCheckKey, findLeaksInExport, clampTimeoutSec, e
 import { BUILD } from '../core/build.js';
 import { encryptVault, decryptVault, profileDelta, describeDelta } from '../core/vault.js';
 import { describeUnfilledMap } from '../core/option-map.js';
+import { describeMappingTable, plainMappingTable } from '../core/mapping-table.js';
+import { describePlanCheck } from '../core/plan-check.js';
+import { slotChoices } from '../core/site-rules.js';
 
 const $ = id => document.getElementById(id);
 let tabId = null;
@@ -73,6 +76,10 @@ async function refresh() {
   $('fillSensitive').checked = Boolean(state?.settings?.fillSensitive);
   $('allowCustomSelect').checked = Boolean(state?.settings?.allowCustomSelect);
   $('enZhFallback').checked = state?.settings?.enMissingMode === 'zh_yellow';
+  // 映射表先行是默认态：设置里没这个键（老配置）也算开
+  $('mappingFirst').checked = state?.settings?.mappingFirst !== false;
+  // 按钮文字跟着开关走：开着时点它**不会写页面**，名字就不能还叫"扫描并填写"
+  $('btnScan').textContent = $('mappingFirst').checked ? '扫描并出映射表' : '扫描并填写';
   // 编辑区语言跟着设置走（刷新面板不该跳回中文，用户正在补英文补到一半）
   editorLang = state?.settings?.editorLang === 'en' ? 'en' : 'zh';
   $('langZh').classList.toggle('on', editorLang === 'zh');
@@ -325,6 +332,7 @@ function render(data, meta = {}) {
     // 表格里给中文说明，原始 token 留在 title：用户看得懂下一步，报障时我们也对得上号
     + `<td class="note" title="${escapeHtml(g.reason || '')}">${escapeHtml(gapReasonLabel(g.reason))}${g.note ? '　·　' + escapeHtml(g.note) : ''}</td></tr>`).join('')
     || '<tr><td class="note">无</td></tr>';
+  renderMapping(data);
 }
 
 function escapeHtml(s) {
@@ -334,19 +342,366 @@ function escapeHtml(s) {
 let lastScan = null;   // 最近一次扫描的 {gaps, aiFields}：AI 兜底要问的就是这批缺口
 
 async function run(mode, extra = {}) {
+  const { mappingGate, ...rest } = extra || {};
+  // 「映射表先行」把「扫描并填写」变成「扫描并出表」：这句话必须在表顶上说明白，
+  // 否则用户看到的仍是"点了填写却没动静"。
+  // 这里**不能无条件清空 panelNotice**：「按此映射填写」先落盘再调本函数，
+  // 上一句"已记住 N 条 / 被拒 N 条"正是那一跳的结论，被这一渲染抹掉就等于没说。
+  if (mappingGate) panelNotice = '映射表先行：这一轮只出了这张表，页面一个字节都没改。要落笔点「按此映射填写」。';
   const tab = await activeTab();
   tabId = tab?.id;
-  const res = await chrome.runtime.sendMessage({ type: 'nw:scan', tabId, mode, dryRun: mode === 'preview', allowNonApplication: allowNonApplicationOnce, ...extra });
+  const res = await chrome.runtime.sendMessage({ type: 'nw:scan', tabId, mode, dryRun: mode === 'preview', allowNonApplication: allowNonApplicationOnce, ...rest });
   if (!res?.ok) {
     $('stats').innerHTML = `<span class="banner">页面未响应：${escapeHtml(res?.error || '未知错误')}。若是刚装扩展，请刷新目标页面后重试。</span>`;
     return;
   }
   lastScan = res.data;
+  if (res.confirmationRejected?.length) {
+    panelNotice = `有 ${res.confirmationRejected.length} 条改判被拒（${res.confirmationRejected.map(x => x.why).slice(0, 2).join('；')}），这一轮没生效。`
+      + (panelNotice ? `　${panelNotice}` : '');
+  }
   render(res.data, { adapterId: res.adapterId, adapterInfo: res.adapterInfo });
 }
 
-$('btnScan').onclick = () => run('full');
-$('btnPreview').onclick = () => run('preview');
+// 用户主动发起的一次扫描该把上一轮的结论清掉（"已记住/被拒"是上一次动作的话）
+$('btnScan').onclick = () => { panelNotice = ''; pendingWritten = false; run(mappingFirstOn() ? 'preview' : 'full', mappingFirstOn() ? { mappingGate: true } : {}); };
+$('btnPreview').onclick = () => { panelNotice = ''; pendingWritten = false; run('preview'); };
+
+// ── S6 映射表：一栏一行，确认后才写 ──────────────────────────────────
+// 用户 2026-10-02 定的口径："一律先出映射表再写"。所以这张表不是"更多信息"，
+// 而是写入的**唯一入口**：点「扫描并填写」在开关开着时只出表，一个字节都不写。
+// 三条实现取向：
+//  ① 行内只用 textContent / createElement —— 页面标签是不可信输入（tests/xss.test.js 钉过）；
+//  ② 改判只决定"这一格是什么"，取值仍来自资料（这一栏里永远不出现取值）；
+//  ③ 勾了「记住到本站」才落盘，且落盘前后台会再校验一次槽位是否真实存在。
+const MAP_SCHEMA = buildFields();
+const MAP_SKIP = '__skip__';
+let pendingRules = new Map();      // 指纹 → { path, skip, note }（本轮改判，还没确认）
+let pendingWritten = false;        // 这批改判是否已经按下去写过一次（措辞要跟着变）
+let lastMapping = null;            // 最近一次扫描的映射表（导出与"已记住几条"都读它）
+let panelNotice = '';          // 「映射表先行」把填写钮变成出表时的那句话
+let mapJson = '';
+
+function mappingFirstOn() {
+  const el = $('mappingFirst');
+  return el ? el.checked !== false : true;
+}
+
+/** 资料里的叶子取值摊平成 {路径: 值}：导出前用它核对"表里没夹带取值" */
+function flattenValues(obj, prefix = '', out = {}) {
+  for (const [k, v] of Object.entries(obj || {})) {
+    const p = prefix ? `${prefix}.${k}` : k;
+    if (v && typeof v === 'object') flattenValues(v, p, out);
+    else if (typeof v === 'string' && v.trim()) out[p] = v.trim();
+  }
+  return out;
+}
+
+function renderPlanWarnings(check) {
+  const box = $('mapWarn');
+  if (!box) return;
+  const list = check?.warnings || [];
+  box.textContent = '';
+  box.hidden = !list.length;
+  if (!list.length) return;
+  const head = document.createElement('div');
+  head.textContent = describePlanCheck(check);
+  box.appendChild(head);
+  for (const w of list) {
+    const item = document.createElement('div');
+    item.className = 'witem';
+    const t = document.createElement('b');
+    t.textContent = w.zh || w.kind;
+    const act = document.createElement('span');
+    act.className = 'wact';
+    act.textContent = `下一步：${w.action || ''}`;
+    item.append(t, act);
+    box.appendChild(item);
+  }
+}
+
+/** 一行里的标签块：kind / 必填 / 板块 / 第几组 / 选项数 / 自定义下拉 */
+function pageTags(page) {
+  const tags = [page.kind, page.labelSource && `来源:${page.labelSource}`, page.required ? '必填' : '',
+    page.section && `板块:${page.section}`, page.itemIndex != null ? `第 ${page.itemIndex + 1} 组` : '',
+    page.options?.length ? `${page.options.length} 个选项` : '', page.customSelect ? '自定义下拉' : ''];
+  return tags.filter(Boolean);
+}
+
+/**
+ * 表顶那行话的组装：面板上"刚刚发生了什么"的那句必须每次一起重排，
+ * 否则改一个下拉就会把「映射表先行：一个字节都没写」这句盖掉 ——
+ * 而那句话正是用户决定要不要再点一个钮的依据。
+ */
+function mapSummaryText(table) {
+  if (!table?.rows?.length) return panelNotice || '映射表：暂无栏位。';
+  const changed = pendingRules.size
+    ? (pendingWritten
+      ? `本轮你改了 ${pendingRules.size} 栏，这张表已经按它写过一次（再点会继续生效）。`
+      : `本轮你改了 ${pendingRules.size} 栏，还没落笔 —— 点「按此映射填写」才会写。`)
+    : '';
+  return [panelNotice, describeMappingTable(table), changed].filter(Boolean).join('　');
+}
+function refreshMapSummary() { $('mapSummary').textContent = mapSummaryText(lastMapping); }
+
+function renderMapping(data) {
+  const host = $('mapTable');
+  const summary = $('mapSummary');
+  const table = data?.mapping || null;
+  lastMapping = table;
+  renderPlanWarnings(data?.planCheck);
+  if (!host) return;
+  if (!table?.rows?.length) {
+    host.textContent = data?.purposeBlocked
+      ? '整页目的闸拦下了这一页，没有映射可出。确认是网申表请按上面的「我确认这是网申表」。'
+      : '这一页没扫到栏位（或整页被拦下），所以映射表是空的。';
+    summary.textContent = mapSummaryText(table);
+    $('btnMapFill').disabled = true;
+    return;
+  }
+  summary.textContent = mapSummaryText(table);
+  host.textContent = '';
+  const head = document.createElement('div');
+  head.className = 'mrow mhead';
+  for (const t of ['页面这一栏', '我们的判定', '凭什么', '现在是谁写的', '改判（只改这一栏）']) {
+    const c = document.createElement('span');
+    c.textContent = t;
+    head.appendChild(c);
+  }
+  host.appendChild(head);
+  const choices = slotChoices(MAP_SCHEMA, String($('mapSearch')?.value || '').trim(), 40);
+  for (const r of table.rows) host.appendChild(mappingRow(r, choices));
+  $('btnMapFill').disabled = false;
+}
+
+function mappingRow(r, choices) {
+  const row = document.createElement('div');
+  row.className = 'mrow';
+  row.dataset.fp = r.fp;
+
+  // ① 页面这一栏：只放页面自己的文字
+  const c1 = document.createElement('span');
+  const label = document.createElement('b');
+  label.textContent = r.page.label || '(没读到标签)';
+  c1.appendChild(label);
+  const tagline = document.createElement('span');
+  tagline.className = 'note';
+  tagline.textContent = '　' + pageTags(r.page).join(' · ');
+  c1.appendChild(tagline);
+  if (r.page.options?.length) {
+    const opts = document.createElement('span');
+    opts.className = 'mwhy';
+    opts.textContent = `　选项：${r.page.options.slice(0, 8).join(' / ')}${r.page.options.length > 8 ? ' …' : ''}`;
+    c1.appendChild(opts);
+  }
+  if (r.page.description) {
+    const d = document.createElement('span');
+    d.className = 'mwhy';
+    d.textContent = `　说明：${r.page.description}`;
+    c1.appendChild(d);
+  }
+  if (r.collision > 1) {
+    const col = document.createElement('span');
+    col.className = 'banner';
+    col.textContent = `　这一页有 ${r.collision} 栏自述完全相同：改判与「记住到本站」会对它们一起生效`;
+    c1.appendChild(col);
+  }
+
+  // ② 我们的判定（槽位中文名 + 路径；没判定就给缺口说明）
+  const c2 = document.createElement('span');
+  const dot = document.createElement('span');
+  const tier = r.decision.tier;
+  dot.className = `dot ${tier === 'auto' ? 'green' : tier === 'review' ? 'yellow' : 'orange'}`;
+  c2.appendChild(dot);
+  const dec = document.createElement('span');
+  dec.textContent = r.decision.skip || r.decision.gap === 'user_excluded' ? '不自动填（你的决定）'
+    : r.decision.path ? `${r.decision.zh || r.decision.path}` : (r.decision.gapZh || '没定下来');
+  c2.appendChild(dec);
+  if (r.decision.path) {
+    const p = document.createElement('span');
+    p.className = 'mwhy';
+    p.textContent = `　${r.decision.path}`;
+    c2.appendChild(p);
+  } else if (r.decision.slotGuess) {
+    const g = document.createElement('span');
+    g.className = 'mwhy';
+    g.textContent = `　我们判它是「${r.decision.slotGuessZh}」，只是那份资料是空的`;
+    c2.appendChild(g);
+  }
+  if (r.decision.actual) {
+    const a = document.createElement('span');
+    a.className = 'mwhy';
+    a.textContent = `　写进去的是：${r.decision.actual}`;
+    c2.appendChild(a);
+  }
+
+  // ③ 凭什么：来历 + 证据 + 说明
+  const c3 = document.createElement('span');
+  const by = document.createElement('span');
+  by.className = 'mtag';
+  by.textContent = r.decision.byZh || r.decision.by;
+  c3.appendChild(by);
+  const why = document.createElement('span');
+  why.className = 'mwhy';
+  why.textContent = [r.decision.evidence?.length ? `依据：${r.decision.evidence.join('/')}` : '',
+    r.decision.score != null ? `置信 ${r.decision.score}` : ''].filter(Boolean).join('　');
+  c3.appendChild(why);
+  if (r.decision.note) {
+    const n = document.createElement('span');
+    n.className = 'mwhy';
+    n.textContent = `　${r.decision.note}`;
+    c3.appendChild(n);
+  }
+
+  // ④ 现状：这一格现在是谁写的（台账）+ 已有规则
+  const c4 = document.createElement('span');
+  const cur = document.createElement('span');
+  cur.textContent = r.currentZh || r.current;
+  c4.appendChild(cur);
+  if (r.rule) {
+    const rl = document.createElement('span');
+    rl.className = 'mtag';
+    rl.textContent = r.rule.skip ? '本站规则：不填' : `本站规则：${r.rule.path}`;
+    rl.title = r.rule.temporary ? '本轮确认，没勾记住 —— 关页就没了' : '已记住到本站';
+    c4.appendChild(rl);
+  }
+
+  // ⑤ 改判：下拉（只在这一个站点、只改这一栏）+ 理由
+  const c5 = document.createElement('span');
+  const sel = document.createElement('select');
+  const mk = (value, text) => {
+    const o = document.createElement('option');
+    o.value = value;
+    o.textContent = text;
+    return o;
+  };
+  sel.appendChild(mk('', `不改判（沿用「${r.decision.path ? r.decision.zh || r.decision.path : '没定下来'}」）`));
+  sel.appendChild(mk(MAP_SKIP, '这一栏不自动填'));
+  const listed = new Set();
+  const push = (path, zh) => {
+    if (!path || listed.has(path)) return;
+    listed.add(path);
+    sel.appendChild(mk(path, `${zh}　${path}`));
+  };
+  // 这一栏现在的判定永远排在最前：搜别的词时也不能把"它自己"从选项里挤掉
+  if (r.decision.path) push(r.decision.path, `${r.decision.zh}（当前）`);
+  for (const c of choices) push(c.path, c.zh);
+  const pending = pendingRules.get(r.fp);
+  sel.value = pending ? (pending.skip ? MAP_SKIP : pending.path) : '';
+  if (!sel.value && pending) sel.value = '';
+  const noteBox = document.createElement('input');
+  noteBox.type = 'text';
+  noteBox.placeholder = '为什么这么判（可空，会写进本站规则）';
+  noteBox.value = pending?.note || '';
+  sel.onchange = () => {
+    if (sel.value === '') pendingRules.delete(r.fp);
+    else pendingRules.set(r.fp, { path: sel.value === MAP_SKIP ? '' : sel.value, skip: sel.value === MAP_SKIP, note: String(noteBox.value || '').slice(0, 120) });
+    row.classList.toggle('pending', pendingRules.has(r.fp));
+    $('btnMapFill').textContent = pendingRules.size ? `按此映射填写（含 ${pendingRules.size} 栏改判）` : '按此映射填写';
+    pendingWritten = false;   // 又改了一栏 → "已经按这张表写过"这句不再成立
+    refreshMapSummary();
+  };
+  noteBox.oninput = () => {
+    const p = pendingRules.get(r.fp);
+    if (p) { p.note = String(noteBox.value || '').slice(0, 120); pendingRules.set(r.fp, p); }
+  };
+  c5.appendChild(sel);
+  c5.appendChild(noteBox);
+
+  row.append(c1, c2, c3, c4, c5);
+  return row;
+}
+
+$('mappingFirst').onchange = async () => {
+  const on = $('mappingFirst').checked;
+  $('btnScan').textContent = on ? '扫描并出映射表' : '扫描并填写';
+  await chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { mappingFirst: on } });
+  lastState = { ...(lastState || {}), settings: { ...(lastState?.settings || {}), mappingFirst: on } };
+  panelNotice = on
+    ? '开关已改：现在点「扫描并填写」也只出映射表，落笔要按「按此映射填写」。'
+    : '开关已关：点「扫描并填写」会直接写页面（映射表仍然出，但不再拦着写入）。';
+  refreshMapSummary();
+};
+$('mapSearch').oninput = () => { if (lastMapping) renderMapping({ mapping: lastMapping, planCheck: lastScan?.planCheck }); };
+
+$('btnMapFill').onclick = async () => {
+  const confirmed = [...pendingRules.entries()].map(([fp, r]) => ({ fp, path: r.path, skip: r.skip, note: r.note }));
+  panelNotice = '';
+  pendingWritten = true;
+  if (confirmed.length && $('mapRemember').checked) {
+    const put = await chrome.runtime.sendMessage({ type: 'nw:siteRulesPut', tabId, entries: confirmed });
+    if (!put?.ok) {
+      panelNotice = `改判没能记住（${put?.error || '未知原因'}）—— 这一轮仍按这些改判填写，但下一页/下一次重载就没了。`;
+    } else {
+      const rejected = put.rejected || [];
+      panelNotice = `已记住 ${put.accepted} 条到本站`
+        + (rejected.length ? `；被拒 ${rejected.length} 条：${rejected.map(x => x.why).slice(0, 3).join('；')}` : '')
+        + '　正在按这张表写入…';
+    }
+    await run('full');
+    return;
+  }
+  await run('full', confirmed.length ? { confirmed } : {});
+};
+
+$('btnMapRules').onclick = async () => {
+  const res = await chrome.runtime.sendMessage({ type: 'nw:siteRulesGet', tabId });
+  const box = $('mapWarn');
+  const rules = res?.rules || {};
+  const fps = Object.keys(rules);
+  box.hidden = false;
+  box.textContent = '';
+  const head = document.createElement('div');
+  head.textContent = res?.ok
+    ? `本站已记住 ${fps.length} 条改判（桶：${res.origin}）。这一页命中 ${lastMapping?.rows?.filter(r => rules[r.fp]).length || 0} 条。`
+    : `读不到本站改判：${res?.error || '未知原因'}`;
+  box.appendChild(head);
+  for (const r of (lastMapping?.rows || []).filter(x => rules[x.fp])) {
+    const item = document.createElement('div');
+    item.className = 'witem';
+    const t = document.createElement('b');
+    t.textContent = `「${r.page.label || '(没读到标签)'}」→ ${rules[r.fp].skip ? '不自动填' : rules[r.fp].path}`;
+    item.appendChild(t);
+    if (rules[r.fp].note) {
+      const n = document.createElement('span');
+      n.className = 'wact';
+      n.textContent = `当时的理由：${rules[r.fp].note}`;
+      item.appendChild(n);
+    }
+    box.appendChild(item);
+  }
+};
+
+$('btnMapForget').onclick = async () => {
+  const res = await chrome.runtime.sendMessage({ type: 'nw:siteRulesForgetSite', tabId });
+  pendingRules = new Map();
+  $('btnMapFill').textContent = '按此映射填写';
+  panelNotice = res?.ok
+    ? `本站的改判已忘记（剩 ${res.count ?? 0} 条）。正在按无改判重扫一遍…`
+    : `忘记失败：${res?.error || '未知原因'}`;
+  refreshMapSummary();
+  await run('preview');
+};
+
+$('btnMapExport').onclick = () => {
+  if (!lastMapping?.rows?.length) { panelNotice = '还没有映射表可导出（先扫一次这一页）。'; $('mapOut').value = ''; refreshMapSummary(); return; }
+  mapJson = JSON.stringify(plainMappingTable(lastMapping), null, 1);
+  const leaks = findLeaksInExport(mapJson, flattenValues(lastState?.profile || {}));
+  if (leaks.length) {
+    panelNotice = `已拒绝导出：表里出现了资料取值（${leaks.map(l => l.key).slice(0, 4).join('、')}）。请把这一句连同构建号发回来。`;
+    $('mapOut').value = '';
+    refreshMapSummary();
+    return;
+  }
+  $('mapOut').value = mapJson;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([mapJson], { type: 'application/json' }));
+  a.download = `mapping-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  panelNotice = `已导出 ${lastMapping.rows.length} 行映射表：里面只有页面文字、槽位名与依据，没有你的任何取值。`;
+  refreshMapSummary();
+};
+
 
 // ―― AI 兜底 ――
 // 面板只负责"取最近一次扫描的缺口 → 交给 background → 拿回候选 → 重新扫描并落地"。

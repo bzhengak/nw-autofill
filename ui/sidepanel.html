@@ -60,6 +60,19 @@
   .frow.needsEn > span { color:var(--warn-fg, #9a6700); font-weight:600; }
   .frow.needsEn input, .frow.needsEn textarea { border-color:var(--warn-line, #d4a72c); border-style:dashed; }
   #auditMissing tr:hover td { background: var(--btn-bg); }
+  /* ── 映射表（S6）──
+     一栏一行，五列并排：页面自述 / 我们的判定 / 凭什么 / 现状 / 改判。
+     用 grid 而不是 table：行高差很大（依据常常两三行），表格对齐会把整行拉得很散。 */
+  #mapTable { max-height:360px; overflow:auto; border:1px solid var(--line); border-radius:6px; }
+  .mrow { display:grid; grid-template-columns:1.25fr 1.1fr 1.3fr .75fr 1.15fr; gap:6px; padding:6px 6px; border-bottom:1px solid var(--line); font-size:11px; align-items:start; }
+  .mrow:hover { background: var(--btn-bg); }
+  .mhead { color: var(--muted); font-weight:600; }
+  .mrow.pending { outline:1px dashed var(--accent, #2f6feb); outline-offset:-1px; }
+  .mrow select { font:inherit; padding:2px 4px; background:var(--field-bg); color:var(--field-fg); border:1px solid var(--line); border-radius:4px; max-width:100%; }
+  .mtag { display:inline-block; border:1px solid var(--line); border-radius:4px; padding:0 4px; font-size:10px; color:var(--muted); margin-right:3px; }
+  .mwhy { color: var(--muted); }
+  #mapWarn .witem { display:block; margin:4px 0; }
+  #mapWarn .wact { color: var(--muted); display:block; }
 </style>
 </head>
 <body>
@@ -88,6 +101,28 @@
 
   <h2>需要你处理的字段</h2>
   <table id="gaps"></table>
+
+  <h2>本页映射表（一栏一行，确认后才写）</h2>
+  <div class="stats" id="mapSummary">尚未扫描</div>
+  <div id="mapWarn" class="banner" hidden></div>
+  <label class="chk"><input type="checkbox" id="mappingFirst" checked>映射表先行：点「扫描并填写」也只先出这张表，落笔要按下面那个钮（关掉它就回到"扫描即写入"）</label>
+  <div class="row">
+    <input id="mapSearch" type="text" spellcheck="false" placeholder="改判下拉里先搜这个词（槽位中文名或英文别名）" style="flex:1;min-width:160px">
+    <label class="chk"><input type="checkbox" id="mapRemember">改判同时记住到本站</label>
+  </div>
+  <div class="row">
+    <button class="primary" id="btnMapFill" disabled>按此映射填写</button>
+    <button id="btnMapRules">本站已记住几条</button>
+    <button id="btnMapForget">忘记本站的改判</button>
+    <button id="btnMapExport">导出映射表（无取值）</button>
+  </div>
+  <div class="note" id="mapNote">
+    每一行是这一页的一栏：页面自述 / 我们的判定 / 凭什么 / 现在是谁写的 / 改判。
+    改判只决定"这一格是什么"，取值仍来自你的资料 —— 资料空着就照旧留空，我们不造值。
+    勾「记住到本站」才会落盘（按站点分桶，只在这一个站点生效，里面没有任何简历取值）。
+  </div>
+  <div id="mapTable"></div>
+  <textarea id="mapOut" spellcheck="false" style="min-height:70px" readonly placeholder="尚未导出"></textarea>
 
   <h2>导入简历 Markdown</h2>
   <textarea id="mdText" spellcheck="false" placeholder="把你的简历 Markdown 全文粘贴到这里" style="min-height:90px"></textarea>

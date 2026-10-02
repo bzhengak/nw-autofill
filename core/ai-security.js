@@ -3,9 +3,11 @@
 // 所以"什么算合法端点、Key 能不能发出去、settings 里能不能存 Key"必须能离线断言，
 // 而不是等有人在浏览器里试。
 
-/** 可以持久化的设置白名单。Key 不在里面 —— 它只配活在 chrome.storage.session。 */
+/** 可以持久化的设置白名单。Key 不在里面 —— 它只配活在 chrome.storage.session。
+ *  mappingFirst（S6「映射表先行」）必须在列：不在就等于这个开关永远存不下来。 */
 export const SETTING_KEYS = ['mode', 'fillSensitive', 'autoSubmitNever', 'allowCustomSelect', 'aiEnabled',
-  'aiBaseUrl', 'aiModel', 'aiMaxGaps', 'aiConsentOrigin', 'aiTimeoutSec', 'aiMaxOutput', 'aiStream', 'editorLang', 'enMissingMode'];
+  'aiBaseUrl', 'aiModel', 'aiMaxGaps', 'aiConsentOrigin', 'aiTimeoutSec', 'aiMaxOutput', 'aiStream', 'editorLang', 'enMissingMode',
+  'mappingFirst'];
 
 const SECRETISH = /(key|token|secret|password|credential|auth)/i;
 

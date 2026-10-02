@@ -300,6 +300,8 @@ function render(data, meta = {}) {
   $('stats').innerHTML = [
     ['扫描到', s.scanned || 0], ['计划填', s.planned || 0], ['绿·自动', s.green || s.auto || 0],
     ['黄·待复核', s.yellow || s.review || 0], ['红·失败', s.red || 0], ['待你处理', s.gaps || 0],
+    // "我们没动的栏"要单独看得见：它不是失败，是按覆盖口径保住了站点预填与你手填的值
+    ['没动的栏', (data?.results || []).filter(r => r.notOurs).length || 0],
     ['资料已填', s.profileFilled != null ? s.profileFilled : '-'],
     // AI 指认的栏位：非敏感按正常档位，但角标要看得见"这一栏的依据不是本地词典"
     ['AI 补栏', s.aiApplied || 0],

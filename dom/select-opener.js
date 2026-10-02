@@ -235,11 +235,32 @@ export function matchOption(options, want) {
  * 完整一次选择：点开 → 匹配 → 点选项 → 回读校验。
  * 返回 { ok, reason, shown, expected } —— 调用方（filler）用 shown/expected 决定是否给绿字。
  */
-export async function pickCustomSelect(field, want, { sleep = ms => new Promise(r => setTimeout(r, ms)), hints = null } = {}) {
+/** 区号型选项：'+86'、'(852) 6123 4567'、'中国大陆 +86' 这类。
+ *  途普那一页把"区号下拉"和"手机号输入框"共用同一句标签（primary cell number），
+ *  于是区号那一格被派去拿证件号/备用电话（用户实测）。这种下拉只允许配「电话国家/地区区号」。
+ */
+const DIAL_CODE = /\+\s?\d{1,4}/;                                  // "+86" / "+ 852" / "中国大陆 +86"
+function isDialOption(t) {
+  return DIAL_CODE.test(String(t || ""));
+}
+function looksLikeDialCodes(options) {
+  const texts = options.map(o => optionText(o)).filter(Boolean);
+  if (texts.length < 3) return false;
+  const plus = texts.filter(isDialOption).length;
+  return plus >= 2 && plus / texts.length >= 0.5;
+}
+
+export async function pickCustomSelect(field, want, { sleep = ms => new Promise(r => setTimeout(r, ms)), hints = null, path = '' } = {}) {
   const doc = field.el.ownerDocument;
   const opened = openOptions(field.el, doc, hints);
   if (!opened.ok) return { ok: false, reason: opened.reason, shown: '', expected: want };
 
+  if (looksLikeDialCodes(opened.options) && path && path !== 'contact.dialCode') {
+    // 这一整列都是区号，说明控件本身是"电话国家/地区区号"，跟资料里那条值无关。
+    // 报成独立的 dial_code_only（不是 option_missing），用户才知道该改的是"这一格配错了槽位"，
+    // 而不是"资料里少了一个选项"。
+    return { ok: false, reason: 'dial_code_only', shown: '', expected: want, options: opened.options.length, dialCodes: true };
+  }
   let opt = matchOption(opened.options, want);
   // 有些实现首屏只渲染前 N 项（虚拟列表）：等一帧后在**同一批容器**里再找一次，仍找不到就交人工
   if (!opt && opened.panels?.length) {

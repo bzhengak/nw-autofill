@@ -459,7 +459,39 @@ function isFieldShell(n) {
   } catch { return false; }
 }
 
-  function nearbyLabels(el, doc) {
+  /**
+ * 这一栏的**描述文字**（不是标签）：aria-describedby 指向的说明、title、
+ * 以及旁边那个 help/explain/tip 样的小字。
+ * 为什么单独采：用户 2026-10-02 的要求是"AI 要看到栏位的信息全面 —— 整个页面的结构、
+ * 栏位对应的名称和描述"。很多网申栏的标签只有 `Name` / `Other`，真正说明它要什么的是下面那行小字
+ * （"如与护照不同请填写中文名"、"Please list the highest score"）。没有这一列，AI 只能回 null。
+ * 上限 160 字：这是页面文案，不是用户资料，但也没必要把整段招募说明搬进请求。
+ */
+function descriptionOf(el, doc) {
+  const bits = [];
+  const byId = el.getAttribute?.('aria-describedby');
+  if (byId) {
+    const tree = el.getRootNode?.() || doc;
+    for (const id of byId.split(/\s+/).map(s => s.trim()).filter(Boolean)) {
+      const node = tree.getElementById ? tree.getElementById(id) : doc.getElementById?.(id);
+      if (node) bits.push(textOf(node));
+    }
+  }
+  const title = clean(el.getAttribute?.('title') || '');
+  if (title) bits.push(title);
+  const shell = el.closest?.('[class*="form-item"],[class*="formItem"],[class*="field"],li,tr,dd');
+  if (shell) {
+    const help = shell.querySelector?.('[class*="help"],[class*="explain"],[class*="description"],[class*="desc"],[class*="tip"],[class*="hint"],small');
+    const t = help && !help.querySelector?.(CONTROL_SELECTOR) ? textOf(help) : '';
+    // 说明文字里常混着"还剩 20 字"这类计数器与必填星号，留着只会干扰判断
+    if (t && t.length <= 160 && !/\d+\s*\/\s*\d+/.test(t)) bits.push(t);
+  }
+  const seen = new Set();
+  const out = bits.map(s => String(s || '').trim()).filter(s => s && !seen.has(s) && seen.add(s));
+  return out.join(' / ').slice(0, 160);
+}
+
+function nearbyLabels(el, doc) {
   const out = [];
   const legend = el.closest?.('fieldset')?.querySelector?.('legend');
   if (legend) out.push(textOf(legend));
@@ -670,6 +702,7 @@ export function scanForm(root = document) {
         sectionSource: secEv.source,
         itemIndex: (blockInfoOf(el, blockIndex) || {}).index ?? null,
         nearbyLabels: nearbyLabels(el, doc),
+        description: descriptionOf(el, doc),
         autocomplete: el.getAttribute('autocomplete') || '',
         testId: el.getAttribute('data-testid') || el.getAttribute('data-test') || '',
         className: String(el.className || ''),
@@ -702,6 +735,7 @@ export function scanForm(root = document) {
       sectionSource: secEv.source,
       itemIndex: (blockInfoOf(el, blockIndex) || {}).index ?? null,
       nearbyLabels: nearbyLabels(el, doc),
+      description: descriptionOf(el, doc),
       autocomplete: el.getAttribute('autocomplete') || '',
       testId: el.getAttribute('data-testid') || el.getAttribute('data-test') || '',
       className: String(el.className || ''),

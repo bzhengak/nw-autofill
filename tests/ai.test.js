@@ -1,5 +1,6 @@
 // 混合 AI 兜底的安全边界回归。这里钉的不是"AI 准不准"，而是三条不可谈判的边界：
-// 取值不许离开本机、AI 只能选路径不能造值、AI 的结果永远是黄字。
+// 取值不许离开本机、AI 只能选路径不能造值、AI 挑中的敏感槽位仍走 review（用户 2026-10-02
+// 把"结果一律黄字"改成"我都要检查一遍"，所以非敏感栏按正常档位走）。
 // 全程不联网：请求构造与响应解析都是纯函数，网络只在 service worker 里发生。
 
 import { test } from 'node:test';
@@ -29,6 +30,52 @@ function richProfile() {
 
 const PLAN = { gaps: [{ index: 3, label: '中文姓', reason: 'no_candidate', kind: 'text' }] };
 const PAGEFIELDS = [null, null, null, { kind: 'text', label: '中文姓', labelRaw: '中文姓', options: [], nearbyLabels: [] }];
+
+/**
+ * 「问 AI」的准确率天花板在**页面档案采全**上：埃森哲那一页一堆栏位标签就是 'Name'/'Other'，
+ * 唯一能区分"证书名称"和"本人姓名"的是说明文字、所在板块和选项列表。
+ * 这三样过去没发出去（只发了 label + kind），于是模型只能猜 —— 用户 2026-10-02 的定调是
+ * "AI 获取的栏位信息要全面"，同时"做好了就不必发送候选值"，所以取值仍然一个字都不许走。
+ */
+test('发给模型的栏位档案带齐说明文字、板块与选项码值（不带取值）', () => {
+  const p = richProfile();
+  const gaps = [{ index: 0, label: 'Name', reason: 'no_candidate', kind: 'select' }];
+  const fields = [{
+    kind: 'select',
+    label: 'Name', labelRaw: 'Name',
+    description: 'Name as printed on your certificate',
+    sectionTitle: 'Certifications', sectionHint: 'education',
+    options: [{ text: 'IELTS', value: '1' }, { text: 'GMAT', value: '2' }, { text: 'PMP', value: '' }],
+    nearbyLabels: ['Certificate No.'], required: true,
+  }];
+  const req = buildAiRequest({ plan: { gaps }, profile: p, pageFields: fields });
+  const sent = JSON.parse(req.text.slice(req.text.indexOf('\n\n') + 2)).fields[0];
+  assert.equal(sent.desc, 'Name as printed on your certificate', '说明文字没发出去，模型看不到这一栏到底指什么');
+  assert.equal(sent.section, 'Certifications', '板块归属没发出去：同名栏位全靠这一条区分');
+  assert.deepEqual(sent.options, ['IELTS=1', 'GMAT=2', 'PMP'], '选项要"文案=码值"成对发出，且没有 value 的选项不该多出等号');
+  assert.equal(sent.label, 'Name');
+  assert.equal(sent.required, true);
+  // 采全 ≠ 破例：整条请求里仍然一个取值都没有
+  const leaks = assertNoProfileValues(req.text, p, { exempt: [req.slotSection], pageTokens: req.pageTokens });
+  assert.deepEqual(leaks, [], `栏位档案采全顺手把取值带出去了：${JSON.stringify(leaks)}`);
+});
+
+test('装不下时先削选项和描述，而不是直接把栏位丢掉', () => {
+  const p = createEmptyProfile();
+  const gaps = Array.from({ length: 8 }, (_, i) => ({ index: i, label: '姓名', reason: 'no_candidate', kind: 'select' }));
+  const fields = gaps.map(g => ({
+    kind: 'select', labelRaw: g.label, description: 'D'.repeat(4000),
+    options: Array.from({ length: 60 }, (_, j) => ({ text: 'O'.repeat(60) + j, value: String(j) })),
+    nearbyLabels: [],
+  }));
+  // 上限卡在"槽位目录 + 满档案"放得下、"满档案"放不下的区间里，才测得到降级而不是测目录本身
+  const req = buildAiRequest({ plan: { gaps }, profile: p, pageFields: fields, limit: 8, maxBytes: 20000 });
+  const sent = JSON.parse(req.text.slice(req.text.indexOf('\n\n') + 2)).fields;
+  assert.ok(new TextEncoder().encode(req.text).length <= 20000, `降级后仍然超限：${new TextEncoder().encode(req.text).length}`);
+  assert.ok(req.trim.level >= 1, `超限时必须报告削到第几档，实得 ${JSON.stringify(req.trim)}`);
+  assert.ok(sent.length === gaps.length, `削的是描述和选项，不是栏位本身：问了 ${gaps.length} 栏却发出 ${sent.length} 栏`);
+  assert.ok(sent[0].options.length < 60, `选项还全带着，降级没生效：${sent[0].options.length} 条`);
+});
 
 test('请求文本里不许出现任何已填写的取值：植入了就拒绝发送', () => {
   const p = richProfile();
@@ -105,7 +152,7 @@ test('AI 只能从白名单里挑：陌生 path、越界 index、看不懂的回
   assert.equal(junk.dropped[0].reason, 'unparsable');
 });
 
-test('AI 的建议一律黄字，且值永远由本地从 profile 取（AI 造不出值）', () => {
+test('AI 只做栏位映射：非敏感槽位可以绿字，敏感槽位仍留黄字，值永远由本地从 profile 取', () => {
   const p = richProfile();
   const dom = new JSDOM('<input name="xq">');
   const fields = scanForm(dom.window.document);
@@ -115,8 +162,10 @@ test('AI 的建议一律黄字，且值永远由本地从 profile 取（AI 造�
   const merged = applyAiCandidates(plan, p, [{ index: 0, path: 'intent.cities', reason: '服务地区≈意向城市' }]);
   assert.equal(merged.assignments.length, 1);
   const a = merged.assignments[0];
-  assert.equal(a.tier, 'review', 'AI 选的路径永远不许绿字');
-  assert.equal(a.aiChosen, true);
+  // 用户 2026-10-02 的口径："不用一律黄字，因为我都要检查一遍" —— AI 的贡献只有
+  // "这一栏对应资料里哪个槽位"，值仍旧是本地取的那一个，所以非敏感栏按正常 tier 走。
+  assert.equal(a.tier, 'auto', 'AI 指认的非敏感槽位按正常档位，不再一律压成黄字');
+  assert.equal(a.aiChosen, true, '来源标记要留着：表格里能看出这一栏是 AI 指的');
   assert.equal(a.value, getValueByPath(p, 'intent.cities'), '写入值必须是资料里原有的值，不是 AI 生成的');
   // 资料里那栏空着 → 不许写，变成一条能看懂的缺口
   const empty = createEmptyProfile();
@@ -326,7 +375,7 @@ test('模型交回带 N 的归并路径：本地补成第一条并说明是我�
   assert.equal(bad.dropped[0].reason, 'unknown_path', '白名单被放宽了');
 });
 
-test('AI 落地时的黄字说明要写出"第几条经历是我们补的"', () => {
+test('AI 落地时的说明要写出"第几条经历是我们补的"，档位只按敏感与否分', () => {
   const p = createEmptyProfile();
   setValueByPath(p, 'work.0.company', '寰宇智能装备');
   const plan = {
@@ -337,8 +386,10 @@ test('AI 落地时的黄字说明要写出"第几条经历是我们补的"', () 
     { index: 3, path: 'work.0.company', nExpanded: true, reason: '经历单位' },
   ]);
   assert.equal(merged.assignments.length, 1);
-  assert.equal(merged.assignments[0].tier, 'review', 'AI 的结果永远黄字');
+  assert.equal(merged.assignments[0].tier, 'auto', '非敏感槽位不再一律压黄字（用户 2026-10-02 的口径）');
+  assert.equal(merged.stats.review, 0, '统计口径必须跟着档位走：不再把 AI 补的都算成待核对');
   assert.match(merged.assignments[0].note, /第几条经历是我们补的/);
+  assert.doesNotMatch(merged.assignments[0].note, /请核对/, '「请核对」只留给敏感字段');
 });
 
 test('归并后自检仍然拦得住取值：目录豁免只盖住目录那一串字', () => {

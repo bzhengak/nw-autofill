@@ -8,6 +8,13 @@ import { pickCustomSelect, isCustomSelect, wordMatches, adapterHints } from './s
 // label > span 装饰 > opacity:0 的 input）下尤其容易各写各的。
 import { optionTextOf } from './scanner.js';
 
+/**
+ * 这些失败不是"我们填错了"，是"这一栏得你亲自来"（附件、选项对不上、
+ * 控件其实是区号下拉而资料给的不是区号）。报红会把注意力从真错上引开，
+ * 统一走 manual：表格里单独一组，不带红色的误报压力。
+ */
+const MANUAL_REASONS = new Set(['file_manual', 'choice_required', 'dial_code_only']);
+
 function dispatch(el, type, extra = {}) {
   const doc = el.ownerDocument;
   const Ctor = type.startsWith('key') ? doc.defaultView.KeyboardEvent
@@ -119,13 +126,13 @@ export async function fillField(field, entry, opts = {}) {
   // 任何一步不确定就交人工，绝不"点了就当成功"。
   if (opts.allowCustomSelect && kind !== 'select' && isCustomSelect(field)) {
     const want = entry.optionValue ?? entry.value ?? '';
-    const picked = await pickCustomSelect(field, want, { hints: adapterHints(opts.adapter) });
+    const picked = await pickCustomSelect(field, want, { hints: adapterHints(opts.adapter), path: entry.path });
     if (picked.ok) return { ok: true, actual: picked.shown, shown: picked.shown, viaCustomSelect: true, error: '' };
     // 「站点选项里没有我们资料中的值」不是填写失败，是必须本人表态：
     // 报红会把用户的注意力从真错上引开（与 needsChoice 同一口径）。
-    const manual = picked.reason === 'option_missing' || picked.reason === 'no_options_rendered';
+    const manual = picked.reason === 'option_missing' || picked.reason === 'no_options_rendered' || picked.reason === 'dial_code_only';
     return {
-      ok: false, reason: manual ? 'choice_required' : (picked.reason || 'custom_control'),
+      ok: false, reason: manual ? (picked.reason === 'dial_code_only' ? 'dial_code_only' : 'choice_required') : (picked.reason || 'custom_control'),
       actual: '', shown: picked.shown || '', error: '', viaCustomSelect: true,
     };
   }
@@ -271,7 +278,7 @@ export async function applyPlan(fields, assignments, opts = {}) {
       // 'choice_required'：计划阶段就知道页面选项跟资料对不上（entry.needsChoice）。
       // 这不是"我们填错了"，是"这一栏得你亲手表态"，报红会把用户的注意力从真错上引开。
       status: outcome.ok ? (entry.tier === 'auto' ? 'green' : 'yellow')
-        : (outcome.reason === 'file_manual' || outcome.reason === 'choice_required') ? 'manual' : 'red',
+        : MANUAL_REASONS.has(outcome.reason) ? 'manual' : 'red',
       actual: outcome.actual,
       failReason: outcome.reason || '',
     });

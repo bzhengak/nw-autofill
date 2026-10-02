@@ -99,7 +99,17 @@ async function handleScan({ profile, mode = 'full', dryRun = false, adapter = nu
       index: g.index,
       label: String(f.labelRaw || f.label || g.label || '').slice(0, 160),
       kind: f.kind || g.kind || 'text',
-      options: (f.options || []).map(o => String(o.text ?? o).slice(0, 40)).filter(Boolean).slice(0, 24),
+      // 选项带"文案=码值"：这是页面自己的内容（不是用户资料），
+      // 而"这一栏到底要哪个码"常常只有选项能说明白（用户 2026-10-02：栏位信息要全面）
+      options: (f.options || []).map(o => {
+        const t = String(o?.text ?? o ?? '').slice(0, 40);
+        const v = String(o?.value ?? '').slice(0, 24);
+        return v && v !== t ? t + '=' + v : t;
+      }).filter(Boolean).slice(0, 24),
+      desc: String(f.description || '').slice(0, 160),
+      section: String(f.sectionTitle || f.sectionHint || '').slice(0, 40),
+      name: String(f.name || '').slice(0, 40),
+      id: String(f.id || '').slice(0, 40),
       nearby: (f.nearbyLabels || []).slice(0, 3),
       required: Boolean(f.required),
     });

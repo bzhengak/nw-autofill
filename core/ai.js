@@ -129,9 +129,16 @@ export function buildAiRequest({ plan, profile, pageFields, locale = 'zh', limit
       label: String(pf.labelRaw || g.label || '').slice(0, labelCap),
       kind: pf.kind || g.kind || 'text',
       required: Boolean(pf.required),
+      // 描述与板块：标签只有 'Name' / 'Other' 时，说明文字是唯一线索
+      desc: String(pf.description || '').slice(0, labelCap),
+      section: String(pf.sectionTitle || pf.sectionHint || '').slice(0, 40),
     };
     // 选项文本是页面自己的内容，离开本机不涉及隐私；带上它能显著减少"猜错分组"
-    if (optCap) q.options = (pf.options || []).map(o => String(o.text ?? o).slice(0, optChars)).filter(Boolean).slice(0, optCap);
+    if (optCap) q.options = (pf.options || []).map(o => {
+      const t = String(o?.text ?? o ?? '').slice(0, optChars);
+      const v = String(o?.value ?? '').slice(0, 20);
+      return v && v !== t ? t + '=' + v : t;
+    }).filter(Boolean).slice(0, optCap);
     if (nearCap) q.nearby = (pf.nearbyLabels || []).slice(0, nearCap);
     return q;
   };
@@ -371,9 +378,13 @@ export function applyAiCandidates(plan, profile, candidates = [], opts = {}) {
     }
     added.push({
       index: g.index, path: sf.path, value, profileType: sf.type, sensitive: sf.sensitive,
-      score: 0, tier: 'review', aiChosen: true,
+      // 用户 2026-10-02 明确改了判："不用一律黄字，因为我都要检查一遍。"
+      // 所以 AI 选的不再自动降级成 review —— 但 aiChosen 标记与"这是 AI 建议"的说明照留，
+      // 撤销与审计仍然认得这一笔；敏感字段仍走 review（那是另一道闸，不是置信度问题）。
+      score: 0, tier: sf.sensitive ? 'review' : 'auto', aiChosen: true,
       label: g.label, note: `本地词典没有这个词，AI 按语义建议用「${sf.zh}」${c.reason ? `（${c.reason}）` : ''}`
-        + (c.nExpanded ? '；这一条属于第几条经历是我们补的（AI 交回的是带 N 的归并路径），不是 AI 定的' : '') + '，请核对',
+        + (c.nExpanded ? '；这一条属于第几条经历是我们补的（AI 交回的是带 N 的归并路径），不是 AI 定的' : '')
+        + (sf.sensitive ? '，请核对' : ''),
     });
   }
   return {
@@ -382,7 +393,7 @@ export function applyAiCandidates(plan, profile, candidates = [], opts = {}) {
     stats: {
       ...plan.stats,
       planned: plan.assignments.length + added.length,
-      review: (plan.stats.review || 0) + added.length,
+      review: (plan.stats.review || 0) + added.filter(a => a.tier === 'review').length,
       gaps: keptGaps.length,
     },
     applied: added.length,

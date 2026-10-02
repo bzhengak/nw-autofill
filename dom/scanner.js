@@ -107,6 +107,10 @@ function blockTitleOf(el) {
     if (rowish.length < 2) continue;                 // 不是"一块里排着好几栏"的容器，再往上
     for (const k of kids) {
       if (k.querySelector?.(CONTROL_SELECTOR)) continue;
+      // 只认**排在本栏之前**的旁支文字。标题在字段后面就不是板块名，是脚注/下一节：
+      // 实测「姓名栏 → h3 教育经历 → 教育栏」这种平铺 form 里，不查位置的写法
+      // 会把「教育经历」同时当成姓名的板块证据，于是基本信息栏全被判给教育节。
+      if (typeof el.compareDocumentPosition === 'function' && !(el.compareDocumentPosition(k) & 2)) continue;   // 2 = k 在 el 之前
       const t = textOf(k);
       if (t && t.length <= 24) return { text: t, hint: hintOfText(t), depth: up };
     }
@@ -317,20 +321,37 @@ export function labelFor(el, doc, opts = {}) {
     while (sib && guard++ < 6) {
       // 碰到兄弟里另一个字段块就收手：再往前是"别人的标签"，跨块取文本会把卡片题目当成标签
       if (sib.nodeType === 1 && (sib.querySelector?.(CONTROL_SELECTOR) || isFieldShell(sib))) break;
+      // 标题是块与块的分界，它说得出"这一节讲什么"，说不出"这一栏填什么" ——
+      // 所以既不往前跨过去取文字，也不把标题本身当标签（那是 blockTitleOf / sectionTitle 的活）。
+      if (sib.nodeType === 1 && isBlockTitle(sib)) break;
       push(sib, 'prev-sibling', hops);
       sib = sib.previousSibling;
     }
     if (node.tagName === 'TD' || node.tagName === 'TH') push(node.previousElementSibling, 'table-cell', hops);
     const holder = node.parentElement;
     if (!holder) break;
-    push(holder.querySelector(':scope > label, :scope > [class*="label"], :scope > [class*="title"], :scope > dt, :scope > th'), 'container-label', hops + 1);
-    const kids = Array.from(holder.children || []).slice(0, 12);
-    for (const k of kids) {
-      if (k === node || (k.contains && k.contains(el))) break;
-      // 同 prev-sibling：自定义下拉的显示区不是标签，两条路径要用同一条判据
+    // 同层"看着像标签"的分支逐个看，取第一个**说得通**的：
+    // 标题（h1-h6 / class 以 title|header|heading 结尾）说的是"这一节讲什么"，不是"这一栏填什么"，
+    // 拿它当标签会把整块字段糊到同一个槽位上；中间夹着标题 = 那枚标签属于上一节。
+    const holderLabels = Array.from(holder.querySelectorAll?.(':scope > label, :scope > [class*="label"], :scope > [class*="title"], :scope > dt, :scope > th') || []);
+    for (const cand of holderLabels) {
+      if (isBlockTitle(cand)) continue;
+      if (crossesHeading(cand, node, holder)) continue;
+      push(cand, 'container-label', hops + 1);
+      break;
+    }
+    // 同层的文字要**从本栏往前挨着看**，看到标题就收手：
+    // 从容器第一个孩子往后扫是会跨过标题的（实测：.wrap 里「姓名 + 控件」再「h3 教育经历」再控件，
+    // 正向扫到标题之前就把上一节的「姓名」当成了本栏的 container-text 标签）。
+    const kids = Array.from(holder.children || []).slice(0, 24);
+    const mine = kids.findIndex(k => k === node || (k.contains && k.contains(el)));
+    for (let i = (mine < 0 ? kids.length - 1 : mine) - 1; i >= 0; i--) {
+      const k = kids[i];
+      if (!k) continue;
+      if (isBlockTitle(k)) break;                       // 标题之前是上一节的地盘
       if ((k.querySelector && k.querySelector(CONTROL_SELECTOR)) || isFieldShell(k)) continue;
       const txt = textOf(k);
-      if (txt && txt.length <= 24) cands.push({ text: txt, raw: normRaw(k.textContent), source: 'container-text', depth: hops + 2, heading: isBlockTitle(k) });
+      if (txt && txt.length <= 24) cands.push({ text: txt, raw: normRaw(k.textContent), source: 'container-text', depth: hops + 2, heading: false });
     }
     if (kids.length && kids[0] === node && hops >= 2) break;
     node = holder;
@@ -489,6 +510,26 @@ function descriptionOf(el, doc) {
   const seen = new Set();
   const out = bits.map(s => String(s || '').trim()).filter(s => s && !seen.has(s) && seen.add(s));
   return out.join(' / ').slice(0, 160);
+}
+
+/**
+ * 两个节点之间是否夹着一个标题。夹着就说明它们分属两节：
+ * 标题之前那段文字（含上一节的 <label>）不是这一栏的标签。
+ * 这条判据是给"同一容器里排着好几节"的表单准备的（实测：一个 .wrap 里
+ * 「姓名 + input」再「h3 教育经历」再 input，光停掉兄弟遍历并挡住不了 ——
+ * `:scope > label` 那条查询会直接把上一节的标签捞过来）。
+ */
+function crossesHeading(fromEl, toEl, holder) {
+  if (!fromEl || !toEl || !holder) return false;
+  const chain = n => { const out = []; let cur = n; while (cur && cur !== holder) { out.unshift(cur); cur = cur.parentElement; } return out; };
+  const a = chain(fromEl)[0] || fromEl;
+  const b = chain(toEl)[0] || toEl;
+  const kids = Array.from(holder.children || []);
+  const ia = kids.indexOf(a), ib = kids.indexOf(b);
+  if (ia < 0 || ib < 0 || ia === ib) return false;
+  const [lo, hi] = ia < ib ? [ia, ib] : [ib, ia];
+  for (let i = lo + 1; i < hi; i++) if (isBlockTitle(kids[i])) return true;
+  return false;
 }
 
 function nearbyLabels(el, doc) {

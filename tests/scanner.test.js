@@ -444,3 +444,31 @@ test('区块容器里找不到标题时不许改口：宁可没证据，也不�
     assert.ok(!f.sectionHint, `没有板块标题却给出了章节归属：${f.sectionHint}（会把手名都归到同一块）`);
   }
 });
+
+/**
+ * 标题是块边界（S4，学 Bitwarden 的采集服务：每个 heading 单列一条，"这样关键词扫描不会跨边界"）。
+ * 跨过去的代价我们真付过：
+ *  - Certificate Name 那一栏的邻近文字捞进了上一节的"姓名"，两块就长一样了（往前遍历要停在标题）；
+ *  - 标题自己被 `:scope > [class*="title"]` 当成"这一栏叫什么"，于是新第一节整块共用一个标签、
+ *    全糊到同一个槽位（节名只许进 sectionTitle，那是板块证据不是栏名）；
+ *  - 板块标题排在字段**之后**（下一节的题目）也会被 blockTitleOf 认领，把基本信息判给教育节。
+ */
+test('标题是块边界：新第一节的第一栏不能拿到上一节最后的标签', () => {
+  const html = `<form>
+    <div class="ant-form-item"><div class="ant-col ant-form-item-label"><label for="a">姓名</label></div>
+      <div class="ant-col ant-form-item-control"><input id="a" name="nm" type="text"></div></div>
+    <h3 class="section-title">教育经历</h3>
+    <div class="ant-form-item"><div class="ant-col ant-form-item-control"><input id="b" name="school" type="text"></div></div>
+  </form>`;
+  const dom = new JSDOM(`<!doctype html><html><body>${html}</body></html>`, { pretendToBeVisual: true });
+  const fields = scanForm(dom.window.document);
+  const b = fields.find(f => f.id === 'b');
+  assert.ok(b, '第二栏没被扫到');
+  assert.notEqual(b.label, '姓名', `扫描跨过了标题边界：${b.label} / ${b.labelSource}`);
+  assert.equal(b.label, '', '标题本身也不该被当成本栏标签 —— 它是节名，不是字段名');
+  assert.equal(b.sectionTitle, '教育经历', '标题要落在 sectionTitle 上：那才是概念层与映射表用的板块证据');
+  assert.ok(!/姓名/.test((b.nearbyLabels || []).join('|')), `邻近文字里混进了上一节：${JSON.stringify(b.nearbyLabels)}`);
+  const a = fields.find(f => f.id === 'a');
+  assert.equal(a.sectionTitle, '', '后面那一节的标题不是这一栏的板块');
+  assert.equal(a.sectionHint, '', `同理不许凭后面的标题给这一栏安章节归属：${a.sectionHint}`);
+});

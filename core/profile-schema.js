@@ -370,11 +370,71 @@ export const VALUE_EQUIVALENTS = [
   ['护照', 'Passport'],
 ];
 
+/**
+ * 国别 / 省市的写法对照（S4）。以前只有一句话等价表，`equivalentsOf('中国')` 返回的仍是"中国"，
+ * 于是英文门户的 `Country/Territory of Residence`、`Nationality` 这类下拉一个都选不上
+ * （页面上写的是 China / CN，我们存的是"中国"）。
+ * 学自动填充实现的做法：值的规范化单独一层，把"中文名 ↔ 英文名 ↔ 两位码"连起来。
+ * 只收网申里真会出现的常见项；查不到就原样交给选项文本匹配，不硬猜。
+ *
+ * 组内顺序有讲究：**第一个拉丁写法就是英文页面上要显示的那一个**
+ * （englishOption / geoEnglishFor 都取第一个拉丁项），所以
+ * 常用写法排前面（'China' 而不是 'PRC'，'South Korea' 而不是 'Korea'）。
+ * 比较一律走小写归一化，写成首字母大写不会影响匹配。
+ */
+export const GEO_EQUIVALENTS = [
+  ['中国', '中华人民共和国', 'China', "People's Republic of China", 'PRC', 'CN', 'CHN'],
+  ['中国香港', '香港', 'Hong Kong', 'Hong Kong SAR', 'HK', 'HKG'],
+  ['中国澳门', '澳门', 'Macao', 'Macau', 'MO'],
+  ['中国台湾', '台湾', 'Taiwan', 'TW'],
+  ['美国', 'United States', 'USA', 'United States of America', 'US'],
+  ['英国', 'United Kingdom', 'UK', 'Great Britain', 'England'],
+  ['加拿大', 'Canada', 'CA'],
+  ['澳大利亚', 'Australia', 'AU'],
+  ['新加坡', 'Singapore', 'SG'],
+  ['日本', 'Japan', 'JP'],
+  ['韩国', '大韩民国', 'South Korea', 'Republic of Korea', 'Korea', 'KR'],
+  ['德国', 'Germany', 'DE'], ['法国', 'France', 'FR'], ['荷兰', 'Netherlands', 'NL'],
+  ['瑞士', 'Switzerland', 'CH'], ['爱尔兰', 'Ireland', 'IE'], ['印度', 'India', 'IN'],
+  ['北京', 'Beijing', 'BJ'], ['上海', 'Shanghai', 'SH'], ['天津', 'Tianjin'],
+  ['重庆', 'Chongqing'],
+  ['广东', 'Guangdong', 'GD'], ['深圳', 'Shenzhen', 'SZ'], ['广州', 'Guangzhou', 'Canton'],
+  ['浙江', 'Zhejiang', 'ZJ'], ['杭州', 'Hangzhou', 'HZ'], ['江苏', 'Jiangsu', 'JS'], ['南京', 'Nanjing'],
+  ['四川', 'Sichuan', 'SC'], ['成都', 'Chengdu', 'CD'], ['湖北', 'Hubei'], ['武汉', 'Wuhan'],
+  ['陕西', 'Shaanxi'], ['西安', 'Xian'], ['山东', 'Shandong'], ['济南', 'Jinan'], ['青岛', 'Qingdao'],
+  ['哈尔滨', 'Harbin'], ['长沙', 'Changsha'], ['厦门', 'Xiamen'], ['福州', 'Fuzhou'],
+];
+
+export const VALUE_EQUIVALENTS_ALL = [...VALUE_EQUIVALENTS, ...GEO_EQUIVALENTS];
+
+/**
+ * 整个取值就是一个地名时，给出英文页面上要写的那个写法；否则返回空。
+ *
+ * 为什么单独一条出口，而不是并进 englishOption：英文表单缺值时默认**不写**（用户明确要求），
+ * 但国别/城市不是"另外一份资料"，只是同一个事实换了写法 ——
+ * 港企门户的 Country of Residence 因为"缺英文"而留空，是这批页面上最常空着的一栏，
+ * 而我们有对照表，可以直接换算，不用催用户再抄一遍。
+ *
+ * 只认"整条相等"：'深圳市南山区' 换不出对应英文名，硬换算会写成 'Shenzhen 南山区' 这种半截话，
+ * 那种情况照旧进"缺英文"名单，交人工判断。
+ */
+export function geoEnglishFor(value) {
+  const key = s => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const v = key(value);
+  if (!v) return '';
+  for (const group of GEO_EQUIVALENTS) {
+    if (!group.some(x => key(x) === v)) continue;
+    const latin = group.find(x => LATIN_LABEL.test(String(x).trim()));
+    return latin ? String(latin) : '';
+  }
+  return '';
+}
+
 export function equivalentsOf(value) {
   const v = String(value || '').trim().toLowerCase();
   if (!v) return [];
   const out = new Set([v]);
-  for (const group of VALUE_EQUIVALENTS) {
+  for (const group of VALUE_EQUIVALENTS_ALL) {
     if (group.some(x => x.toLowerCase() === v)) group.forEach(x => out.add(x.toLowerCase()));
   }
   return [...out];
@@ -644,7 +704,7 @@ export function englishNameFor(field) {
 export function englishOption(value) {
   const v = String(value || '').trim().toLowerCase();
   if (!v) return String(value || '');
-  for (const group of VALUE_EQUIVALENTS) {
+  for (const group of VALUE_EQUIVALENTS_ALL) {
     if (!group.some(x => String(x).toLowerCase() === v)) continue;
     const latin = group.find(x => LATIN_LABEL.test(String(x).trim()));
     if (latin) return String(latin);

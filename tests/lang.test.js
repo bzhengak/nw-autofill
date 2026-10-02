@@ -9,8 +9,24 @@ import assert from 'node:assert/strict';
 import {
   createEmptyProfile, buildFields, countFilled, getValueByPath, setValueByPath,
   isLangNeutral, readLang, writeLang, lacksEnglishValue, englishCoverage,
-  englishNameFor, englishOption, enSkeleton, ensureEnSkeleton, EN_BUCKET,
+  englishNameFor, englishOption, enSkeleton, ensureEnSkeleton, EN_BUCKET, geoEnglishFor,
 } from '../core/profile-schema.js';
+
+/**
+ * 地名对照表（S4）：英文页面上的 Country / City 一类，取值只是换了写法，不是另有一份资料。
+ * 只认"整条就是一个地名"，拼过名的串（深圳市南山区）不硬换算 ——
+ * 半中半英的 'Shenzhen 南山区' 比留空更糟：它看着像填好了。
+ */
+test('地名对照：中国→China、深圳→Shenzhen，拼过名的串不换算', () => {
+  assert.equal(geoEnglishFor('中国'), 'China');
+  assert.equal(geoEnglishFor('深圳'), 'Shenzhen');
+  assert.equal(geoEnglishFor('中国香港'), 'Hong Kong');
+  assert.equal(geoEnglishFor('CN'), 'China', '资料里只写了两位码时也要能换算');
+  assert.equal(geoEnglishFor('韩国'), 'South Korea', '第一个拉丁写法就是要显示的英文名（不是 Korea）');
+  assert.equal(geoEnglishFor('深圳市南山区'), '');
+  assert.equal(geoEnglishFor('南京大学'), '');
+  assert.equal(geoEnglishFor(''), '');
+});
 
 test('英文值与中文值互不覆盖；老资料（只有中文）一个字节都不动', () => {
   const p = createEmptyProfile();

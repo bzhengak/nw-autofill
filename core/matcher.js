@@ -1,7 +1,7 @@
 // 匹配流水线：页面字段描述 × profile → 分配方案（含置信分层与缺口归因）。
 // 纯函数，输入是 dom/scanner.js 产出的字段描述对象，不接触 DOM。
 
-import { buildFields, getValueByPath, equivalentsOf, isLangNeutral } from './profile-schema.js';
+import { buildFields, getValueByPath, equivalentsOf, isLangNeutral, geoEnglishFor } from './profile-schema.js';
 import { planFromAdapter, dateFormatOverride } from './adapters.js';
 import { assignMaxWeight, scorePair, normalize, core, inferDateFormat, boolLike, signals, negationMismatch, AMBIGUOUS_SECTIONS, dateParts, isQuestionLabel, labelEvidence, shapeMismatch, valueShape, GENERIC_HEAD_WORDS, AMBIGUOUS_WORDS } from './matching.js';
 import { classify } from './ledger.js';
@@ -222,10 +222,10 @@ export function resolveOption(pageField, value) {
   for (const o of opts) {
     const ot = sq(normalize(o.text));
     if (!ot) continue;
-    if (eqs.some(eq => !negationMismatch(o.text, eq) && (ot.includes(eq) || eq.includes(ot)))) {
+    const hit = eqs.find(eq => !negationMismatch(o.text, eq) && (ot.includes(eq) || eq.includes(ot)) && containable(eq, ot));
+    if (hit) {
       // 包含即视为强匹配：'硕士' → '硕士研究生' / 'Master of Science'
-      const eq = eqs.find(e => !negationMismatch(o.text, e) && (ot.includes(e) || e.includes(ot))) || target;
-      const ratio = Math.min(ot.length, eq.length) / Math.max(ot.length, eq.length);
+      const ratio = Math.min(ot.length, hit.length) / Math.max(ot.length, hit.length);
       const s = 0.62 + 0.38 * ratio;
       if (s > bestScore) { bestScore = s; best = o; }
       continue;
@@ -237,6 +237,30 @@ export function resolveOption(pageField, value) {
     }
   }
   return bestScore >= 0.5 ? best : null;
+}
+
+/**
+ * 「包含即算命中」的最小长度（S4 引入地理等价表之后必须收紧的一条）。
+ *
+ * 为什么：`equivalentsOf('上海')` 现在带出两位码 `sh`，纯按包含就会把
+ * Washington 认成上海、Wisconsin 认成四川（`sc`）、August 认成美国（`us`）——
+ * 而地点下拉恰恰是这些词一起出现的地方。两位码不是没用：
+ * 页面选项整条就叫 "CN"/"China" 时上面那一轮 exact 已经收了它。
+ * 反过来中文两字本身就是一个词（'硕士'→'硕士研究生' 是我们依赖的正例），
+ * 所以长度下限按文字种类分，而不是一刀切 4。
+ */
+/** 中日韩文字：两个字就是一个词（"硕士"、"上海"），拉丁的两个字母只是码（"sh"、"us"）。 */
+function isCjk(s) {
+  for (const ch of String(s || '')) {
+    const c = ch.codePointAt(0);
+    if (c >= 0x3400 && c <= 0x9fff) return true;
+    if (c >= 0xf900 && c <= 0xfaff) return true;
+  }
+  return false;
+}
+function containable(a, b) {
+  const lo = String(a).length <= String(b).length ? String(a) : String(b);
+  return isCjk(lo) ? lo.length >= 2 : lo.length >= 4;
 }
 
 function os_tokens(text) {
@@ -361,6 +385,7 @@ export function planFill(pageFields, profile, opts = {}) {
   const fieldByPath = new Map(schemaFields.map(f => [f.path, f]));
   const missingEnglish = new Set();     // 中文有值、英文没值
   const viaZhFallback = new Set();      // 本轮真的用了中文兜底的槽位
+  const geoEnglishUsed = new Set();     // 本轮由地名对照换算成英文写法的槽位
   const valueOf = (path, pf) => {
     const base = String(getValueByPath(profile, path) ?? '').trim();
     if (pageLang !== 'en' || isLangNeutral(fieldByPath.get(path) || { path })) return base;
@@ -371,6 +396,15 @@ export function planFill(pageFields, profile, opts = {}) {
     const en = String(getValueByPath(profile, `en.${path}`) ?? '').trim();
     if (en) return en;
     if (!base) return '';
+    // 地名不是"另外一份资料"，是同一个事实换了写法：英文页面要 China / Shenzhen，
+    // 我们存的是 中国 / 深圳。这类由本机写死的对照表直接换算，既不催用户再抄一遍，
+    // 也不因为"缺英文"把港企门户最常空着的 Country of Residence 留成空。
+    // 只在整条取值就是一个地名时换算（'深圳市南山区' 换不出英文名，照旧算缺英文）。
+    const geo = geoEnglishFor(base);
+    if (geo) {
+      geoEnglishUsed.add(path);
+      return geo;
+    }
     missingEnglish.add(path);
     if (zhFallback) {
       viaZhFallback.add(path);
@@ -851,6 +885,15 @@ export function planFill(pageFields, profile, opts = {}) {
         ? `${entry.note}；这一栏没有英文写法，写进去的是中文值，请核对`
         : '这一栏没有英文写法，写进去的是中文值，请核对（或在 English 表单补英文值）';
     }
+    // 地名换算出来的英文写法（S4）：值不是原文抄写，而是"同一个事实换了写法"。
+    // 允许绿字（对照表是本机写死的，不是相似度猜的），但必须留痕迹 ——
+    // 映射表与导出里要能看出这一栏被换算过，而不是一眼看去"资料里就写着 China"。
+    if (pageLang === 'en' && geoEnglishUsed.has(sf.path)) {
+      entry.geoEnglish = true;
+      entry.note = entry.note
+        ? `${entry.note}；这一栏的英文写法由地名对照换算（资料里存的是中文地名）`
+        : '这一栏的英文写法由地名对照换算（资料里存的是中文地名）';
+    }
     // 判断题（是/否、单选合规项）永远黄字：这类栏填下去是对雇主的一句话（"我不需要签证担保"），
     // 而资料里的值可能早就过时了 —— 打字的代价是一次改正，猜错的代价是一次不实陈述。
     if ((sf.type === 'bool' || pf.kind === 'radio' || pf.kind === 'checkbox') && entry.tier === 'auto') {
@@ -1050,5 +1093,10 @@ export function planFill(pageFields, profile, opts = {}) {
     skipped: assignments.filter(a => a.skip).length,
     gapReasons: gaps.reduce((acc, g) => (acc[g.reason] = (acc[g.reason] || 0) + 1, acc), {}),
   };
-  return { assignments, gaps, stats, aiPending: gaps.filter(g => ['no_candidate', 'required_no_candidate', 'conflict_unresolved'].includes(g.reason)) };
+  return {
+    assignments, gaps, stats,
+    // 本轮被地名对照换算过英文写法的槽位：界面与映射表要说清"这一栏的字不是资料原文"
+    geoEnglish: [...geoEnglishUsed],
+    aiPending: gaps.filter(g => ['no_candidate', 'required_no_candidate', 'conflict_unresolved'].includes(g.reason)),
+  };
 }

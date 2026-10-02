@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { createEmptyProfile, buildFields, getValueByPath, setValueByPath, SECTIONS } from '../core/profile-schema.js';
+import { createEmptyProfile, buildFields, getValueByPath, setValueByPath, SECTIONS, equivalentsOf } from '../core/profile-schema.js';
 import { normalize, simplify, core, signals, sniffType, assignMaxWeight, inferDateFormat, formatDate, boolLike, scorePair, typeCompatible } from '../core/matching.js';
 import { planFill, resolveOption, detectPageLanguage } from '../core/matcher.js';
 import { SUBMIT_TEXT_RE, classifyClick } from '../dom/safety.js';
@@ -78,6 +78,71 @@ test('枚举映射：站点 option 文本与资料值不一致时按语义命中
   const pf = pageField({ kind: 'select', label: '学历', options: [{ text: '硕士研究生', value: '2' }, { text: '本科', value: '3' }] });
   const hit = resolveOption(pf, '硕士');
   assert.equal(hit?.value, '2');
+});
+
+/**
+ * 国别/省市的写法对照（S4）。以前等价表里只有一句话级别的对齐（'硕士'↔'硕士研究生'），
+ * 英文门户的 Nationality / Country of Residence 下拉整片选不上：
+ * 我们存"中国"，页面上写 China / CN。值的规范化单独一层是自动填充实现的通行做法。
+ */
+test('地理取值中英对照：资料存"中国"要能选中 China，存"中国香港"要能选中 Hong Kong SAR', () => {
+  const eq = equivalentsOf('中国');
+  assert.ok(eq.includes('china') && eq.includes('cn'), `等价表没把中英文与两位码连起来：${eq.join('|')}`);
+  const nationality = pageField({
+    kind: 'select',
+    label: 'Nationality',
+    options: [{ text: 'China', value: 'CHN' }, { text: 'United States', value: 'USA' }, { text: 'Hong Kong, China', value: 'HKG' }],
+  });
+  assert.equal(resolveOption(nationality, '中国')?.value, 'CHN');
+  const city = pageField({
+    kind: 'select', label: 'City of Birth',
+    options: [{ text: 'Beijing', value: 'PEK' }, { text: 'Shenzhen', value: 'SZX' }],
+  });
+  assert.equal(resolveOption(city, '深圳')?.value, 'SZX');
+});
+
+/**
+ * 两位码只许"整条就是它"，不许当包含证据：
+ * 上海↔sh、四川↔sc、美国↔us 一旦允许子串命中，地点下拉里
+ * Washington / Wisconsin / August 就会被捞走 —— 而这一栏的代价是"填错地点"，不是"没填"。
+ * 中文两字反过来必须允许子串（'硕士'→'硕士研究生' 是上面那条依赖的正例）。
+ */
+test('两位码不许当包含证据：上海 ≠ Washington', () => {
+  const pf = pageField({
+    kind: 'select', label: 'Work Location',
+    options: [{ text: 'Washington', value: 'WA' }, { text: 'New York', value: 'NY' }],
+  });
+  assert.equal(resolveOption(pf, '上海'), null, `两位码 sh 被当成包含证据，把华盛顿认成了上海`);
+  const both = pageField({
+    kind: 'select', label: 'Work Location',
+    options: [{ text: 'Washington', value: 'WA' }, { text: 'SH', value: 'SH' }],
+  });
+  assert.equal(resolveOption(both, '上海')?.value, 'SH', '页面选项整条就是两位码时仍然要能用');
+});
+
+/**
+ * 英文页面上的国家/城市（S4）：地名不是"另外一份资料"，是同一个事实换了写法。
+ * 以前缺英文值就整栏留空 + 一句"去 English 表单补"，于是港企门户的
+ * Country of Residence 常年空着 —— 而我们本来就写得死这张对照表。
+ * 反过来，'深圳市南山区' 这种拼过名的整串值换不出英文地名，
+ * 硬换算会得到半截话，那一栏照旧算缺英文、照旧不写。
+ */
+test('英文页面的地名由对照表换算；拼过名的整串值仍算缺英文', () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'contact.country', '中国');
+  setValueByPath(p, 'contact.city', '深圳市南山区');
+  const plan = planFill([
+    pageField({ label: 'Country of Residence', name: 'country' }),
+    pageField({ label: 'Current City', name: 'city' }),
+  ], p, { mode: 'full', lang: 'en' });
+  const country = plan.assignments.find(a => a.path === 'contact.country');
+  assert.equal(country?.value, 'China', `地名没换算成英文（实得 ${country?.value ?? '(没进计划)'}）`);
+  assert.ok(plan.geoEnglish.includes('contact.country'), '换算过要有台账，映射表与导出要用');
+  assert.match(String(country?.note || ''), /地名对照/, '换算必须留痕，不能看起来像资料里就写着 China');
+  const city = plan.assignments.find(a => a.path === 'contact.city');
+  assert.ok(!city, `拼过名的地名进了写入计划（值 ${city?.value}）—— 半中半英比留空更糟`);
+  const gap = plan.gaps.find(g => g.slotPath === 'contact.city');
+  assert.equal(gap?.reason, 'missing_english_value', '这一栏要照旧说清是"缺英文写法"，不是"我们没有这个词"');
 });
 
 test('profile 结构：路径唯一、可写可读、分组非空', () => {

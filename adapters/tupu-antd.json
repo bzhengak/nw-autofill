@@ -186,48 +186,60 @@
   "languageSlotPins": [
     {
       "match": "english",
+      "byKey": "language",
       "language": "英语",
       "subfield": "language",
-      "note": "板块标题就是语言名：这一栏属于资料里\"英语\"那一行"
+      "note": "整条标签等于 english 才算（子串会把 english name 抢走）"
     },
     {
       "match": "cantonese",
+      "byKey": "language",
       "language": "粤语",
-      "subfield": "language",
-      "note": "粤语那一行；资料里没有就交人工"
+      "subfield": "language"
     },
     {
       "match": "mandarin",
+      "byKey": "language",
       "language": "普通话",
-      "subfield": "language",
-      "note": "普通话那一行"
+      "subfield": "language"
     },
     {
-      "match": "IELTS",
-      "language": "英语",
+      "match": "IELTS Score",
+      "byKey": "cert",
+      "cert": "IELTS",
       "subfield": "score",
-      "note": "IELTS Score 写进资料里\"英语\"那一行的成绩；没有英语行就交人工，绝不按顺序落到 languages.0"
+      "note": "考试名写在资料的证书列里：先找证书列=IELTS 的那一行，再写它的成绩；找不到就交人工"
     },
     {
-      "match": "TOEFL",
-      "language": "英语",
-      "subfield": "score",
-      "note": "同上：托福也是英语那一行的成绩（与 IELTS 同行会互相挤，写入层按选项文本定）"
-    },
-    {
-      "match": "GMAT",
-      "language": "GMAT",
-      "subfield": "score",
-      "note": "GMAT 是考试不是语言：资料里没有名为 GMAT 的一行时，这一栏留给人工"
-    },
-    {
-      "match": "TOEIC",
-      "language": "TOEIC",
+      "match": "TOEFL Score",
+      "byKey": "cert",
+      "cert": "TOEFL",
       "subfield": "score"
     },
     {
-      "match": "HKDSE",
-      "language": "HKDSE",
+      "match": "ielts type",
+      "byKey": "cert",
+      "cert": "IELTS",
+      "subfield": "cert",
+      "note": "这一栏问的就是考试类型本身"
+    },
+    {
+      "match": "GMAT Score",
+      "byKey": "cert",
+      "cert": "GMAT",
+      "subfield": "score",
+      "note": "GMAT 不是语言：资料里没有 GMAT 那一行就交人工，不借用英语行的成绩"
+    },
+    {
+      "match": "TOEIC Score",
+      "byKey": "cert",
+      "cert": "TOEIC",
+      "subfield": "score"
+    },
+    {
+      "match": "HKDSE Score (English)",
+      "byKey": "cert",
+      "cert": "HKDSE",
       "subfield": "score"
     }
   ]

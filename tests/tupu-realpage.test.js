@@ -74,18 +74,38 @@ test('板块标题在字段的小 form 外面：current location 这一栏要有
   assert.ok(!loc.sectionHint, '这一块的容器里没有板块标题时不许编一个出来 —— 假 hint 会把整页归到同一块');
 });
 
-test('IELTS Score 按资料里的语言行定位，不按顺序落到 languages.0', () => {
+test('IELTS Score 按资料里的证书列找行，不按顺序落到 languages.0', () => {
   const p = createEmptyProfile();
   setValueByPath(p, 'languages.0.language', '粤语');
   setValueByPath(p, 'languages.0.score', '一级甲等');
   setValueByPath(p, 'languages.1.language', '英语');
+  setValueByPath(p, 'languages.1.cert', 'IELTS');      // 用户 2026-10-02：考试名存在证书列
   setValueByPath(p, 'languages.1.score', '6.5');
   const { fields } = scan();
   const plan = planFill(fields, p, { mode: 'full', adapter: tupuAdapter });
   const ielts = plan.assignments.find(a => a.path.endsWith('.score'));
   assert.ok(ielts, `IELTS 没写出去：${JSON.stringify(plan.gaps)}`);
-  assert.equal(ielts.path, 'languages.1.score', '资料里英语是第 2 行，写进第 1 行就是把雅思分数塞给粤语');
+  assert.equal(ielts.path, 'languages.1.score', '资料里 IELTS 在第 2 行，写进第 1 行就是把分数塞给粤语');
   assert.equal(ielts.value, '6.5');
+});
+
+/**
+ * 上一版钉位用子串匹配，'english' 命中了标签 'english name'，
+ * 于是 English Name 被钉成"英语那一行的语言列"（置信 1.0，绿字），别名再准也压不过它。
+ */
+test('钉位只认整条标签：english name 归英文姓名，不被「english」抢走', () => {
+  const html = `<div class="text-muted"><span class="field-label">English Name</span>
+    <span class="field-value field-editor"><form class="ant-form"><div class="ant-row ant-form-item">
+      <span class="ant-form-item-children"><input type="text" data-nw-test="enname"></span></div></form></span></div>`;
+  const dom = new JSDOM(`<!doctype html><html><body>${html}</body></html>`, { url: 'https://careersite.tupu360.test/x', pretendToBeVisual: true });
+  const fields = scanForm(dom.window.document);
+  const p = createEmptyProfile();
+  setValueByPath(p, 'basics.nameEn', 'LI WANGSHU');
+  setValueByPath(p, 'languages.0.language', '英语');
+  const plan = planFill(fields, p, { mode: 'full', adapter: tupuAdapter });
+  const a = plan.assignments.find(x => x.index === 0);
+  assert.ok(a, `English Name 没落地：${JSON.stringify(plan.gaps)}`);
+  assert.equal(a.path, 'basics.nameEn', '被「english」那条钉位子串抢走了');
 });
 
 test('GMAT 不是语言成绩：资料里没有 GMAT 那一行就交人工，绝不借用英语行的分数', () => {

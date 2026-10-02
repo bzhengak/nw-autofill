@@ -13,7 +13,7 @@ const NESTED_ALLOWED = {
   pins: new Set(['match', 'path', 'note']),
   degreeSlotPins: new Set(['match', 'degree', 'subfield', 'note']),
   relationSlotPins: new Set(['match', 'relation', 'subfield', 'note']),
-  languageSlotPins: new Set(['match', 'language', 'subfield', 'note']),
+  languageSlotPins: new Set(['match', 'language', 'cert', 'byKey', 'subfield', 'note']),
   skip: new Set(['match', 'reason', 'note']),
   dateFormats: new Set(['match', 'format', 'note']),
   aliases: new Set(['path', 'add']),
@@ -34,7 +34,7 @@ const SLOT_RULE_KINDS = {
   // 那一行语言**。平铺的四个成绩框没有行容器，按标签相似度只能猜第几段（GMAT 拿到 IELTS 的 6.5 就是这么来的）。
   // 所以这里给一种"按资料里该列的值定位第几行"的钉法：先找到 languages.N.language == 这个语言名，
   // 再取它的子字段。找不到就交人工，绝不按顺序轮值。
-  languageSlotPins: { section: 'languages', wantKey: 'language', subfields: LANG_SUBFIELDS, gapReason: 'language_slot_unresolved' },
+  languageSlotPins: { section: 'languages', wantKey: 'language', subfields: LANG_SUBFIELDS, gapReason: 'language_slot_unresolved', strict: true },
 };
 
 function scanKeys(node, trail, errors) {
@@ -101,7 +101,9 @@ export function validateAdapter(raw) {
   for (const [kind, spec] of Object.entries(SLOT_RULE_KINDS)) {
     for (const r of raw[kind] || []) {
       if (!r.match) errors.push(`${kind} 规则缺少 match`);
-      if (!r[spec.wantKey]) errors.push(`${kind} 规则缺少 ${spec.wantKey}（硕士/本科 或 父亲/母亲…）：${r.match}`);
+      const keyed = r.byKey || spec.wantKey;
+      if (!String(r[keyed] || '').trim()) errors.push(`${kind} 规则缺少 ${keyed}（硕士/本科、父亲/母亲、IELTS/粤语…）：${r.match}`);
+      if (r.byKey && !spec.subfields.has(String(r.byKey)) && r.byKey !== spec.wantKey) errors.push(`${kind}.byKey 不是 ${spec.section} 的字段：${r.byKey}`);
       if (!spec.subfields.has(String(r.subfield || ''))) errors.push(`${kind}.subfield 不是 ${spec.section} 的字段：${r.subfield}`);
     }
   }
@@ -160,6 +162,13 @@ function unsafeRegex(body) {
   return /\|\|/.test(s) || /^\|/.test(s) || /\|$/.test(s) || /\(\|/.test(s) || /\|\)/.test(s) || /\(\s*\)/.test(s);
 }
 
+/** 整条标签相等（去空白、去括号注释、去必填星号）：语言/考试名这类钉位专用 */
+function labelEquals(pageLabel, matcher) {
+  const norm = s => String(s || '').toLowerCase().replace(/\s+/g, '').replace(/[（(].*?[）)]/g, '').replace(/[*＊:：]/g, '');
+  const a = norm(pageLabel), b = norm(matcher);
+  return !!a && !!b && a === b;
+}
+
 function labelHits(pageLabel, matcher) {
   const src = String(matcher || '');
   if (/^re:/i.test(src)) {
@@ -196,12 +205,19 @@ export function planFromAdapter(pageFields, adapter) {
     let bestSlot = null;
     for (const [kind, spec] of Object.entries(SLOT_RULE_KINDS)) {
       for (const sp of adapter[kind] || []) {
-        if (!labelHits(slotHay, sp.match)) continue;
-        const want = String(sp[spec.wantKey] || '');
+        // strict 类（语言/考试名）只认**整条标签相等**：'english' 不许命中 'english name'。
+        // 上一版用子串，结果 English Name 被钉成"英语那一行的语言列"（置信 1.0，绿字），
+        // 而它本该是 basics.nameEn —— 钉位分数是 1.0，别名再准也压不过它。
+        const okHit = spec.strict
+          ? labelEquals(f.label, sp.match)
+          : labelHits(slotHay, sp.match);
+        if (!okHit) continue;
+        const keyField = sp.byKey || spec.wantKey;
+        const want = String(sp[keyField] || sp[spec.wantKey] || '');
         const at = slotHay.toLowerCase().indexOf(want.toLowerCase());
         const rank = at < 0 ? 999 : at;
         if (!bestSlot || rank < bestSlot.rank) {
-          bestSlot = { rank, slot: { section: spec.section, keyField: spec.wantKey, want, subfield: sp.subfield, gapReason: spec.gapReason } };
+          bestSlot = { rank, slot: { section: spec.section, keyField, want, subfield: sp.subfield, gapReason: spec.gapReason } };
         }
       }
     }

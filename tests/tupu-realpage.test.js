@@ -382,6 +382,19 @@ test('带定语的英文标签由定语说了算：school name / referrer name �
   assert.equal(pathOf('referrer name'), 'intent.referralName', 'referrer name 该归内推人姓名');
   assert.equal(pathOf('name'), 'basics.name', '单独一个 name 还是本人姓名，不动它');
   assert.equal(pathOf('last name'), 'basics.lastName', 'last name 该是姓');
+
+  // 向导式站点一次只摊一两栏（途普就是分步表单）。这时候没有"别的行抢走姓名"来救场，
+  // 单栏页面才是这条规则真正要守住的场景：School Name 单独一页时必须归学校。
+  for (const [label, want] of [['School Name', 'education.0.school'], ['Referrer Name', 'intent.referralName'], ['Name', 'basics.name'], ['Last Name', 'basics.lastName']]) {
+    const solo = new JSDOM(`<!doctype html><html><body><form>
+      <label for="x">${label}</label><input id="x" type="text">
+      <label for="y">Email</label><input id="y" type="email"></form></body></html>`,
+      { url: 'https://careersite.tupu360.test/x', pretendToBeVisual: true });
+    const f2 = scanForm(solo.window.document);
+    const plan2 = planFill(f2, p, { mode: 'full', fillSensitive: true });
+    const got = plan2.assignments.find(x => x.index === 0 && !x.skip);
+    assert.equal(got?.path, want, `单独一页的「${label}」归错了：${JSON.stringify(got || plan2.gaps[0])}`);
+  }
 });
 
 /**

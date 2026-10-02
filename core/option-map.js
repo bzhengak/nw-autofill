@@ -77,6 +77,10 @@ export function buildUnfilledMap({ fields = [], gaps = [], results = [], url = '
       score: r?.score == null ? null : r.score,
       sensitive: Boolean(r?.sensitive ?? g?.sensitive),
       aiChosen: Boolean(r?.aiChosen),
+      // 「凭什么认定它是这个槽位」——匹配方法要可审计，导出的每一行都带上证据。
+      // 用户看到 ['head-only'] 就知道这是"中心词蹭上的"，看到 ['exact','section-agree'] 才是硬命中。
+      evidence: r?.evidence || [],
+      weakEvidence: Boolean(r?.weakEvidence),
       ...plain,
     });
   }

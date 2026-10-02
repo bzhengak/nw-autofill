@@ -119,7 +119,7 @@ async function handleScan({ profile, mode = 'full', dryRun = false, adapter = nu
   const profileFilled = schema.countFilled(profile);
   return {
     stats: { ...applied.summary, ...plan.stats, profileFilled, aiApplied },
-    results: applied.results.map(r => ({ path: r.path, label: r.label, score: r.score, status: r.status, reason: r.failReason || '', note: r.note || '', actual: r.actual, sensitive: r.sensitive, aiChosen: r.aiChosen })),
+    results: applied.results.map(r => ({ path: r.path, label: r.label, score: r.score, status: r.status, reason: r.failReason || '', note: r.note || '', actual: r.actual, sensitive: r.sensitive, aiChosen: r.aiChosen, evidence: r.evidence || [], weakEvidence: Boolean(r.weakEvidence) })),
     gaps: plan.gaps.map(g => ({ index: g.index, label: g.label, reason: g.reason, kind: g.kind, note: g.note || '' })),
     aiFields,
     auditLog,

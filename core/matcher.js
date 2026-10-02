@@ -3,7 +3,7 @@
 
 import { buildFields, getValueByPath, equivalentsOf, isLangNeutral } from './profile-schema.js';
 import { planFromAdapter, dateFormatOverride } from './adapters.js';
-import { assignMaxWeight, scorePair, normalize, core, inferDateFormat, boolLike, signals, negationMismatch, AMBIGUOUS_SECTIONS, dateParts, isQuestionLabel } from './matching.js';
+import { assignMaxWeight, scorePair, normalize, core, inferDateFormat, boolLike, signals, negationMismatch, AMBIGUOUS_SECTIONS, dateParts, isQuestionLabel, labelEvidence, shapeMismatch, valueShape } from './matching.js';
 
 const AUTO_THRESHOLD = 0.75;   // 绿：直接填
 const REVIEW_THRESHOLD = 0.52; // 黄：填了但要求你复核
@@ -103,14 +103,27 @@ export const GAP_REASON_ZH = {
   panel_ambiguous: '点下去之后没能确认"哪个弹层属于这一栏"（这一屏同排着好几个下拉）—— 为了不误点到别栏的选项，这一栏交给你手点',
   dial_code_only: '这一整列选项都是电话区号（+86 / +852…），说明它是"国家/地区区号"下拉，不是资料里那个值该去的地方 —— 已故意不选，去检查这一格配的是哪个槽位',
   empty_value: '这一栏我们没拿到要写的值（资料里是空的），已跳过 —— 不会往页面写 undefined 之类的占位文字',
+  shape_mismatch: '这一栏控件的形状（电话/邮箱/数字/日期）与要写的值明显对不上：多半是这一栏配错了槽位，已故意不写 —— 在映射表里改判到正确的槽位',
   slot_empty: '页面这一栏最匹配的资料位是空的：我们没有拿别的栏位顶替（顶替就是错填），去资料里补上再扫',
   pinned_field_empty: '这一栏被站点题目钉死到某个资料位，而那个资料位是空的 —— 去资料里补这一栏，我们不拿别的东西顶',
   block_ambiguous: '这一栏的标签在资料里好几个板块都有同名位，页面上又没有板块标题可依 —— 按资料顺序轮值是猜，交给你手动选',
   language_slot_unresolved: '这一栏的标题是一种语言或考试名（IELTS / 粤语…），但你资料的语言栏里没有对应那一行 —— 去「分类编辑 · 语言」补一行，我不按顺序猜',
 };
 
-export function gapReasonLabel(reason) {
-  const key = String(reason || '');
+const SHAPE_ZH = { tel: '电话框', email: '邮箱框', num: '数字框', date: '日期框' };
+/** 取值形状说人话：note 里要让用户一眼看出"为什么这一栏不对" */
+function shapeHint(value) {
+  const s = valueShape(value);
+  const len = String(value ?? '').trim().length;
+  if (s === 'idcard') return `一串 ${len} 位的证件号形状`;
+  if (s === 'tel') return `${len} 位数字的电话号码`;
+  if (s === 'email') return '邮箱写法';
+  if (s === 'date') return '日期写法';
+  if (s === 'num') return '纯数字';
+  return `含字母或符号的 ${len} 字文本`;
+}
+
+export function gapReasonLabel(reason) {  const key = String(reason || '');
   return GAP_REASON_ZH[key] || key || '未知原因';
 }
 
@@ -670,6 +683,39 @@ export function planFill(pageFields, profile, opts = {}) {
       tier: chosen.score >= AUTO_THRESHOLD && !sf.sensitive ? 'auto' : 'review',
     };
     if (sf.sensitive && chosen.score >= AUTO_THRESHOLD) entry.reason = 'sensitive_requires_review';
+    /**
+     * M1 之一：每条自动写入都要能说出"凭什么"。只有中心词/结构属性这类
+     * "说不上是谁的"证据时不许绿字（用户 2026-10-02："phone number 能填成 id number…
+     * 应该审视你的匹配方法"）——打分是个数，数是解释不了的，错了也看不出来。
+     */
+    const ev = labelEvidence(pf, sf);
+    entry.evidence = [...ev.kinds];
+    if (!ev.strong) {
+      entry.weakEvidence = true;
+      const why = entry.evidence.includes('head-only') || entry.evidence.includes('head-noun')
+        ? '标签的中心词命中了这个槽位的别名，但定语没有 —— 只说得出"这是个名字/号码"，说不出"是谁的"'
+        : entry.evidence.length
+          ? '只有 name/id 这类控件属性作为线索'
+          : '这一栏没有任何文本证据';
+      const msg = `证据弱：${why}；请在映射表里确认或改判`;
+      entry.note = entry.note ? `${entry.note}；${msg}` : msg;
+      if (entry.tier === 'auto') entry.tier = 'review';
+    }
+    /**
+     * M1 之二：写入前的语义体检。控件形状（type=tel/email/number、autocomplete、maxlength）
+     * 与取值形状明显不相容时，说明**这一栏配错了槽位** —— 这不是"填不上"，
+     * 而是一条会被站点安静收下去的错答案。以前回读只看"框里的字 == 要写的字"，
+     * 于是 18 位证件号写进电话框还是绿字。
+     */
+    const clash = shapeMismatch(pf, value);
+    if (clash) {
+      gaps.push({
+        index: row.index, label: pf.label || pf.name || '(未命中名字段)',
+        reason: 'shape_mismatch', kind: pf.kind, slotPath: sf.path,
+        note: `这一栏的控件是「${SHAPE_ZH[clash] || clash}」，而「${sf.zh || sf.path}」里的值是${shapeHint(value)} —— 形状对不上，多半是这一栏配错了槽位，已故意不写`,
+      });
+      return;
+    }
     // 英文页面上用中文值兜底（用户显式开了 enMissingMode）→ 一律黄字并说明写的是中文。
     // 这种写法有风险（可能把中文塞进英文栏），所以绝不给绿字，哪怕分数很高。
     if (pageLang === 'en' && viaZhFallback.has(sf.path)) {

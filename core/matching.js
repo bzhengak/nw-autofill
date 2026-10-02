@@ -307,6 +307,115 @@ export function scorePair(pageField, profileField) {
 }
 
 /**
+ * 「凭什么认定这一栏是这个槽位」——打分给的是一个数，数不可解释，错了也看不出来。
+ * 用户 2026-10-02 的口径是"审视你的匹配方法"，第一步就是让每次自动写入都能列出证据，
+ * 并且**只有中心词证据**（`School Name` 里的 `name`）时不许自动写：
+ * 网申栏位的身份由定语与板块决定，中心词只说"这是个名字/号码/日期"，不说"是谁的"。
+ *
+ * 注意这份证据是**独立分类**，不复制 scorePair 的算法：它回答"存在哪几种命中"，
+ * scorePair 回答"这一对值多少分"。两者若哪天分歧，用例会把分歧照出来（tests/evidence.test.js）。
+ */
+export const GENERIC_HEAD_WORDS = new Set([
+  'name', 'number', 'num', 'score', 'date', 'time', 'type', 'level', 'status', 'title', 'address', 'value',
+]);
+
+export function labelEvidence(pageField, profileField) {
+  const kinds = new Set();
+  const normLabel = normalize(pageField.label || '');
+  const labelCore = core(normLabel);
+  const lw = labelCore.split(' ').filter(Boolean);
+  const head = lw.length > 1 ? lw[lw.length - 1] : '';
+  const heads = new Set(lw.slice(-2));                      // 末词/末两词都算中心词位置
+  for (const alias of profileField.labels || []) {
+    const a = normalize(alias);
+    if (!a) continue;
+    const ac = core(a);
+    if (!ac) continue;
+    if (normLabel === a) { kinds.add('exact'); continue; }
+    if (labelCore && labelCore === ac) { kinds.add('exact'); continue; }
+    if (labelCore.includes(ac)) {
+      const cover = Math.min(1, ac.length / Math.max(labelCore.length, 1));
+      const aw = ac.split(' ').filter(Boolean);
+      const isHead = aw.length === 1 ? (heads.has(aw[0]) || head === aw[0]) : labelCore.endsWith(ac);
+      if (cover >= 0.5) kinds.add('full-cover');
+      else if (isHead && GENERIC_HEAD_WORDS.has(aw[aw.length - 1])) kinds.add('head-only');
+      else if (isHead) kinds.add('head-noun');
+      else kinds.add('qualifier');
+    } else if (ac.includes(labelCore) && labelCore.length >= 2) {
+      kinds.add('broader');                                  // 别名比标签还宽："是否在职" ⊃ "在职"
+    }
+  }
+  if (pageField.autocomplete) kinds.add('struct-autocomplete');
+  const structText = [pageField.name, pageField.id, pageField.testId].filter(Boolean).join(' ').toLowerCase();
+  if (structText) {
+    const st = signals(structText.replace(/[._-]+/g, ' '));
+    const aliasTokens = signals([profileField.zh, ...(profileField.labels || [])].join(' ')).tokens;
+    if ([...st.tokens].some(t => t.length >= 4 && aliasTokens.has(t))) kinds.add('struct-attr');
+  }
+  if (pageField.options?.length && profileField.options?.length) {
+    const terms = profileField.options.map(v => normalize(v)).filter(t => t.length >= 1);
+    if (pageField.options.some(o => {
+      const t = normalize(o?.text ?? o?.label ?? o?.value);
+      return t && terms.some(x => t === x || (x.length >= 3 && (t.includes(x) || (t.length >= 3 && x.includes(t)))));
+    })) kinds.add('options-hit');
+  }
+  if (pageField.sectionHint && profileField.section === pageField.sectionHint) kinds.add('section-agree');
+  if (pageField.itemIndex != null && profileField.itemIndex != null && pageField.itemIndex === profileField.itemIndex) kinds.add('item-agree');
+
+  const strong = ['exact', 'full-cover', 'qualifier', 'options-hit', 'struct-autocomplete', 'section-agree'];
+  return {
+    kinds,
+    strong: [...kinds].some(k => strong.includes(k)),
+    /** 只有中心词/结构属性这类"说不上是谁的"证据 */
+    weakOnly: kinds.size > 0 && ![...kinds].some(k => strong.includes(k))
+      && [...kinds].every(k => k === 'head-only' || k === 'head-noun' || k === 'struct-attr' || k === 'broader'),
+  };
+}
+
+/**
+ * 控件形状：只看站点自己声明的硬线索（input type / autocomplete / maxlength），
+ * 不看 placeholder 猜 —— "请输入手机号"这类提示也可能写错，而把它当判据会把正常的栏位拦死。
+ */
+export function shapeOfControl(pageField) {
+  const t = String(pageField.inputType || pageField.type || '').toLowerCase();
+  const ac = String(pageField.autocomplete || '').toLowerCase();
+  const max = Number(pageField.maxLength || pageField.maxlength || 0);
+  if (t === 'email' || ac === 'email') return 'email';
+  if (t === 'tel' || /^tel/.test(ac)) return 'tel';
+  if (t === 'number' || t === 'range') return 'num';
+  if (t === 'date' || t === 'month' || t === 'datetime-local') return 'date';
+  if ((t === 'text' || !t) && max >= 7 && max <= 15 && /phone|mobile|tel|手机|电话/i.test(
+    [pageField.name, pageField.id, pageField.label].filter(Boolean).join(' '))) return 'tel';
+  return '';
+}
+
+/** 取值形状（宽松版：只用来判"明显不相容"，不做完整校验） */
+export function valueShape(value) {
+  const v = String(value ?? '').trim();
+  if (!v) return '';
+  const digits = v.replace(/[\s()+\-.]/g, '');
+  if (/^[0-9]{7,15}$/.test(digits) && digits === v.replace(/[^0-9]/g, '')) return 'tel';
+  if (/^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(v)) return 'email';
+  if (/^[0-9]{15,18}([0-9Xx])?$/.test(v)) return 'idcard';
+  if (/^\d{4}([-/年.])\d{1,2}([-/月.])?$/.test(v)) return 'date';
+  if (/^-?\d+(\.\d+)?$/.test(v)) return 'num';
+  return 'text';
+}
+
+/** 明显配错栏的唯一提前信号：控件形状与取值形状不相容。返回 '' 表示放行 */
+export function shapeMismatch(pageField, value) {
+  const want = shapeOfControl(pageField);
+  if (!want) return '';
+  const got = valueShape(value);
+  if (!got || got === want) return '';
+  if (want === 'tel' && (got === 'idcard' || got === 'email' || got === 'text')) return want;
+  if (want === 'email' && got !== 'email') return want;
+  if (want === 'num' && got !== 'num' && got !== 'date') return want;
+  if (want === 'date' && got !== 'date' && got !== 'num') return want;
+  return '';
+}
+
+/**
  * 稀疏二分图最大权匹配（Kuhn-Munkres / 增广路 + 势函数）。
  * 目的：避免"贪心分配"造成整页字段串行错位——例如两段实习的 company 互相抢位。
  * cost = 上限 - score，配合每行独占的 dummy 列（score 0）实现"允许不分配"。

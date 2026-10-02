@@ -16,6 +16,7 @@ import { extractFragments, buildExtractRequest, parseExtractResponse } from '../
 import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, findLeaksInExport, SECRETS_BUCKET, consentAfterSettingsPatch, siteConsentCheck, withSiteConsent, siteConsentAfterEndpoint, SITE_CONSENT_BUCKET, effectiveTimeoutSec, effectiveMaxTokens, effectiveStream, AI_TIMEOUT_DEFAULT_SEC, AI_MAX_TOKENS_DEFAULT, chatEndpointCandidates } from '../core/ai-security.js';
 import { callChatEndpoint, pingAiEndpoint } from '../core/ai-endpoint.js';
 import { ensureEnSkeleton } from '../core/profile-schema.js';
+import { LEDGER_BUCKET, recordWrites, forgetWrites } from '../core/ledger.js';
 
 // 默认等 180 秒：reasoning 模型 + 几十个缺口的 JSON 回答，旧的 20 秒几乎必然超时，
 // 而超时是最难归因的失败——用户只看到"没反应"，其实是模型还没答完。
@@ -478,6 +479,29 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const next = withSiteConsent(await readSiteConsents(), { pageOrigin, targetOrigin: target.origin });
       await writeSiteConsents(next);
       sendResponse({ ok: true, pageOrigin, targetOrigin: target.origin, sites: Object.keys(next).length });
+    } else if (msg.type === 'nw:ledgerGet' || msg.type === 'nw:ledgerSave' || msg.type === 'nw:ledgerForget') {
+      /**
+       * S1 写入台账：按站点 origin 分桶，存在本地顶层键（不进 settings，
+       * 因为 settings 会被「导出 JSON」带走，而这一本记的是"你在哪些站点填了什么"）。
+       * origin 只认 sender.tab / 后台按 tabId 查到的那个 —— 消息体里自报的一律不用，
+       * 否则任何页面都能把自己的写入记到别的站点账上，或反过来擦掉别人的账。
+       */
+      let origin = '';
+      try {
+        const u = new URL(sender.tab?.url || '');
+        if (/^https?:$/.test(u.protocol)) origin = u.origin;
+      } catch { origin = ''; }
+      if (!origin) { sendResponse({ ok: false, error: 'no_origin' }); return; }
+      const bucket = (await chrome.storage.local.get([LEDGER_BUCKET]))[LEDGER_BUCKET] || {};
+      if (msg.type === 'nw:ledgerGet') { sendResponse({ ok: true, ledger: bucket, origin }); return; }
+      let after = bucket;
+      if (msg.type === 'nw:ledgerSave') {
+        after = recordWrites(bucket, origin, msg.entries || []);
+      } else {
+        after = forgetWrites(bucket, origin, msg.fps || []);
+      }
+      await chrome.storage.local.set({ [LEDGER_BUCKET]: after });
+      sendResponse({ ok: true, ledger: after, count: Object.keys(after[origin] || {}).length });
     } else if (msg.type === 'nw:keepAlive') {
       // 长等待期间侧边栏每十几秒发一次心跳：MV3 的 service worker 空闲约 30 秒会被回收，
       // 一旦它在 fetch 还没回来时被杀掉，sendResponse 就永远不会响应——

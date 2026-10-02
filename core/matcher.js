@@ -4,6 +4,7 @@
 import { buildFields, getValueByPath, equivalentsOf, isLangNeutral } from './profile-schema.js';
 import { planFromAdapter, dateFormatOverride } from './adapters.js';
 import { assignMaxWeight, scorePair, normalize, core, inferDateFormat, boolLike, signals, negationMismatch, AMBIGUOUS_SECTIONS, dateParts, isQuestionLabel, labelEvidence, shapeMismatch, valueShape } from './matching.js';
+import { classify } from './ledger.js';
 
 const AUTO_THRESHOLD = 0.75;   // 绿：直接填
 const REVIEW_THRESHOLD = 0.52; // 黄：填了但要求你复核
@@ -123,12 +124,22 @@ function shapeHint(value) {
   return `含字母或符号的 ${len} 字文本`;
 }
 
+/**
+ * 这一栏现在的值是谁写的？没有台账（离线判分、纯本地快填）时一律当"别人的值"——
+ * 保守方向是对的：不确定归属就不覆盖。
+ */
+function classifyWith(opts, pageField, currentValue) {
+  const origin = (opts && opts.pageOrigin) || '';
+  const ledger = (opts && opts.ledger) || null;
+  if (!origin || !ledger) return String(currentValue ?? '').trim() ? 'other' : 'empty';
+  return classify(pageField, currentValue, ledger, origin);
+}
+
 export function gapReasonLabel(reason) {  const key = String(reason || '');
   return GAP_REASON_ZH[key] || key || '未知原因';
 }
 
-function blockReason(pageField) {
-  // 附件按控件类型拒，不看标签：Sea 的 label 是 "Resume"/"Transcript"、Workday 是「简历履历」，
+function blockReason(pageField) {  // 附件按控件类型拒，不看标签：Sea 的 label 是 "Resume"/"Transcript"、Workday 是「简历履历」，
   // 用关键词名单永远漏一批，漏进来的会被报成"我们没有这个词"（no_candidate），
   // 用户于是去补资料，而真正的答案是"这一栏得你自己上传"。
   if (pageField.kind === 'file') return 'file';
@@ -339,6 +350,20 @@ export function planFill(pageFields, profile, opts = {}) {
     return '';
   };
   const { pins, skip, slotPins, optionRules } = planFromAdapter(pageFields, opts.adapter);
+  /**
+   * S1：先把"这一栏现在的值是谁写的"整体算一遍。
+   * 每条出口（钉位、打分、增量跳过）都要能引用同一个答案，不能各算各的 ——
+   * 否则会出现"增量模式认为该跳过、写入模式认为该覆盖"这种自相矛盾。
+   *   us     我们上一轮写的（可以覆盖，值没变就不必重写）
+   *   edited 我们写过但值被人改过（当作别人的，不动）
+   *   other  站点预填或用户手填（不动）
+   *   empty  空的，正常待填
+   */
+  const writtenByMap = new Map();
+  pageFields.forEach((pf, i) => {
+    const cur = String(pf.currentValue ?? '').trim();
+    writtenByMap.set(i, classifyWith(opts, pf, cur));
+  });
   const pinned = [];
   const assignments = [];
   const gaps = [];
@@ -464,9 +489,18 @@ export function planFill(pageFields, profile, opts = {}) {
     const hasValue = group && group.complete
       ? group.members.every(memberFilled)          // 拆开的日期框：只填了年不算填过这一栏
       : String(pf.currentValue ?? '').trim() !== '';
-    if (mode === 'incremental' && hasValue) {
+    /**
+     * "已经填过"要先问一句**是谁填的**（M2）。
+     * 以前只要有字就跳过：上一轮我们写错的那一栏于是永久留着，还不进缺口、不进导出 ——
+     * 用户说的"AI 填写不能修改已填过的错误的"就是这么来的。
+     * 台账里对得上（us）→ 重新排入计划，允许用正确的值覆盖；
+     * 值被人改过（edited）或站点/用户本来就有（other）→ 照旧不动，我们不擦别人的东西。
+     */
+    const whoWroteIt = writtenByMap.get(index) || 'other';
+    const oursStale = hasValue && whoWroteIt === 'us';
+    if (mode === 'incremental' && hasValue && !oursStale) {
       if (group && group.complete) for (const m of group.members) assignments.push({ index: m.index, skip: true, reason: 'already_filled' });
-      else assignments.push({ index, skip: true, reason: 'already_filled' });
+      else assignments.push({ index, skip: true, reason: 'already_filled', writtenBy: whoWroteIt });
       return;
     }
 
@@ -682,6 +716,24 @@ export function planFill(pageFields, profile, opts = {}) {
       sensitive: Boolean(sf.sensitive),
       tier: chosen.score >= AUTO_THRESHOLD && !sf.sensitive ? 'auto' : 'review',
     };
+    /**
+     * S1：这一栏现在的值如果是**我们上一轮写的**，就要给出可纠正的通路 ——
+     * 这正是用户说的"AI 填写不能修改已填过的错误的"。
+     * 值没变就别再敲一遍（skip，页面状态不动）；值变了就照常排入，并在 note 里写明是覆盖我们的旧值。
+     * 站点预填与你手填的值（other / edited）一律不覆盖：那不是我们的东西。
+     */
+    const who = writtenByMap.get(row.index);
+    if (who === 'us') {
+      const cur = String(pf.currentValue ?? '').trim();
+      if (cur && (normalize(cur) === normalize(String(value ?? '')) || normalize(cur).includes(normalize(String(value ?? ''))))) {
+        assignments.push({ index: row.index, skip: true, reason: 'already_ours', path: sf.path, label: pf.label || '' });
+        return;
+      }
+      entry.overwrites = 'ours';
+      entry.note = entry.note
+        ? `${entry.note}；这一栏现在的值是我们上一轮写的，本次改写为「${sf.zh || sf.path}」的正确值`
+        : '这一栏现在的值是我们上一轮写的，本次改写为正确的值（站点预填与你手填的值我们不动）';
+    }
     if (sf.sensitive && chosen.score >= AUTO_THRESHOLD) entry.reason = 'sensitive_requires_review';
     /**
      * M1 之一：每条自动写入都要能说出"凭什么"。只有中心词/结构属性这类
@@ -841,6 +893,15 @@ export function planFill(pageFields, profile, opts = {}) {
   // 钉位字段：跳过打分竞争，直接指定路径，但同样要解析 option 与日期格式
   for (const entry of pinned) {
     const pf = pageFields[entry.index];
+    // 钉位那一栏同样要能纠正我们上一轮写错的值（S1，与打分路径同一套判据）
+    if (writtenByMap.get(entry.index) === 'us') {
+      const cur = String(pf.currentValue ?? '').trim();
+      if (cur && normalize(cur).includes(normalize(String(entry.value ?? '')))) {
+        entry.skip = true; entry.reason = 'already_ours'; assignments.push(entry); continue;
+      }
+      entry.overwrites = 'ours';
+      entry.note = '这一栏现在的值是我们上一轮写的，本次按钉定的槽位改写';
+    }
     if (pf.kind === 'select' || pf.kind === 'radio' || pf.kind === 'checkbox') {
       const opt = resolveOption(pf, entry.value);
       if (opt) entry.optionValue = opt.value ?? opt.text;

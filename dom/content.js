@@ -6,7 +6,7 @@ let mods = null;
 async function loadModules() {
   if (mods) return mods;
   const u = p => chrome.runtime.getURL(p);
-  const [scanner, filler, safety, matcher, schema, matching, probe, ai, optionMap, build] = await Promise.all([
+  const [scanner, filler, safety, matcher, schema, matching, probe, ai, optionMap, build, ledger] = await Promise.all([
     import(u('dom/scanner.js')),
     import(u('dom/filler.js')),
     import(u('dom/safety.js')),
@@ -17,8 +17,9 @@ async function loadModules() {
     import(u('core/ai.js')),
     import(u('core/option-map.js')),
     import(u('core/build.js')),
+    import(u('core/ledger.js')),
   ]);
-  mods = { scanner, filler, safety, matcher, schema, matching, probe, ai, optionMap, build };
+  mods = { scanner, filler, safety, matcher, schema, matching, probe, ai, optionMap, build, ledger };
   return mods;
 }
 
@@ -57,10 +58,20 @@ if (!window.__nwSubmitListener) {
 }
 
 async function handleScan({ profile, mode = 'full', dryRun = false, adapter = null, fillSensitive = false, allowCustomSelect = false, aiCandidates = null, enMissingMode = 'strict' }) {
-  const { scanner, filler, matcher, safety, schema } = await loadModules();
+  const { scanner, filler, matcher, safety, schema, ledger } = await loadModules();
   safety.armSubmitGuard(window, auditLog);
   const fields = scanner.scanForm(document);
-  const plan = matcher.planFill(fields, profile, { mode, adapter, fillSensitive, allowCustomSelect, enMissingMode });
+  /**
+   * S1：先取回"我们在这个站点写过什么"的账本，再排计划。
+   * 没有它，上一轮我们写错的那一栏会被当成"已填好"永远留着
+   * （用户 2026-10-02："AI 填写不能修改已填过的错误的"）。
+   * 取不到账本就当值是别人填的 —— 保守方向永远是不覆盖。
+   */
+  let fillLedger = {};
+  if (/^https?:$/.test(location.protocol)) {
+    fillLedger = (await chrome.runtime.sendMessage({ type: 'nw:ledgerGet' }).catch(() => null))?.ledger || {};
+  }
+  const plan = matcher.planFill(fields, profile, { mode, adapter, fillSensitive, allowCustomSelect, enMissingMode, ledger: fillLedger, pageOrigin: location.origin });
   // AI 候选在这里落地：路径白名单与"空槽/敏感槽"的判断都交给 core/ai.js，
   // 内容脚本只负责把结果并进 plan，再走同一条 applyPlan（写入与回读口径不另开一套）。
   let aiApplied = 0;
@@ -72,6 +83,27 @@ async function handleScan({ profile, mode = 'full', dryRun = false, adapter = nu
     aiApplied = merged.applied;
   }
   const applied = await filler.applyPlan(fields, plan.assignments, { dryRun, allowCustomSelect, adapter });
+
+  /**
+   * S1：写完记账。只记"哪一栏（指纹）+ 写的是哪个槽位 + 值哈希 + 构建号"，
+   * 明文取值不进账本；账本也不进 settings（settings 会被导出 JSON 带走）。
+   * dryRun 一律不记 —— 预演没碰页面，记了就会让下一轮误以为"这值是我们写的"。
+   */
+  if (!dryRun && /^https?:$/.test(location.protocol)) {
+    const bld = (await loadModules()).build.BUILD;
+    const written = applied.results
+      .filter(r => (r.status === 'green' || r.status === 'yellow') && r.path)
+      .map(r => ({
+        fp: ledger.fingerprint(fields[r.index] || {}),
+        path: r.path,
+        valueHash: ledger.hashValue(r.actual ?? r.value ?? ''),
+        build: bld,
+      }));
+    if (written.length) {
+      const res = await chrome.runtime.sendMessage({ type: 'nw:ledgerSave', entries: written }).catch(() => null);
+      if (res?.ledger) fillLedger = res.ledger;
+    }
+  }
 
   clearMarks();
   for (const r of applied.results) {
@@ -140,7 +172,19 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           enMissingMode: settings ? settings.enMissingMode : 'strict',
         }) });
       } else if (msg?.type === 'nw:undo') {
-        const r = await window.__nwLast?.applied?.undo?.();
+        const last = window.__nwLast;
+        const r = await last?.applied?.undo?.();
+        /**
+         * 撤销成功就要把账本里对应那几笔擦掉 —— 否则页面已经恢复原状，
+         * 台账还说着"这值是我们写的"，下一轮会拿它去覆盖用户自己填的东西。
+         */
+        if (r?.ok && last?.fields && /^https?:$/.test(location.protocol)) {
+          const { ledger } = await loadModules();
+          const fps = (last.applied.results || [])
+            .filter(x => (x.status === 'green' || x.status === 'yellow') && x.path)
+            .map(x => ledger.fingerprint(last.fields[x.index] || {}));
+          await chrome.runtime.sendMessage({ type: 'nw:ledgerForget', fps }).catch(() => {});
+        }
         clearMarks();
         sendResponse({ ok: Boolean(r?.ok), restored: r?.restored ?? 0 });
       } else if (msg?.type === 'nw:probe') {
@@ -150,7 +194,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         // 「导出没填的字段与选项」：优先复用上一次扫描的现场（window.__nwLast），
         // 没有就先干跑一次（dryRun：只算不写，一个字节都不改页面），
         // 因为用户常常是"看这一页没填上"就直接点导出，此时还没扫过。
-        const { scanner, filler, matcher, schema, optionMap, build } = await loadModules();
+        const { scanner, filler, matcher, schema, optionMap, build, ledger } = await loadModules();
+        // 导出与面板必须看同一份账本，否则会出现"面板说这栏是我们写的、导出说不是"
+        const ledgerNow = (await chrome.runtime.sendMessage({ type: 'nw:ledgerGet' }).catch(() => null))?.ledger || {};
         let last = window.__nwLast;
         if (!last) {
           const { profile, settings } = await chrome.storage.local.get(['profile', 'settings']);
@@ -163,6 +209,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
             fillSensitive: Boolean(settings?.fillSensitive),
             allowCustomSelect: Boolean(settings?.allowCustomSelect),
             enMissingMode: settings?.enMissingMode || 'strict',
+            ledger: ledgerNow,
+            pageOrigin: location.origin,
           });
           const applied = await filler.applyPlan(fields, plan.assignments, { dryRun: true });
           last = window.__nwLast = { fields, plan, applied, auditLog };
@@ -175,6 +223,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
             results: last.applied?.results || [],
             url: location.href,
             build: build.BUILD,
+            ledger: ledgerNow,
             profileFilled: schema.countFilled((await chrome.storage.local.get(['profile'])).profile || {}),
           }, { includeFilled: msg.includeFilled === true }),
         });

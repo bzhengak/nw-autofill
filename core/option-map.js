@@ -9,6 +9,8 @@
 // 绝不带资料里的取值，也不带 currentValue 之外的用户内容 ——
 // currentValue 是页面上已经显示的选中项（站点预填或用户手点），导出前侧边栏会明确告知。
 
+import { fingerprint, ledgerRecord } from './ledger.js';
+
 /** 把 dom/scanner.js 的字段对象收成可序列化的 plain 数据（去掉 DOM 节点）。 */
 export function plainField(f) {
   if (!f) return null;
@@ -52,7 +54,10 @@ const NOT_DONE = new Set(['red', 'manual']);
  * @param {Boolean} input.includeFilled  默认只导"没填上的"；true 时把填过的也带上
  * @returns {Object} 直接 JSON.stringify 就能落盘的结构
  */
-export function buildUnfilledMap({ fields = [], gaps = [], results = [], url = '', build = '', profileFilled = null }, { includeFilled = false } = {}) {
+export function buildUnfilledMap({ fields = [], gaps = [], results = [], url = '', build = '', profileFilled = null, ledger = null }, { includeFilled = false } = {}) {
+  // 「这一栏现在的值是不是我们写的」：导出里要看得出来，否则用户以为我们把站点预填也改了
+  let originForLedger = '';
+  try { originForLedger = new URL(url || '').origin; } catch { originForLedger = ''; }
   const gapByIndex = new Map(gaps.map(g => [g.index, g]));
   const resByIndex = new Map(results.map(r => [r.index ?? r.fieldIndex, r]));
   const rows = [];
@@ -81,6 +86,9 @@ export function buildUnfilledMap({ fields = [], gaps = [], results = [], url = '
       // 用户看到 ['head-only'] 就知道这是"中心词蹭上的"，看到 ['exact','section-agree'] 才是硬命中。
       evidence: r?.evidence || [],
       weakEvidence: Boolean(r?.weakEvidence),
+      // S1：这一栏的值是谁写的（us = 我们上一轮写的，可以覆盖；其余一律不动）
+      writtenByUs: Boolean(ledger && originForLedger && ledgerRecord(ledger, originForLedger, fingerprint(f))),
+      overwrites: r?.overwrites || '',
       ...plain,
     });
   }

@@ -203,6 +203,56 @@ function os_tokens(text) {
 }
 
 /**
+ * 站点自己说出来的「资料取值 → 页面选项」对照（adapter.optionRules）。
+ *
+ * 为什么需要它，而不是让 resolveOption 或 AI 去够：Work Permit 那一栏页面给的是 Yes/No，
+ * 资料里存的却是枚举（本地居民 / 需申请工作签证）。两边字面永远对不上，
+ * 相似度会把"需申请工作签证"和"需要担保"这类词互相拉扯 —— 而这是一句合规声明，
+ * 猜错等于替用户表态。所以对照表由适配器**逐条写死**，且：
+ *  · 资料取值只在 yes 侧或只在 no 侧出现才作数（两边都提或都没提 → 不选）；
+ *  · 页面选项里必须恰好一项落进该侧（两项都命中同样说不清 → 不选）；
+ *  · 只有这一栏最后拿到的槽位等于规则声明的槽位时才生效（见调用处）。
+ * 任何一条不满足就返回 null，让这一栏照旧交人工。
+ */
+export function optionRulePick(rule, value, pageField) {
+  if (!rule || !pageField) return null;
+  const opts = (pageField.options || []).filter(o => o && (o.text || o.value));
+  if (!opts.length) return null;
+  const sq = s => String(normalize(s) || '').replace(/\s+/g, '');
+  const v = sq(value);
+  if (!v) return null;
+  const list = side => ((rule.when && rule.when[side]) || []).map(sq).filter(Boolean);
+  const hits = side => list(side).some(t => v === t || v.includes(t));
+  const yes = hits('yes');
+  const no = hits('no');
+  if (yes === no) return null;
+  const polarity = yes ? 'yes' : 'no';
+  const aliases = ((rule.pick && rule.pick[polarity]) || []).map(x => ({ raw: sq(x), src: String(x || '') }))
+    .filter(a => a.raw);
+  const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const landing = opts.filter(o => {
+    const t = sq(o.text);
+    if (!t) return false;
+    return aliases.some(a => {
+      // '有' 不能落进 '没有'、'yes' 不能落进 'not yet'：被否定的那种写法一律不算
+      if (negationMismatch(o.text, a.src)) return false;
+      if (t === a.raw) return true;
+      if (!t.includes(a.raw)) return false;
+      // 拉丁词要整词命中：别名 'no' 不该落进 'Note' / 'nationwide'
+      return /^[a-z0-9]+$/.test(a.raw) ? new RegExp(`(^|[^a-z0-9])${esc(a.raw)}([^a-z0-9]|$)`, 'i').test(t) : true;
+    });
+  });
+  return landing.length === 1 ? landing[0] : null;
+}
+
+/** 规则只允许管它自己写明的那个槽位：这一栏最后拿到的是别的路径，规则就当没写过 */
+function rulePickFor(entry, pageField, optionRules) {
+  const rule = (optionRules || new Map()).get(entry.index);
+  if (!rule || String(rule.path || '') !== String(entry.path || '')) return null;
+  return optionRulePick(rule, entry.value ?? entry.optionValue, pageField);
+}
+
+/**
  * @param {Array} pageFields  dom/scanner.js 的字段描述
  * @param {Object} profile    createEmptyProfile() 形状的数据
  * @param {Object} opts       { mode: 'full'|'incremental'|'selection', allowAiCandidates:false }
@@ -273,7 +323,7 @@ export function planFill(pageFields, profile, opts = {}) {
     }
     return '';
   };
-  const { pins, skip, slotPins } = planFromAdapter(pageFields, opts.adapter);
+  const { pins, skip, slotPins, optionRules } = planFromAdapter(pageFields, opts.adapter);
   const pinned = [];
   const assignments = [];
   const gaps = [];
@@ -672,7 +722,15 @@ export function planFill(pageFields, profile, opts = {}) {
         option = resolveOption(pf, value);
       }
       if (option) entry.optionValue = option.value ?? option.text;
-      else if (pageOptions.length) { entry.tier = 'review'; entry.note = '页面选项与你的资料无对应，需人工选择'; entry.needsChoice = true; delete entry.value; }
+      else {
+        const byRule = rulePickFor(entry, pf, optionRules);
+        if (byRule) {
+          entry.optionValue = byRule.value ?? byRule.text;
+          const ruleNote = `按站点选项对照：资料里「${value}」→ 选「${byRule.text}」`;
+          entry.note = entry.note ? `${entry.note}；${ruleNote}` : ruleNote;
+        }
+        else if (pageOptions.length) { entry.tier = 'review'; entry.note = '页面选项与你的资料无对应，需人工选择'; entry.needsChoice = true; delete entry.value; }
+      }
     }
 
     const adapterDate = dateFormatOverride(opts.adapter, pf);
@@ -697,7 +755,13 @@ export function planFill(pageFields, profile, opts = {}) {
     if (pf.kind === 'select' || pf.kind === 'radio' || pf.kind === 'checkbox') {
       const opt = resolveOption(pf, entry.value);
       if (opt) entry.optionValue = opt.value ?? opt.text;
-      else { entry.tier = 'review'; entry.note = '页面选项与你的资料无对应，需人工选择'; entry.needsChoice = true; }
+      else {
+        const byRule = rulePickFor(entry, pf, optionRules);
+        if (byRule) {
+          entry.optionValue = byRule.value ?? byRule.text;
+          entry.note = `按站点选项对照：资料里「${entry.value}」→ 选「${byRule.text}」${byRule.value ? `（提交值 ${byRule.value}）` : ''}`;
+        } else { entry.tier = 'review'; entry.note = '页面选项与你的资料无对应，需人工选择'; entry.needsChoice = true; }
+      }
     }
     const df = dateFormatOverride(opts.adapter, pf);
     if (df) entry.dateFormat = df;

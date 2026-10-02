@@ -13,7 +13,7 @@ import { JSDOM } from 'jsdom';
 import { scanForm } from '../dom/scanner.js';
 import { pickCustomSelect, adapterHints } from '../dom/select-opener.js';
 import { applyPlan } from '../dom/filler.js';
-import { planFill } from '../core/matcher.js';
+import { planFill, gapReasonLabel } from '../core/matcher.js';
 import { createEmptyProfile, setValueByPath } from '../core/profile-schema.js';
 import tupuAdapter from '../adapters/tupu-antd.json' with { type: 'json' };
 
@@ -202,4 +202,119 @@ test('AntD v3 下拉：靠适配器的选择器也能点开并选中，回读读
   // 不带适配器提示时必须诚实地失败，而不是"点了就当成功"
   const bad = await pickCustomSelect(box, 'Bachelor', {});
   assert.notEqual(bad.ok, true, '没有选择器提示却报成功 —— 那说明回读在骗人');
+});
+
+/**
+ * 途普那一页把「区号下拉」和「手机号输入框」共用同一句标签（primary cell number），
+ * 于是区号那一格被派去拿证件号 / 备用电话（用户实测：那一栏出现了 '3301…' 这种值）。
+ * 一整列选项都是 +86 / +852 时，这个控件的身份是确定的：它就是"电话国家/地区区号"，
+ * 除了 contact.dialCode 之外的槽位派来的值一律不许选。
+ */
+test('区号型下拉只认「电话区号」槽位：别的槽位派来的值一律不选', async () => {
+  const html = `<div class="text-muted"><span class="field-label">primary cell number</span>
+    <span class="field-value field-editor"><form class="ant-form ant-form-horizontal specialSelect">
+      <div class="ant-row ant-form-item"><span class="ant-form-item-children">
+        <div class="ddf_wrapper"><div class="ant-select ant-select-enabled">
+          <div class="ant-select-selection ant-select-selection--single" role="combobox" aria-haspopup="listbox">
+            <div class="ant-select-selection__rendered"><span class="ant-select-selection-selected-value"></span></div>
+          </div>
+          <div class="ant-select-dropdown"><ul role="listbox" class="ant-select-dropdown-menu">
+            <li class="ant-select-dropdown-menu-item" data-v="86">中国大陆 +86</li>
+            <li class="ant-select-dropdown-menu-item" data-v="852">中国香港 +852</li>
+            <li class="ant-select-dropdown-menu-item" data-v="853">中国澳门 +853</li>
+            <li class="ant-select-dropdown-menu-item" data-v="886">中国台湾 +886</li>
+          </ul></div>
+        </div></div>
+      </span></div></form></span></div></div>`;
+  const dom = new JSDOM(`<!doctype html><html><body>${html}</body></html>`, { url: 'https://careersite.tupu360.test/x', pretendToBeVisual: true });
+  const fields = scanForm(dom.window.document);
+  const box = fields.find(f => f.kind === 'combobox');
+  assert.ok(box, '区号下拉没被扫成 combobox');
+  const hints = adapterHints(tupuAdapter);
+
+  const wrong = await pickCustomSelect(box, '330105199912034567', { hints, path: 'basics.idNumber' });
+  assert.equal(wrong.ok, false, '把证件号选进了区号下拉');
+  assert.equal(wrong.reason, 'dial_code_only', `要的是"这一格配错了槽位"这条独立原因，实得 ${JSON.stringify(wrong)}`);
+  assert.equal(dom.window.document.querySelector('.ant-select-selection-selected-value').textContent.trim(), '',
+    '拒绝之后页面还该是空的：不许留下半截选择');
+
+  const ok = await pickCustomSelect(box, '+852', { hints, path: 'contact.dialCode' });
+  assert.equal(ok.ok, true, `区号槽派来的值本该能选：${JSON.stringify(ok)}`);
+  assert.match(ok.shown, /852/);
+});
+
+/** 一路从计划打到写入：错配的槽位在结果里是 manual（不是红），且原因被翻成人话 */
+test('区号下拉走完整链路：报告里是待人工，不是假绿也不是误报红', async () => {
+  const html = `<div class="text-muted"><span class="field-label">primary cell number</span>
+    <span class="field-value field-editor"><form class="ant-form ant-form-horizontal specialSelect">
+      <div class="ant-row ant-form-item"><span class="ant-form-item-children">
+        <div class="ddf_wrapper"><div class="ant-select ant-select-enabled">
+          <div class="ant-select-selection ant-select-selection--single" role="combobox" aria-haspopup="listbox">
+            <div class="ant-select-selection__rendered"><span class="ant-select-selection-selected-value"></span></div>
+          </div>
+          <div class="ant-select-dropdown"><ul role="listbox" class="ant-select-dropdown-menu">
+            <li class="ant-select-dropdown-menu-item" data-v="86">中国大陆 +86</li>
+            <li class="ant-select-dropdown-menu-item" data-v="852">中国香港 +852</li>
+            <li class="ant-select-dropdown-menu-item" data-v="853">中国澳门 +853</li>
+          </ul></div>
+        </div></div>
+      </span></div></form></span></div></div>`;
+  const dom = new JSDOM(`<!doctype html><html><body>${html}</body></html>`, { url: 'https://careersite.tupu360.test/x', pretendToBeVisual: true });
+  const fields = scanForm(dom.window.document);
+  const box = fields.find(f => f.kind === 'combobox');
+  const { results } = await applyPlan(fields,
+    [{ index: fields.indexOf(box), path: 'contact.phone', label: 'primary cell number', value: '13900002222', optionValue: '13900002222', tier: 'auto' }],
+    { allowCustomSelect: true, adapter: tupuAdapter });
+  assert.equal(results[0].status, 'manual', `该是待人工，实得 ${JSON.stringify(results[0])}`);
+  assert.equal(results[0].failReason, 'dial_code_only');
+  assert.match(gapReasonLabel('dial_code_only'), /区号/, '缺口原因要说人话并给出下一步');
+});
+
+/**
+ * Work Permit 这一类：页面给 Yes/No，资料里存的却是枚举（本地居民 / 需申请工作签证）。
+ * 字面永远对不上，相似度与 AI 都只会在"有权工作"和"需要担保"之间拉扯 ——
+ * 而这是一句合规声明。用户 2026-10-02 的口径："可以自动选，选不出就放那。"
+ * 所以对照写在适配器里，逐条写死，且只在单边命中、页面只落一项时才动手。
+ */
+function workPermitPlan(value) {
+  const html = `<div><span class="field-label">Work Permit</span>
+    <span><label><input type="radio" name="wp" value="Y">Yes</label>
+      <label><input type="radio" name="wp" value="N">No</label></span></div>`;
+  const dom = new JSDOM(`<!doctype html><html><body>${html}</body></html>`, { url: 'https://careersite.tupu360.test/x', pretendToBeVisual: true });
+  const fields = scanForm(dom.window.document);
+  const p = createEmptyProfile();
+  if (value) setValueByPath(p, 'hkGlobal.workAuth', value);
+  const plan = planFill(fields, p, { mode: 'full', adapter: tupuAdapter });
+  const idx = fields.findIndex(f => f.kind === 'radio');
+  return {
+    entry: plan.assignments.find(a => a.index === idx),
+    gap: plan.gaps.find(g => g.index === idx),
+  };
+}
+
+test('Work Permit：资料「本地居民」→ 按选项对照选 Yes，不交人工', () => {
+  const { entry, gap } = workPermitPlan('本地居民');
+  assert.ok(entry, `这一栏该有计划：${JSON.stringify(gap)}`);
+  assert.equal(entry.path, 'hkGlobal.workAuth');
+  assert.equal(entry.optionValue, 'Y', `该选 Yes（值 Y），实得 ${JSON.stringify(entry)}`);
+  assert.equal(entry.tier, 'auto', '用户放行了：这一类可以自动选');
+  assert.match(entry.note, /选项对照/, '要写清是按哪条规则选的，别看起来像我们自己推的');
+});
+
+test('Work Permit：资料「需申请工作签证」→ 选 No，不会两头都勾', () => {
+  const { entry } = workPermitPlan('需申请工作签证');
+  assert.equal(entry.optionValue, 'N', `该选 No，实得 ${JSON.stringify(entry)}`);
+});
+
+test('Work Permit：资料里的说法不在对照表里 → 照旧交人工，不硬选', () => {
+  const { entry } = workPermitPlan('外交人员随行家属');
+  assert.ok(!entry.optionValue || entry.needsChoice, `说不清的一律不选：${JSON.stringify(entry)}`);
+  assert.equal(entry.tier, 'review');
+  assert.equal(entry.needsChoice, true);
+});
+
+test('选项对照只管它写明的那个槽位：资料空着时也不会替别人表态', () => {
+  const { entry, gap } = workPermitPlan('');
+  assert.ok(!entry, `资料空着就不该有落笔：${JSON.stringify(entry)}`);
+  assert.ok(gap, '空资料要留一条看得懂的缺口');
 });

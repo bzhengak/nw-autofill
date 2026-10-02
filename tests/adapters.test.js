@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { validateAdapter, matchAdapter, planFromAdapter, dateFormatOverride, compileAdapters } from '../core/adapters.js';
-import { planFill } from '../core/matcher.js';
+import { planFill, optionRulePick } from '../core/matcher.js';
 import { sampleProfile } from './fixtures/sample-profile.js';
 import { createEmptyProfile, getValueByPath } from '../core/profile-schema.js';
 
@@ -199,4 +199,43 @@ test('tools/ext-id.mjs：ID 是路径 UTF-16LE 的 SHA-256 前 32 位，逐位�
   // 手算一份固定向量：算法（UTF-16LE / 前 32 位 / a-p 映射）被改坏时要能看见
   const hex = createHash('sha256').update(win, 'utf16le').digest('hex');
   assert.equal(id, hex.slice(0, 32).split('').map(c => String.fromCharCode(97 + parseInt(c, 16))).join(''));
+});
+
+/**
+ * optionRules 是"替用户勾选项"的规则，形状必须卡死：
+ * 一份写歪了的规则（把 yes 写成两边都命中、或 path 指向不存在的槽位）会把整页勾成同一个答案。
+ */
+const goodRule = {
+  match: 're:(work permit|工作许可)', path: 'hkGlobal.workAuth',
+  when: { yes: ['本地居民'], no: ['需申请工作签证'] },
+  pick: { yes: ['yes', '是'], no: ['no', '否'] },
+};
+const base = extra => ({ id: 'x', domains: ['a.com'], ...extra });
+
+test('optionRules：合法形状通过，歪的一律拒收', () => {
+  assert.deepEqual(validateAdapter(base({ optionRules: [goodRule] })), []);
+  const cases = [
+    [{ optionRules: [{ ...goodRule, path: 'nope.nothere' }] }, /槽位/],
+    [{ optionRules: [{ ...goodRule, path: '' }] }, /槽位/],
+    [{ optionRules: [{ ...goodRule, when: { yes: ['a'], maybe: ['b'] } }] }, /只允许 yes\/no/],
+    [{ optionRules: [{ ...goodRule, pick: { yes: 'yes', no: ['no'] } }] }, /必须是数组/],
+    [{ optionRules: [{ ...goodRule, when: { yes: [], no: [] } }] }, /两边都空/],
+    [{ optionRules: [{ ...goodRule, note: 'x'.repeat(60) }] }, null],
+    [{ optionRules: [{ ...goodRule, match: '' }] }, /缺少 match/],
+    [{ optionRules: [{ ...goodRule, hook: 'x' }] }, /不允许的键/],
+  ];
+  for (const [extra, re] of cases) {
+    const errs = validateAdapter(base(extra));
+    if (re) assert.ok(errs.some(e => re.test(e)), `该拒的没拒（${JSON.stringify(extra)}）：${JSON.stringify(errs)}`);
+    else assert.deepEqual(errs, [], `不该拒的拒了：${JSON.stringify(errs)}`);
+  }
+});
+
+test('optionRules 的规则只在"这一栏最后拿到的正是它写的槽位"时才生效', () => {
+  const adapter = base({ id: 'rule-x', domains: ['a.com'], optionRules: [goodRule] });
+  const fields = [{ index: 0, label: 'work permit', labelRaw: 'Work Permit', kind: 'radio', options: [{ text: 'Yes', value: 'Y' }, { text: 'No', value: 'N' }] }];
+  const { optionRules } = planFromAdapter(fields, adapter);
+  assert.ok(optionRules.get(0), '标签命中时规则要挂到栏位上');
+  // 槽位不是规则写的那个 → 规则当没写过（不能让一条 work permit 规则去管性别）
+  assert.equal(optionRulePick({ ...goodRule, path: 'basics.gender' }, '男', fields[0]), null);
 });

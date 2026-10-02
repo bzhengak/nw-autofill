@@ -64,6 +64,26 @@
       "match": "是否愿意到异地工作",
       "path": "intent.acceptRelocation",
       "note": "是/否（码值 Y/N），与'是否接受调剂'同源但题目不同，钉住避免互相抢"
+    },
+    {
+      "match": "re:(work permit|working permit|right to work|工作许可|合法工作身份)",
+      "path": "hkGlobal.workAuth",
+      "note": "这一题页面给 Yes/No、资料里是枚举，光靠标签相似度打不到那一槽 —— 先钉住槽位，选项由 optionRules 对照着选"
+    }
+  ],
+  "optionRules": [
+    {
+      "match": "re:(work permit|working permit|right to work|work authorization|工作许可|合法工作身份)",
+      "path": "hkGlobal.workAuth",
+      "when": {
+        "yes": ["本地居民", "公民", "永久居民", "持工作签证", "学生签证", "Citizen", "Permanent Resident", "Holder of Employment Visa"],
+        "no": ["需申请工作签证", "Require Sponsorship", "需要担保", "无工作许可"]
+      },
+      "pick": {
+        "yes": ["yes", "是", "有的", "有权", "不需要担保", "No sponsorship required"],
+        "no": ["no", "否", "没有", "需要担保", "Require Sponsorship", "Need sponsorship"]
+      },
+      "note": "页面问 Yes/No，资料里存的是枚举（本地居民 / 需申请工作签证…）。这一栏是合规声明，猜错等于替用户表态，所以对照逐条写死：只在单边命中且页面只落一项时才动手，否则交人工（用户 2026-10-02：可以自动选，选不出就放那）"
     }
   ],
   "aliases": [

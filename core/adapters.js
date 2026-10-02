@@ -4,16 +4,20 @@
 //  2. adapter 只允许声明选择器、别名、日期格式与钉位；出现任何远程 URL/脚本字段直接拒绝加载。
 //  3. 钉位（pins）优先于匈牙利分配，但必须回读校验，钉错了照样报红。
 
-import { SECTIONS } from './profile-schema.js';
+import { SECTIONS, fieldByPath } from './profile-schema.js';
 
 const FORBIDDEN_KEYS = /(fetch|url|endpoint|remote|script|src|inject|eval|postmessage|request|ajax|href|webhook|payload)/i;
-const ALLOWED_KEYS = new Set(['id', 'name', 'domains', 'paths', 'family', 'notes', 'evidence', 'pins', 'degreeSlotPins', 'relationSlotPins', 'languageSlotPins', 'aliases', 'dateFormats', 'skip', 'controlHints', 'version']);
+const ALLOWED_KEYS = new Set(['id', 'name', 'domains', 'paths', 'family', 'notes', 'evidence', 'pins', 'degreeSlotPins', 'relationSlotPins', 'languageSlotPins', 'optionRules', 'aliases', 'dateFormats', 'skip', 'controlHints', 'version']);
 // 嵌套结构白名单：任何多出来的键（尤其是能发请求的键）都在校验期拒掉
 const NESTED_ALLOWED = {
   pins: new Set(['match', 'path', 'note']),
   degreeSlotPins: new Set(['match', 'degree', 'subfield', 'note']),
   relationSlotPins: new Set(['match', 'relation', 'subfield', 'note']),
   languageSlotPins: new Set(['match', 'language', 'cert', 'byKey', 'subfield', 'note']),
+  // 「选项 ↔ 资料取值」显式对照：页面问 Yes/No，资料里存的却是一串枚举
+  // （工作许可身份 = 本地居民 / 需申请工作签证）。没有这条规则时这一栏只能交人工，
+  // 让 AI 或相似度去猜就是把"是否有权工作"这种合规声明猜着替用户表态了。
+  optionRules: new Set(['match', 'path', 'when', 'pick', 'note']),
   skip: new Set(['match', 'reason', 'note']),
   dateFormats: new Set(['match', 'format', 'note']),
   aliases: new Set(['path', 'add']),
@@ -98,6 +102,28 @@ export function validateAdapter(raw) {
   checkRules(raw.degreeSlotPins, 'degreeSlotPins');
   checkRules(raw.relationSlotPins, 'relationSlotPins');
   checkRules(raw.languageSlotPins, 'languageSlotPins');
+  // 选项对照规则：形状卡死（when/pick 都只能是 {yes:[…], no:[…]} 的字符串数组），
+  // path 必须是资料里真存在的槽位。规则越死，越不存在"一份坏适配器把整页勾成是"的可能。
+  const OPT_SIDE = new Set(['yes', 'no']);
+  for (const r of raw.optionRules || []) {
+    if (!r.match) errors.push('optionRules 规则缺少 match');
+    const f = r.path ? fieldByPath(r.path) : null;
+    if (!r.path || !f) { errors.push(`optionRules.path 不是资料里的槽位：${r.path}`); continue; }
+    for (const side of ['when', 'pick']) {
+      const o = r[side];
+      if (!o || typeof o !== 'object' || Array.isArray(o)) { errors.push(`optionRules.${side} 需要是 {yes:[],no:[]}`); continue; }
+      for (const k of Object.keys(o)) if (!OPT_SIDE.has(k)) errors.push(`optionRules.${side} 只允许 yes/no，来了 ${k}`);
+      for (const k of OPT_SIDE) {
+        const list = o[k];
+        if (!Array.isArray(list)) errors.push(`optionRules.${side}.${k} 必须是数组`);
+        else for (const s of list) {
+          if (typeof s !== 'string' || !s.trim()) errors.push(`optionRules.${side}.${k} 只能是非空字符串`);
+          if (String(s || '').length > 40) errors.push(`optionRules.${side}.${k} 词条过长（>40）：${String(s).slice(0, 40)}…`);
+        }
+      }
+    }
+    if (r.when && !(r.when.yes || []).length && !(r.when.no || []).length) errors.push('optionRules.when 两边都空，等于没写');
+  }
   for (const [kind, spec] of Object.entries(SLOT_RULE_KINDS)) {
     for (const r of raw[kind] || []) {
       if (!r.match) errors.push(`${kind} 规则缺少 match`);
@@ -185,18 +211,24 @@ function labelHits(pageLabel, matcher) {
 
 /**
  * 把 adapter 应用到扫描结果上。
- * @returns {{pins: Map<number,string>, skip: Map<number,string>, slotPins: Map<number,{degree:string,subfield:string}>, aliases: Array, dateFormats: Array}}
+ * @returns {{pins: Map<number,string>, skip: Map<number,string>, slotPins: Map<number,{degree:string,subfield:string}>, optionRules: Map<number,object>, aliases: Array, dateFormats: Array}}
  */
 export function planFromAdapter(pageFields, adapter) {
-  if (!adapter) return { pins: new Map(), skip: new Map(), slotPins: new Map(), aliases: [], dateFormats: [] };
+  if (!adapter) return { pins: new Map(), skip: new Map(), slotPins: new Map(), optionRules: new Map(), aliases: [], dateFormats: [] };
   const pins = new Map();
   const skip = new Map();
   const slotPins = new Map();
+  const optionRules = new Map();
   pageFields.forEach((f, i) => {
     const hay = [f.label, f.name, f.id, f.placeholder].filter(Boolean).join(' ');
     const slotHay = [f.label, f.name, f.id].filter(Boolean).join(' ');
     for (const s of adapter.skip || []) {
       if (labelHits(hay, s.match)) { skip.set(i, s.reason || 'adapter_skip'); return; }
+    }
+    // 选项对照规则按标签挂到栏位上；真正用不用得看 matcher 那边
+    // "这一栏最后拿到的槽位 == 规则写的槽位"，标签像但资料对不上时规则不生效。
+    for (const r of adapter.optionRules || []) {
+      if (r.match && !optionRules.has(i) && labelHits(hay, r.match)) optionRules.set(i, r);
     }
     // 摊平型槽位规则优先于普通钉位：学历（硕士/本科）与家庭成员（父亲/母亲）都是
     // "标签里写着 belonging，槽位号却要去看资料"的字段，猜错就是把母亲单位填进父亲那行。
@@ -227,7 +259,7 @@ export function planFromAdapter(pageFields, adapter) {
       if (labelHits(hay, p.match)) pins.set(i, p.path);
     }
   });
-  return { pins, skip, slotPins, aliases: adapter.aliases || [], dateFormats: adapter.dateFormats || [] };
+  return { pins, skip, slotPins, optionRules, aliases: adapter.aliases || [], dateFormats: adapter.dateFormats || [] };
 }
 
 /** 命中 adapter 的日期格式覆盖 */

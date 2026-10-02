@@ -305,20 +305,52 @@ test('Work Permit：资料「本地居民」→ 按选项对照选 Yes，但合�
 });
 
 /** 反 polarity 的问法（"你需要工作许可吗"）：对照表没有方向信息，一律不生效、交人工 */
-test('问句方向反了就不照表选：Do you require a work permit → 交人工', () => {
+/**
+ * 同一道题有两种问法，Yes 的含义相反：
+ *   "你有工作许可吗"      → 本地居民/IANG 选 Yes
+ *   "你需要工作许可/担保吗" → 同一份资料必须选 No
+ * 方向由规则里的 polarity 声明，且**声明与题面必须一致**才生效（另一条方向的规则不生效）。
+ * 用户 2026-10-03 补的事实："work permit 我就是 IANG" —— IANG 属于有权工作、无需担保。
+ */
+test('反问写法有独立的 inverted 规则：Do you require a work permit → 本地居民选 No', () => {
   const html = `<div><span class="field-label">Do you require a work permit?</span>
     <span><label><input type="radio" name="wp2" value="Y">Yes</label>
       <label><input type="radio" name="wp2" value="N">No</label></span></div>`;
   const dom = new JSDOM(`<!doctype html><html><body>${html}</body></html>`, { url: 'https://careersite.tupu360.test/x', pretendToBeVisual: true });
   const fields = scanForm(dom.window.document);
   const p = createEmptyProfile();
-  setValueByPath(p, 'hkGlobal.workAuth', '本地居民');
+  setValueByPath(p, 'hkGlobal.workAuth', 'IANG（内地应届毕业生留港计划）');
   const plan = planFill(fields, p, { mode: 'full', adapter: tupuAdapter });
   const idx = fields.findIndex(f => f.kind === 'radio');
   const a = plan.assignments.find(x => x.index === idx && !x.skip);
-  if (a) assert.equal(a.needsChoice, true, `反问句不该照表自动勾：${JSON.stringify(a)}`);
+  assert.ok(a, `反问题也该有条目：${JSON.stringify(plan.gaps.filter(g => g.index === idx))}`);
+  assert.equal(a.optionValue, 'N', `有权工作的人对"需不需要许可"该答 No：${JSON.stringify(a)}`);
+  assert.equal(a.tier, 'review', '合规声明不给绿字');
   const boxes = [...dom.window.document.querySelectorAll('input[type=radio]')];
-  assert.equal(boxes[0].checked, false, '把方向反了的合规声明勾上了');
+  assert.equal(boxes[0].checked, false, 'Yes 被勾上了：方向锁失效');
+});
+
+test('方向锁：只有 same 规则的适配器碰上反问题面时不自动勾', () => {
+  const sameOnly = {
+    id: 'same-only', domains: ['tupu360.test'],
+    pins: [{ match: 're:(work permit|right to work)', path: 'hkGlobal.workAuth' }],
+    optionRules: [{
+      match: 're:(work permit|right to work)', path: 'hkGlobal.workAuth',
+      when: { yes: ['本地居民', 'IANG'], no: ['需申请工作签证'] },
+      pick: { yes: ['yes', '是'], no: ['no', '否'] },
+    }],
+  };
+  const dom = new JSDOM(`<!doctype html><html><body><div><span class="field-label">Do you require a work permit?</span>
+    <span><label><input type="radio" name="z" value="Y">Yes</label><label><input type="radio" name="z" value="N">No</label></span></div></body></html>`,
+    { url: 'https://careersite.tupu360.test/x', pretendToBeVisual: true });
+  const fields = scanForm(dom.window.document);
+  const p = createEmptyProfile();
+  setValueByPath(p, 'hkGlobal.workAuth', 'IANG（内地应届毕业生留港计划）');
+  const plan = planFill(fields, p, { mode: 'full', adapter: sameOnly });
+  const idx = fields.findIndex(f => f.kind === 'radio');
+  const a = plan.assignments.find(x => x.index === idx && !x.skip);
+  assert.ok(!a || a.needsChoice === true, `same 规则不该吃到反问题：${JSON.stringify(a)}`);
+  assert.equal([...dom.window.document.querySelectorAll('input[type=radio]')][0].checked, false);
 });
 
 test('Work Permit：资料「需申请工作签证」→ 选 No，不会两头都勾', () => {
@@ -453,4 +485,25 @@ test('pinned_field_empty 要写出钉到了哪个槽位', () => {
   assert.equal(g.slotPath, 'hkGlobal.workAuth');
   assert.match(g.note, /工作许可/, `note 要念出槽位中文名：${JSON.stringify(g)}`);
   assert.notEqual(gapReasonLabel('pinned_field_empty'), 'pinned_field_empty', '这条原因也得有中文说明');
+});
+
+/**
+ * 用户 2026-10-03 补的事实：他的工作许可身份就是 IANG（内地应届毕业生来港留港计划）。
+ * 港企表单里 IANG 常常是独立选项，但对"有没有工作许可 / 需不需要担保"这两个问题，
+ * 它与永久居民同向：有权工作、无需担保。以前对照表里没有它，这一栏只能交人工。
+ */
+test('Work Permit：资料「IANG」→ 照表选 Yes，不用人工猜', () => {
+  const { entry, gap } = workPermitPlan('IANG（内地应届毕业生留港计划）');
+  assert.ok(entry, `IANG 该有条目：${JSON.stringify(gap)}`);
+  assert.equal(entry.path, 'hkGlobal.workAuth');
+  assert.equal(entry.optionValue, 'Y', `IANG 属于"有权工作"那一侧：${JSON.stringify(entry)}`);
+  assert.equal(entry.tier, 'review', '合规声明仍然不给绿字');
+  assert.match(entry.note, /选项对照/);
+});
+
+test('IANG 在资料枚举里，且中英写法互认', async () => {
+  const { OPTION_SETS, equivalentsOf } = await import('../core/profile-schema.js');
+  assert.ok(OPTION_SETS.workAuth.some(x => /IANG/.test(x)), '工作许可身份的候选里没有 IANG');
+  const eq = equivalentsOf('IANG');
+  assert.ok(eq.some(x => /内地应届毕业生留港计划|Insertion Admission/i.test(x)), `IANG 的中英等价没连上：${JSON.stringify(eq)}`);
 });

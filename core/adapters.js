@@ -17,7 +17,10 @@ const NESTED_ALLOWED = {
   // 「选项 ↔ 资料取值」显式对照：页面问 Yes/No，资料里存的却是一串枚举
   // （工作许可身份 = 本地居民 / 需申请工作签证）。没有这条规则时这一栏只能交人工，
   // 让 AI 或相似度去猜就是把"是否有权工作"这种合规声明猜着替用户表态了。
-  optionRules: new Set(['match', 'path', 'when', 'pick', 'note']),
+  // polarity：这一题朝哪个方向问。'same'（默认）= 页面 Yes 就是资料里"有权"那一侧；
+  // 'inverted' = 页面问的是"你需不需要担保"，Yes 反而对应资料里的"需要"侧 —— 方向由规则自己声明，
+  // 不靠我们从问句里猜（猜错就是替用户说一句反的合规声明）。
+  optionRules: new Set(['match', 'path', 'when', 'pick', 'polarity', 'note']),
   skip: new Set(['match', 'reason', 'note']),
   dateFormats: new Set(['match', 'format', 'note']),
   aliases: new Set(['path', 'add']),
@@ -123,6 +126,9 @@ export function validateAdapter(raw) {
       }
     }
     if (r.when && !(r.when.yes || []).length && !(r.when.no || []).length) errors.push('optionRules.when 两边都空，等于没写');
+    if (r.polarity !== undefined && !['same', 'inverted'].includes(String(r.polarity))) {
+      errors.push(`optionRules.polarity 只允许 same / inverted：${r.polarity}`);
+    }
   }
   for (const [kind, spec] of Object.entries(SLOT_RULE_KINDS)) {
     for (const r of raw[kind] || []) {
@@ -227,8 +233,10 @@ export function planFromAdapter(pageFields, adapter) {
     }
     // 选项对照规则按标签挂到栏位上；真正用不用得看 matcher 那边
     // "这一栏最后拿到的槽位 == 规则写的槽位"，标签像但资料对不上时规则不生效。
+    // 存成**数组**：同一道题常有正问/反问两种写法（Yes 的含义相反），
+    // 谁先命中就用谁会让另一种写法永远撞不上（实测：'work permit' 的正问规则吃掉了反问题面）。
     for (const r of adapter.optionRules || []) {
-      if (r.match && !optionRules.has(i) && labelHits(hay, r.match)) optionRules.set(i, r);
+      if (r.match && labelHits(hay, r.match)) optionRules.set(i, [...(optionRules.get(i) || []), r]);
     }
     // 摊平型槽位规则优先于普通钉位：学历（硕士/本科）与家庭成员（父亲/母亲）都是
     // "标签里写着 belonging，槽位号却要去看资料"的字段，猜错就是把母亲单位填进父亲那行。

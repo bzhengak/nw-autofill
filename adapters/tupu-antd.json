@@ -76,7 +76,7 @@
       "match": "re:(work permit|working permit|right to work|work authorization|工作许可|合法工作身份)",
       "path": "hkGlobal.workAuth",
       "when": {
-        "yes": ["本地居民", "公民", "永久居民", "持工作签证", "学生签证", "Citizen", "Permanent Resident", "Holder of Employment Visa"],
+        "yes": ["本地居民", "公民", "永久居民", "持工作签证", "学生签证", "IANG", "内地应届毕业生留港计划", "Citizen", "Permanent Resident", "Holder of Employment Visa"],
         "no": ["需申请工作签证", "Require Sponsorship", "需要担保", "无工作许可"]
       },
       "pick": {
@@ -84,6 +84,20 @@
         "no": ["no", "否", "没有", "需要担保", "Require Sponsorship", "Need sponsorship"]
       },
       "note": "页面问 Yes/No，资料里存的是枚举（本地居民 / 需申请工作签证…）。这一栏是合规声明，猜错等于替用户表态，所以对照逐条写死：只在单边命中且页面只落一项时才动手，否则交人工（用户 2026-10-02：可以自动选，选不出就放那）"
+    },
+    {
+      "match": "re:(require|need|apply for)[a-z ]{0,24}(work permit|work visa|sponsorship)|是否需(要)?(工作许可|工作签证|担保)|签证担保|赞助签证",
+      "path": "hkGlobal.workAuth",
+      "polarity": "inverted",
+      "when": {
+        "yes": ["本地居民", "公民", "永久居民", "持工作签证", "学生签证", "IANG", "内地应届毕业生留港计划", "Citizen", "Permanent Resident", "Holder of Employment Visa"],
+        "no": ["需申请工作签证", "Require Sponsorship", "需要担保", "无工作许可"]
+      },
+      "pick": {
+        "yes": ["yes", "是", "有的", "有权", "不需要担保", "No sponsorship required"],
+        "no": ["no", "否", "没有", "需要担保", "Require Sponsorship", "Need sponsorship"]
+      },
+      "note": "同一道题的反问写法（你需不需要担保/许可）：方向由 polarity 声明，不靠读问句猜 —— 这种题面上 IANG、本地居民这些\"有权工作\"的取值要选 No。与正问句那条互斥：方向对不上就两条都不生效，交人工"
     }
   ],
   "aliases": [

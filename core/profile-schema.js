@@ -331,7 +331,7 @@ export const OPTION_SETS = {
   workMode: ['现场办公', '混合办公', '远程', 'Onsite', 'Hybrid', 'Remote'],
   gradStatus: ['应届毕业生', '毕业一年内', '已毕业', '在读', 'Fresh Graduate', 'Graduating', 'Alumni'],
   channel: ['官网', '牛客', '应届生求职网', '学校就业网', '学长学姐内推', 'LinkedIn', 'Company Website', 'Careers Fair', 'Referral', '其他'],
-  workAuth: ['本地居民', '公民', '持工作签证', '学生签证（可兼职/OPT/CPT）', '需申请工作签证', 'Citizen', 'Permanent Resident', 'Holder of Employment Visa', 'Require Sponsorship'],
+  workAuth: ['本地居民', '公民', '永久居民', 'IANG（内地应届毕业生留港计划）', '持工作签证', '学生签证（可兼职/OPT/CPT）', '需申请工作签证', 'Citizen', 'Permanent Resident', 'Holder of Employment Visa', 'Require Sponsorship'],
 };
 
 /**
@@ -358,6 +358,9 @@ export const VALUE_EQUIVALENTS = [
   ['母语', 'Native', 'Native Speaker', '母语水平'],
   ['流利', 'Fluent', 'Professional', '工作语言'],
   ['本地居民', 'Permanent Resident', 'PR', 'HK Permanent Resident'],
+  // IANG = 内地应届毕业生来港留港计划（Insertion Admission Scheme）。港企表单里它是独立一项，
+  // 但对"有没有工作许可 / 需不需要担保"这两个问题，答案与永久居民同向：有权工作、无需担保。
+  ['IANG', 'IANG签证', '内地应届毕业生留港计划', '内地高校毕业留港计划', 'Insertion Admission Scheme', 'Non-local Graduate'],
   ['公民', 'Citizen', 'Hong Kong Citizen'],
   ['需申请工作签证', 'Require Sponsorship', 'Need Visa', 'Would require sponsorship'],
   ['现场办公', 'Onsite', 'On-site'],

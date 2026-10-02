@@ -239,3 +239,10 @@ test('optionRules 的规则只在"这一栏最后拿到的正是它写的槽位"
   // 槽位不是规则写的那个 → 规则当没写过（不能让一条 work permit 规则去管性别）
   assert.equal(optionRulePick({ ...goodRule, path: 'basics.gender' }, '男', fields[0]), null);
 });
+
+test('optionRules 的方向要显式声明，非法值与缺声明都拒收/按 same 处理', () => {
+  const okInverted = { ...goodRule, polarity: 'inverted' };
+  assert.deepEqual(validateAdapter(base({ optionRules: [okInverted] })), [], 'inverted 该合法');
+  assert.ok(validateAdapter(base({ optionRules: [{ ...goodRule, polarity: 'flip' }] })).some(e => /polarity/.test(e)),
+    '没约束的 polarity 会被当成"随便写点什么都能过"');
+});

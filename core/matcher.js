@@ -267,8 +267,11 @@ export function optionRulePick(rule, value, pageField) {
   const yes = hits('yes');
   const no = hits('no');
   if (yes === no) return null;
-  const polarity = yes ? 'yes' : 'no';
-  const aliases = ((rule.pick && rule.pick[polarity]) || []).map(x => ({ raw: sq(x), src: String(x || '') }))
+  // 资料落在哪一侧，与页面该勾哪一项，是两件事：题目朝反方向问时（"你需不需要担保"），
+  // 资料里"有权工作"这一侧要对应页面的 No。方向由规则里的 polarity 声明，不靠我们读问句猜。
+  let side = yes ? 'yes' : 'no';
+  if (rule.polarity === 'inverted') side = side === 'yes' ? 'no' : 'yes';
+  const aliases = ((rule.pick && rule.pick[side]) || []).map(x => ({ raw: sq(x), src: String(x || '') }))
     .filter(a => a.raw);
   const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const landing = opts.filter(o => {
@@ -288,17 +291,20 @@ export function optionRulePick(rule, value, pageField) {
 
 /** 规则只允许管它自己写明的那个槽位：这一栏最后拿到的是别的路径，规则就当没写过 */
 function rulePickFor(entry, pageField, optionRules) {
-  const rule = (optionRules || new Map()).get(entry.index);
-  if (!rule || String(rule.path || '') !== String(entry.path || '')) return null;
-  /**
-   * 问句极性反转的护栏（独立审查 2026-10-02 指出）：`work permit` 这一个 match 同时命中
-   * "你有工作许可吗"（规则假定的问法，Yes = 有权工作）与"你需要工作许可吗 / 是否需担保"
-   * （方向相反的问法，Yes = 需要许可）。对照表里没有"这句朝哪边问"的信息，
-   * 所以这种句子一律不生效、交人工 —— 把方向反了的合规声明自动勾上比不勾危险得多。
-   */
+  const all = (optionRules || new Map()).get(entry.index);
+  const rules = (Array.isArray(all) ? all : all ? [all] : [])
+    .filter(r => r && String(r.path || '') === String(entry.path || ''));
+  if (!rules.length) return null;
   const asked = String(pageField?.labelRaw || pageField?.label || entry.label || '');
-  if (/(require|need\b|needing|apply\s*for|sponsor|申请|需要|是否需|有无)/i.test(asked)) return null;
-  return optionRulePick(rule, entry.value ?? entry.optionValue, pageField);
+  const invertedWording = /(require|need\b|needing|apply\s*for|sponsor|申请|需要|是否需|有无)/i.test(asked);
+  // 方向锁：只试"声明的方向与题面一致"的那些规则；一条都没有就交人工。
+  // 猜方向 = 替用户在合规声明上说反话，比不勾危险得多。
+  const usable = rules.filter(r => (r.polarity === 'inverted') === invertedWording);
+  for (const rule of usable) {
+    const picked = optionRulePick(rule, entry.value ?? entry.optionValue, pageField);
+    if (picked) return picked;
+  }
+  return null;
 }
 
 /**

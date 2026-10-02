@@ -199,3 +199,12 @@ test('nw:unfilledMap 三端都在：按钮有 id、面板会发、内容脚本�
   const branch = content.slice(content.indexOf("msg?.type === 'nw:unfilledMap'"));
   assert.match(branch.slice(0, 1400), /dryRun: true/, '没扫过时先算计划这一步会真的写页面');
 });
+
+/** 用户实测：点「导出没填的字段与选项」回的是 unknown_message —— 面板发了、内容脚本也接了，
+ *  但后台那条"转发白名单"里没有它，于是消息死在后台。三端齐全不等于链路通。 */
+test('nw:unfilledMap 必须在后台的转发白名单里（否则回包就是 unknown_message）', () => {
+  const sw = read('../background/service-worker.js');
+  const relay = sw.split('\n').find(line => line.includes("msg.type === 'nw:scan'") && line.includes('else if'));
+  assert.ok(relay, '没找到后台的转发白名单那一行');
+  assert.ok(relay.includes("'nw:unfilledMap'"), '白名单里没有 nw:unfilledMap：面板只会拿到 unknown_message');
+});

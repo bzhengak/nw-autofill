@@ -14,7 +14,7 @@ import { JSDOM } from 'jsdom';
 import { scanForm } from '../dom/scanner.js';
 import { applyPlan } from '../dom/filler.js';
 import { planFill } from '../core/matcher.js';
-import { pickCustomSelect, detectSelectLibraries, isCustomSelect } from '../dom/select-opener.js';
+import { pickCustomSelect, detectSelectLibraries, isCustomSelect, matchOption } from '../dom/select-opener.js';
 import { classifyClick } from '../dom/safety.js';
 import { sampleProfile } from './fixtures/sample-profile.js';
 
@@ -110,4 +110,21 @@ test('AntD 仿真页：搜索型 select 也是点开才有选项，同样要能�
   const r = await pickCustomSelect(city, '上海');
   assert.equal(r.ok, true);
   assert.match(r.shown, /上海/);
+});
+
+/**
+ * 'female'.includes('male') 是 true —— 埃森哲那一页的性别下拉因此被点成 Female，
+ * 而且回读还报"已填 female，请核对"：错值被包装成"待复核"，比报红危险得多。
+ * 拉丁词必须整词匹配（中文没有词边界，仍走子串）。
+ */
+test('拉丁选项整词匹配：要 Male 绝不点成 Female', () => {
+  const els = texts => Array.from(new JSDOM(
+    `<ul role="listbox">${texts.map(t => `<li role="option">${t}</li>`).join('')}</ul>`
+  ).window.document.querySelectorAll('li'));
+  const textOf = o => String(o.textContent || '').trim();
+
+  assert.equal(textOf(matchOption(els(['Male', 'Female']), 'Male')), 'Male', 'Male 被匹配成了别的项');
+  assert.equal(textOf(matchOption(els(['Male', 'Female']), 'Female')), 'Female');
+  assert.equal(textOf(matchOption(els(['Software Engineer', 'Engineer']), 'engineer')), 'Engineer', '完整词序列仍要能命中');
+  assert.equal(matchOption(els(['Male']), 'man'), null, 'man ≠ male：词边界不该放宽成模糊匹配');
 });

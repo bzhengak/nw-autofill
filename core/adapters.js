@@ -7,12 +7,13 @@
 import { SECTIONS } from './profile-schema.js';
 
 const FORBIDDEN_KEYS = /(fetch|url|endpoint|remote|script|src|inject|eval|postmessage|request|ajax|href|webhook|payload)/i;
-const ALLOWED_KEYS = new Set(['id', 'name', 'domains', 'paths', 'family', 'notes', 'evidence', 'pins', 'degreeSlotPins', 'relationSlotPins', 'aliases', 'dateFormats', 'skip', 'controlHints', 'version']);
+const ALLOWED_KEYS = new Set(['id', 'name', 'domains', 'paths', 'family', 'notes', 'evidence', 'pins', 'degreeSlotPins', 'relationSlotPins', 'languageSlotPins', 'aliases', 'dateFormats', 'skip', 'controlHints', 'version']);
 // 嵌套结构白名单：任何多出来的键（尤其是能发请求的键）都在校验期拒掉
 const NESTED_ALLOWED = {
   pins: new Set(['match', 'path', 'note']),
   degreeSlotPins: new Set(['match', 'degree', 'subfield', 'note']),
   relationSlotPins: new Set(['match', 'relation', 'subfield', 'note']),
+  languageSlotPins: new Set(['match', 'language', 'subfield', 'note']),
   skip: new Set(['match', 'reason', 'note']),
   dateFormats: new Set(['match', 'format', 'note']),
   aliases: new Set(['path', 'add']),
@@ -25,9 +26,15 @@ const NESTED_ALLOWED = {
  *  再到 profile 的 education.N.degree / family.N.relation 里找实际是那一行的资料。 */
 const EDUCATION_SUBFIELDS = new Set((((SECTIONS.find(s => s.k === 'education') || {}).fields) || []).map(t => t[0]));
 const FAMILY_SUBFIELDS = new Set((((SECTIONS.find(s => s.k === 'family') || {}).fields) || []).map(t => t[0]));
+const LANG_SUBFIELDS = new Set((((SECTIONS.find(s => s.k === 'languages') || {}).fields) || []).map(t => t[0]));
 const SLOT_RULE_KINDS = {
   degreeSlotPins: { section: 'education', wantKey: 'degree', subfields: EDUCATION_SUBFIELDS, gapReason: 'degree_slot_unresolved' },
   relationSlotPins: { section: 'family', wantKey: 'relation', subfields: FAMILY_SUBFIELDS, gapReason: 'relation_slot_unresolved' },
+  // 途普/埃森哲那张页面：英语、粤语、普通话、IELTS Score、TOEFL Score… 每个板块标题**就是资料里的
+  // 那一行语言**。平铺的四个成绩框没有行容器，按标签相似度只能猜第几段（GMAT 拿到 IELTS 的 6.5 就是这么来的）。
+  // 所以这里给一种"按资料里该列的值定位第几行"的钉法：先找到 languages.N.language == 这个语言名，
+  // 再取它的子字段。找不到就交人工，绝不按顺序轮值。
+  languageSlotPins: { section: 'languages', wantKey: 'language', subfields: LANG_SUBFIELDS, gapReason: 'language_slot_unresolved' },
 };
 
 function scanKeys(node, trail, errors) {
@@ -90,6 +97,7 @@ export function validateAdapter(raw) {
   // 槽位规则也要过同一套正则安全检查：它们优先于 pins 生效，空分支会把整页指向同一个槽位
   checkRules(raw.degreeSlotPins, 'degreeSlotPins');
   checkRules(raw.relationSlotPins, 'relationSlotPins');
+  checkRules(raw.languageSlotPins, 'languageSlotPins');
   for (const [kind, spec] of Object.entries(SLOT_RULE_KINDS)) {
     for (const r of raw[kind] || []) {
       if (!r.match) errors.push(`${kind} 规则缺少 match`);

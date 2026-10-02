@@ -147,6 +147,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           const fields = scanner.scanForm(document);
           const plan = matcher.planFill(fields, profile || {}, {
             mode: 'full',
+            // 后台按 URL 选好的适配器要一起用：不带它，导出会显示成「词典没有这个词」，
+            // 而面板上同一栏明明已经命中 —— 两份结果对不上就等于没有诊断价值。
+            adapter: msg.adapter || null,
             fillSensitive: Boolean(settings?.fillSensitive),
             allowCustomSelect: Boolean(settings?.allowCustomSelect),
             enMissingMode: settings?.enMissingMode || 'strict',

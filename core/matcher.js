@@ -103,6 +103,7 @@ export const GAP_REASON_ZH = {
   empty_value: '这一栏我们没拿到要写的值（资料里是空的），已跳过 —— 不会往页面写 undefined 之类的占位文字',
   slot_empty: '页面这一栏最匹配的资料位是空的：我们没有拿别的栏位顶替（顶替就是错填），去资料里补上再扫',
   block_ambiguous: '这一栏的标签在资料里好几个板块都有同名位，页面上又没有板块标题可依 —— 按资料顺序轮值是猜，交给你手动选',
+  language_slot_unresolved: '这一栏的标题是一种语言或考试名（IELTS / 粤语…），但你资料的语言栏里没有对应那一行 —— 去「分类编辑 · 语言」补一行，我不按顺序猜',
 };
 
 export function gapReasonLabel(reason) {

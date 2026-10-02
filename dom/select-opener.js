@@ -158,6 +158,25 @@ function collectOptions(doc, sig, panels) {
 const optionText = o => String(o.textContent || o.getAttribute?.('aria-label') || o.value || '').trim();
 
 /**
+ * 词边界判断。拉丁词**必须整词相等**，不能用子串：
+ * 'female'.includes('male') 是 true —— 性别选 male 被点成 female 就是这么发生的
+ * （2026-10-02 埃森哲页实测，写下去还回读成黄字"female"，等于把错值报成"请你核对"）。
+ * 中文/CJK 没有词边界，保留原来的子串口径（'南京大学' ⊂ '学校名称（南京大学）' 这类是有用的）。
+ */
+export function wordMatches(hay, needle) {
+  const h = normalize(hay), n = normalize(needle);
+  if (!h || !n) return false;
+  if (h === n) return true;
+  const latinPair = /^[a-z0-9 .'/\-()]+$/.test(h) && /^[a-z0-9 .'/\-()]+$/.test(n);
+  if (latinPair) {
+    // 只允许"完整词序列"出现：'software engineer' 里能找到 'engineer'，但 'female' 里找不到 'male'
+    const esc = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+    return new RegExp(`(?:^|[^a-z0-9])${esc}(?:$|[^a-z0-9])`, 'i').test(h);
+  }
+  return h.includes(n) || n.includes(h);
+}
+
+/**
  * 在选项里找目标值。分层：精确 → 去括号主干 → 包含；
  * 每一层都要过 negationMismatch，且"包含"层要求候选文本不比目标短一半（防止长句吞短句）。
  */
@@ -172,7 +191,8 @@ export function matchOption(options, want) {
   const contains = options.filter(o => {
     const t = normalize(optionText(o));
     if (negationMismatch(optionText(o), want)) return false;
-    return (t.includes(target) || target.includes(t)) && Math.min(t.length, target.length) >= Math.max(2, target.length * 0.5);
+    if (!wordMatches(t, target)) return false;
+    return Math.min(t.length, target.length) >= Math.max(2, target.length * 0.5);
   });
   return contains.length === 1 ? contains[0] : null;   // 多个就说不清，交人工
 }
@@ -201,8 +221,16 @@ export async function pickCustomSelect(field, want, { sleep = ms => new Promise(
   await sleep(0);
 
   const shown = readShown(field.el, opt);
-  const ok = shownMatches(shown, want) || normalize(shown) === normalize(optionText(opt));
-  return { ok, reason: ok ? '' : 'value_rejected', shown, expected: want, options: opened.options.length };
+  // 回读有两层：① 显示的确实是我们要的值；② 显示的就是我点的那一项 —— 第②层只在
+  // "那一项本身也 match 我们要的值"时才算过。以前它单独就能过，于是点错项（want male 点成 female）
+  // 也报成黄字"已填 female"：错值被包装成"请你核对"，比报红危险得多。
+  const clickedIsAlsoWanted = wordMatches(optionText(opt), want);
+  const ok = shownMatches(shown, want) || (clickedIsAlsoWanted && normalize(shown) === normalize(optionText(opt)));
+  return {
+    ok,
+    reason: ok ? '' : (clickedIsAlsoWanted ? 'value_rejected' : 'selection_mismatch'),
+    shown, expected: want, options: opened.options.length,
+  };
 }
 
 /**

@@ -577,6 +577,21 @@ export function scanForm(root = document) {
       && el.closest('[role="combobox"]') !== el) continue;
     let kind = kindOf(el);
     const name = el.getAttribute('name') || '';
+    // 下拉的**选项面板**不是输入目标。AntD v3 / 途普的 .ddf_wrapper 里，`ul[role=listbox]` 与
+    // `div[role=combobox]` 是同一个组件的两个节点：把它们各算一栏，会出现
+    // "同一个标签被计划两次、一次点开一次当文本框写"（用户 2026-10-02 那一页里 6 组都是这样）。
+    // 判据收紧在"同一个组件壳子里已经有 combobox"这一条：真正只暴露 listbox 的无障碍组件仍照常算一栏。
+    if ((el.getAttribute?.('role') || '').toLowerCase() === 'listbox') {
+      // 从近到远找"把我和某个 combobox 一起装着"的那层壳：
+      // 用 class 猜壳子会挑错层 —— AntD 的 .ant-select-dropdown 只装面板，本身没有触发器，
+      // 一猜错就把面板留下（同一标签被计划两次），所以这里按"contains 一个别的 combobox"实测。
+      let shell = null;
+      for (let n = el.parentElement, up = 0; n && up < 5; n = n.parentElement, up++) {
+        const twin = n.querySelector?.('[role="combobox"]');
+        if (twin && twin !== el) { shell = n; break; }
+      }
+      if (shell) continue;
+    }
     const secEv = sectionEvidenceOf(el);
 
     if (kind === 'radio' || kind === 'checkbox') {

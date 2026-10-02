@@ -426,10 +426,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // 一旦它在 fetch 还没回来时被杀掉，sendResponse 就永远不会响应——
       // 用户看到的正是"点了没反应"。心跳把它钉在活跃状态上。
       sendResponse({ ok: true, at: Date.now() });
-    } else if (msg.type === 'nw:scan' || msg.type === 'nw:undo' || msg.type === 'nw:ping' || msg.type === 'nw:clearMarks' || msg.type === 'nw:probe') {
+    } else if (msg.type === 'nw:scan' || msg.type === 'nw:undo' || msg.type === 'nw:ping' || msg.type === 'nw:clearMarks' || msg.type === 'nw:probe' || msg.type === 'nw:unfilledMap') {
       let payload = msg;
-      if (msg.type === 'nw:scan' && tabId) {
-        // 适配器在这里按标签页 URL 选定后随消息下发：内容脚本自己无法安全地读扩展资源
+      if ((msg.type === 'nw:scan' || msg.type === 'nw:unfilledMap') && tabId) {
+        // 适配器在这里按标签页 URL 选定后随消息下发：内容脚本自己无法安全地读扩展资源。
+        // 只读导出也要带 —— 不带就会出现"面板算得对、导出算不出来"的分裂结果。
         const tab = await chrome.tabs.get(tabId).catch(() => null);
         const resolver = await getAdapterResolver();
         const adapter = resolver.resolve(tab?.url || '');

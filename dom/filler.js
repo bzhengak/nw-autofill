@@ -2,7 +2,7 @@
 // setNativeValue 的思路与上游 shared/fill-runtime.js 的"回读匹配"一致，此处独立实现。见 NOTICE.md。
 
 import { normalize, formatDate } from '../core/matching.js';
-import { pickCustomSelect, isCustomSelect } from './select-opener.js';
+import { pickCustomSelect, isCustomSelect, wordMatches } from './select-opener.js';
 // 选项可见文案的取法只留一处：扫描、写入、回读三边必须同口径，
 // 否则会出现"扫描看见的选项和写入时认的选项不是一套字"，皮肤结构（AntD/Element 的
 // label > span 装饰 > opacity:0 的 input）下尤其容易各写各的。
@@ -167,8 +167,10 @@ export async function fillField(field, entry, opts = {}) {
       const label = normalize(optionTextOf(box));
       const boxValue = normalize(box.value || '');
       // 空标签绝不能算命中：`wanted.some(w => w.includes(label))` 在 label='' 时恒真，
-      // 老式表格里"整组被勾满"就是这么来的
-      const textHit = !!label && (wantTexts.has(label) || wanted.some(w => w.length >= 2 && label.includes(w)));
+      // 老式表格里"整组被勾满"就是这么来的。
+      // 拉丁词走词边界判断（optionText 那边同理）：'female'.includes('male') 是 true，
+      // 单选 Male/Female 用子串就会勾错一项，而回读还是"绿"的。
+      const textHit = !!label && (wantTexts.has(label) || wanted.some(w => w.length >= 2 && wordMatches(label, w)));
       const valueHit = !!boxValue && wantTexts.has(boxValue);
       return { label, boxValue, wantedBy: textHit ? label : (valueHit ? boxValue : ''), hit: textHit || valueHit };
     };

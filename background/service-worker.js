@@ -493,7 +493,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       } catch { origin = ''; }
       if (!origin) { sendResponse({ ok: false, error: 'no_origin' }); return; }
       const bucket = (await chrome.storage.local.get([LEDGER_BUCKET]))[LEDGER_BUCKET] || {};
-      if (msg.type === 'nw:ledgerGet') { sendResponse({ ok: true, ledger: bucket, origin }); return; }
+      if (msg.type === 'nw:ledgerGet') {
+        // 只回本 origin 那一桶：内容脚本用不到别的站点的记录，少给一份就少一份外泄面
+        //（独立审查 Minor 7：以前把整桶都发给页面上下文的消息接收方）
+        sendResponse({ ok: true, ledger: { [origin]: bucket[origin] || {} }, origin });
+        return;
+      }
       let after = bucket;
       if (msg.type === 'nw:ledgerSave') {
         after = recordWrites(bucket, origin, msg.entries || []);

@@ -3,7 +3,7 @@
 
 import { buildFields, getValueByPath, equivalentsOf, isLangNeutral } from './profile-schema.js';
 import { planFromAdapter, dateFormatOverride } from './adapters.js';
-import { assignMaxWeight, scorePair, normalize, core, inferDateFormat, boolLike, signals, negationMismatch, AMBIGUOUS_SECTIONS, dateParts, isQuestionLabel, labelEvidence, shapeMismatch, valueShape } from './matching.js';
+import { assignMaxWeight, scorePair, normalize, core, inferDateFormat, boolLike, signals, negationMismatch, AMBIGUOUS_SECTIONS, dateParts, isQuestionLabel, labelEvidence, shapeMismatch, valueShape, GENERIC_HEAD_WORDS, AMBIGUOUS_WORDS } from './matching.js';
 import { classify } from './ledger.js';
 
 const AUTO_THRESHOLD = 0.75;   // 绿：直接填
@@ -105,6 +105,7 @@ export const GAP_REASON_ZH = {
   dial_code_only: '这一整列选项都是电话区号（+86 / +852…），说明它是"国家/地区区号"下拉，不是资料里那个值该去的地方 —— 已故意不选，去检查这一格配的是哪个槽位',
   empty_value: '这一栏我们没拿到要写的值（资料里是空的），已跳过 —— 不会往页面写 undefined 之类的占位文字',
   shape_mismatch: '这一栏控件的形状（电话/邮箱/数字/日期）与要写的值明显对不上：多半是这一栏配错了槽位，已故意不写 —— 在映射表里改判到正确的槽位',
+  not_ours: '这一栏已经有值，但不是我们写的（站点预填或你自己填的）—— 按你定的覆盖口径不动它；要改请在映射表里改判',
   slot_empty: '页面这一栏最匹配的资料位是空的：我们没有拿别的栏位顶替（顶替就是错填），去资料里补上再扫',
   pinned_field_empty: '这一栏被站点题目钉死到某个资料位，而那个资料位是空的 —— 去资料里补这一栏，我们不拿别的东西顶',
   block_ambiguous: '这一栏的标签在资料里好几个板块都有同名位，页面上又没有板块标题可依 —— 按资料顺序轮值是猜，交给你手动选',
@@ -133,6 +134,19 @@ function classifyWith(opts, pageField, currentValue) {
   const ledger = (opts && opts.ledger) || null;
   if (!origin || !ledger) return String(currentValue ?? '').trim() ? 'other' : 'empty';
   return classify(pageField, currentValue, ledger, origin);
+}
+
+/**
+ * "页面现在的值 == 我们要写的值" 的严格版。
+ * 独立审查指出：以前这里带 includes，于是上一轮写成「硕士研究生」、资料改成「硕士」时，
+ * 包含关系成立 → 判成"已经对了不用重写" → 页面上留下的恰恰是本轮要治的那种错值。
+ * 包含关系在这里永远意味着**值变了、必须重写**，所以只认相等（数字形状做一层宽容折叠，
+ * 让 '2021-09' 与 '2021/9' 这种同一含义的写法仍算相等）。
+ */
+function sameValue(a, b) {
+  const norm = s => normalize(s).replace(/([^\d])0+(\d)/g, '$1$2');
+  const x = norm(String(a ?? '')), y = norm(String(b ?? ''));
+  return !!x && x === y;
 }
 
 export function gapReasonLabel(reason) {  const key = String(reason || '');
@@ -275,6 +289,14 @@ export function optionRulePick(rule, value, pageField) {
 function rulePickFor(entry, pageField, optionRules) {
   const rule = (optionRules || new Map()).get(entry.index);
   if (!rule || String(rule.path || '') !== String(entry.path || '')) return null;
+  /**
+   * 问句极性反转的护栏（独立审查 2026-10-02 指出）：`work permit` 这一个 match 同时命中
+   * "你有工作许可吗"（规则假定的问法，Yes = 有权工作）与"你需要工作许可吗 / 是否需担保"
+   * （方向相反的问法，Yes = 需要许可）。对照表里没有"这句朝哪边问"的信息，
+   * 所以这种句子一律不生效、交人工 —— 把方向反了的合规声明自动勾上比不勾危险得多。
+   */
+  const asked = String(pageField?.labelRaw || pageField?.label || entry.label || '');
+  if (/(require|need\b|needing|apply\s*for|sponsor|申请|需要|是否需|有无)/i.test(asked)) return null;
   return optionRulePick(rule, entry.value ?? entry.optionValue, pageField);
 }
 
@@ -472,7 +494,7 @@ export function planFill(pageFields, profile, opts = {}) {
       }
       if (pinField && pinValue) {
         pinned.push({
-          index, path: pinPath, label: pf.label || '', score: 1, value: pinValue,
+          index, path: pinPath, zh: pinField.zh, label: pf.label || '', score: 1, value: pinValue,
           profileType: pinField.type, sensitive: pinField.sensitive,
           tier: pinField.sensitive ? 'review' : 'auto', pinned: true,
         });
@@ -547,8 +569,9 @@ export function planFill(pageFields, profile, opts = {}) {
       const lc = core(normalize(pf.labelRaw || pf.label));
       const lw = lc.split(' ').filter(Boolean);
       const head = lw[lw.length - 1] || '';
-      const GENERIC_HEAD = new Set(['name', 'number', 'score', 'date', 'type', 'level', 'status', 'title', 'location']);
-      if (/^[a-z0-9 ]+$/.test(lc) && lw.length >= 2 && GENERIC_HEAD.has(head)) {
+      // 通用词/含糊词的名单只有一份（core/matching.js）：这里以前自己写了一份，
+      // 两处已经开始漂移（一份有 location、另一份有 address/value/time）—— 独立审查指出这点。
+      if (/^[a-z0-9 ]+$/.test(lc) && lw.length >= 2 && (GENERIC_HEAD_WORDS.has(head) || AMBIGUOUS_WORDS.has(head))) {
         const quals = lw.slice(0, -1).filter(t => t.length >= 3);
         const coversQual = sf => (sf.labels || []).some(al => {
           const aw = core(normalize(al)).split(' ').filter(Boolean);
@@ -725,7 +748,7 @@ export function planFill(pageFields, profile, opts = {}) {
     const who = writtenByMap.get(row.index);
     if (who === 'us') {
       const cur = String(pf.currentValue ?? '').trim();
-      if (cur && (normalize(cur) === normalize(String(value ?? '')) || normalize(cur).includes(normalize(String(value ?? ''))))) {
+      if (cur && sameValue(cur, value)) {
         assignments.push({ index: row.index, skip: true, reason: 'already_ours', path: sf.path, label: pf.label || '' });
         return;
       }
@@ -867,7 +890,7 @@ export function planFill(pageFields, profile, opts = {}) {
         const byRule = rulePickFor(entry, pf, optionRules);
         if (byRule) {
           entry.optionValue = byRule.value ?? byRule.text;
-          const ruleNote = `按站点选项对照：资料里「${value}」→ 选「${byRule.text}」`;
+          const ruleNote = `按站点选项对照：用「${sf.zh || sf.path}」那一栏的取值 → 选「${byRule.text}」`;
           entry.note = entry.note ? `${entry.note}；${ruleNote}` : ruleNote;
         }
         else if (pageOptions.length) { entry.tier = 'review'; entry.note = '页面选项与你的资料无对应，需人工选择'; entry.needsChoice = true; delete entry.value; }
@@ -893,10 +916,10 @@ export function planFill(pageFields, profile, opts = {}) {
   // 钉位字段：跳过打分竞争，直接指定路径，但同样要解析 option 与日期格式
   for (const entry of pinned) {
     const pf = pageFields[entry.index];
-    // 钉位那一栏同样要能纠正我们上一轮写错的值（S1，与打分路径同一套判据）
+    // 钉位那一栏同样要能纠正我们上一轮写错的值（S1，与打分路径同一套判据：只认相等，不认包含）
     if (writtenByMap.get(entry.index) === 'us') {
       const cur = String(pf.currentValue ?? '').trim();
-      if (cur && normalize(cur).includes(normalize(String(entry.value ?? '')))) {
+      if (cur && sameValue(cur, entry.value)) {
         entry.skip = true; entry.reason = 'already_ours'; assignments.push(entry); continue;
       }
       entry.overwrites = 'ours';
@@ -909,7 +932,12 @@ export function planFill(pageFields, profile, opts = {}) {
         const byRule = rulePickFor(entry, pf, optionRules);
         if (byRule) {
           entry.optionValue = byRule.value ?? byRule.text;
-          entry.note = `按站点选项对照：资料里「${entry.value}」→ 选「${byRule.text}」${byRule.value ? `（提交值 ${byRule.value}）` : ''}`;
+          // note 里不引用资料取值原文（独立审查指出：这句会随「导出没填的字段与选项」离开本机）
+          entry.note = `按站点选项对照：用「${entry.zh || entry.path}」那一栏的取值 → 选「${byRule.text}」${byRule.value ? `（提交值 ${byRule.value}）` : ''}`;
+          // 这一类是合规声明（有没有工作许可 / 需不需要担保），猜错的代价是一次不实陈述：
+          // 钉位路径不经过"判断题永远黄字"那道降级，所以在这里补上，并说明是照表选的。
+          entry.tier = 'review';
+          entry.note += '；这是你的选择而不是抄写，请核对再提交';
         } else { entry.tier = 'review'; entry.note = '页面选项与你的资料无对应，需人工选择'; entry.needsChoice = true; }
       }
     }

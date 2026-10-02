@@ -292,13 +292,33 @@ function workPermitPlan(value) {
   };
 }
 
-test('Work Permit：资料「本地居民」→ 按选项对照选 Yes，不交人工', () => {
+test('Work Permit：资料「本地居民」→ 按选项对照选 Yes，但合规声明留黄字待核对', () => {
   const { entry, gap } = workPermitPlan('本地居民');
   assert.ok(entry, `这一栏该有计划：${JSON.stringify(gap)}`);
   assert.equal(entry.path, 'hkGlobal.workAuth');
   assert.equal(entry.optionValue, 'Y', `该选 Yes（值 Y），实得 ${JSON.stringify(entry)}`);
-  assert.equal(entry.tier, 'auto', '用户放行了：这一类可以自动选');
-  assert.match(entry.note, /选项对照/, '要写清是按哪条规则选的，别看起来像我们自己推的');
+  // 独立审查 2026-10-02 的意见：这一类是"你的选择而不是抄写"，钉位路径不经过打分行的
+  // "判断题永远黄字"降级，所以在那条路上也得强制 review —— 猜错的代价是一次不实陈述。
+  assert.equal(entry.tier, 'review', '合规声明不给绿字：照表选了也要你点头');
+  assert.match(entry.note, /选项对照/);
+  assert.match(entry.note, /请核对|你的选择/);
+});
+
+/** 反 polarity 的问法（"你需要工作许可吗"）：对照表没有方向信息，一律不生效、交人工 */
+test('问句方向反了就不照表选：Do you require a work permit → 交人工', () => {
+  const html = `<div><span class="field-label">Do you require a work permit?</span>
+    <span><label><input type="radio" name="wp2" value="Y">Yes</label>
+      <label><input type="radio" name="wp2" value="N">No</label></span></div>`;
+  const dom = new JSDOM(`<!doctype html><html><body>${html}</body></html>`, { url: 'https://careersite.tupu360.test/x', pretendToBeVisual: true });
+  const fields = scanForm(dom.window.document);
+  const p = createEmptyProfile();
+  setValueByPath(p, 'hkGlobal.workAuth', '本地居民');
+  const plan = planFill(fields, p, { mode: 'full', adapter: tupuAdapter });
+  const idx = fields.findIndex(f => f.kind === 'radio');
+  const a = plan.assignments.find(x => x.index === idx && !x.skip);
+  if (a) assert.equal(a.needsChoice, true, `反问句不该照表自动勾：${JSON.stringify(a)}`);
+  const boxes = [...dom.window.document.querySelectorAll('input[type=radio]')];
+  assert.equal(boxes[0].checked, false, '把方向反了的合规声明勾上了');
 });
 
 test('Work Permit：资料「需申请工作签证」→ 选 No，不会两头都勾', () => {

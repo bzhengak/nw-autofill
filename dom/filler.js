@@ -1,7 +1,8 @@
 // 写入执行：确定性写值 + 框架兼容 + 写后回读校验。
 // setNativeValue 的思路与上游 shared/fill-runtime.js 的"回读匹配"一致，此处独立实现。见 NOTICE.md。
 
-import { normalize, formatDate } from '../core/matching.js';
+import { normalize, formatDate, shapeMismatch } from '../core/matching.js';
+import { classify } from '../core/ledger.js';
 import { pickCustomSelect, isCustomSelect, wordMatches, adapterHints } from './select-opener.js';
 // 选项可见文案的取法只留一处：扫描、写入、回读三边必须同口径，
 // 否则会出现"扫描看见的选项和写入时认的选项不是一套字"，皮肤结构（AntD/Element 的
@@ -13,7 +14,8 @@ import { optionTextOf } from './scanner.js';
  * 控件其实是区号下拉而资料给的不是区号）。报红会把注意力从真错上引开，
  * 统一走 manual：表格里单独一组，不带红色的误报压力。
  */
-const MANUAL_REASONS = new Set(['file_manual', 'choice_required', 'dial_code_only', 'panel_ambiguous']);
+const MANUAL_REASONS = new Set(['file_manual', 'choice_required', 'dial_code_only', 'panel_ambiguous', 'shape_mismatch']);
+const SHAPE_ZH_SHORT = { tel: '电话框', email: '邮箱框', num: '数字框', date: '日期框' };
 
 function dispatch(el, type, extra = {}) {
   const doc = el.ownerDocument;
@@ -241,6 +243,39 @@ export async function applyPlan(fields, assignments, opts = {}) {
     const field = fields[entry.index];
     if (!field) continue;
     if (entry.skip) { results.push({ ...entry, status: 'skipped' }); continue; }
+    /**
+     * 写在"要落笔"这一个动作上的两道闸（独立审查 2026-10-02 的意见：
+     * 闸挂在某条出口上就会有后门 —— 打分、钉位、AI 落地、将来的映射表都得同守一条规矩）。
+     * 只在真实浏览器路径生效：内容脚本会带 pageOrigin + 账本；
+     * 离线判分与纯函数测试不带 pageOrigin，行为照旧，不会把判分做塌。
+     *
+     * ① 归属：这一栏现在有值、而那个值**不是我们写的** → 不动。
+     *    用户 2026-10-02 定的覆盖口径就是"只覆盖我们自己写过的"，
+     *    站点预填与你手填的内容不是我们的东西，full 模式也不能盖。
+     * ② 形状：控件形状（type=tel/email/number、autocomplete、maxlength）与要写的值明显不相容 → 不写。
+     *    这条以前只在打分行有，AI 落地那条路能绕过 —— "phone number 填成 id number"就来自这种后门。
+     */
+    if (opts.pageOrigin) {
+      const cur = String(field.currentValue ?? '').trim();
+      if (cur) {
+        const who = classify(field, cur, opts.ledger || {}, opts.pageOrigin);
+        if (who !== 'us') {
+          results.push({
+            ...entry, status: 'skipped', notOurs: who, failReason: 'not_ours',
+            note: `这一栏已经有值，而且不是我们写的（${who === 'edited' ? '我们写过、后来被人改过' : '站点预填或你手填'}）—— 按你定的口径不动它`,
+          });
+          continue;
+        }
+      }
+      const clash = shapeMismatch(field, entry.value ?? entry.optionValue ?? '');
+      if (clash) {
+        results.push({
+          ...entry, status: 'manual', failReason: 'shape_mismatch',
+          note: `这一栏的控件形状与要写的值对不上（${SHAPE_ZH_SHORT[clash] || clash}）—— 多半是配错了槽位，已故意不写，请在映射表里改判`,
+        });
+        continue;
+      }
+    }
     if (opts.dryRun) { results.push({ ...entry, status: 'planned' }); continue; }
 
     const original = field.el ? readBack(field.el, field.kind) : '';

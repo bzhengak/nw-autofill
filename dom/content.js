@@ -82,7 +82,7 @@ async function handleScan({ profile, mode = 'full', dryRun = false, adapter = nu
     plan.stats = merged.stats;
     aiApplied = merged.applied;
   }
-  const applied = await filler.applyPlan(fields, plan.assignments, { dryRun, allowCustomSelect, adapter });
+  const applied = await filler.applyPlan(fields, plan.assignments, { dryRun, allowCustomSelect, adapter, pageOrigin: location.origin, ledger: fillLedger });
 
   /**
    * S1：写完记账。只记"哪一栏（指纹）+ 写的是哪个槽位 + 值哈希 + 构建号"，
@@ -212,7 +212,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
             ledger: ledgerNow,
             pageOrigin: location.origin,
           });
-          const applied = await filler.applyPlan(fields, plan.assignments, { dryRun: true });
+          const applied = await filler.applyPlan(fields, plan.assignments, { dryRun: true, pageOrigin: location.origin, ledger: ledgerNow });
           last = window.__nwLast = { fields, plan, applied, auditLog };
         }
         sendResponse({

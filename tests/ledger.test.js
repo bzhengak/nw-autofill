@@ -10,7 +10,7 @@ import {
   fingerprint, hashValue, classify, recordWrites, forgetWrites, ledgerRecord,
   LEDGER_CAP_PER_ORIGIN,
 } from '../core/ledger.js';
-import { planFill } from '../core/matcher.js';
+import { planFill, gapReasonLabel } from '../core/matcher.js';
 import { scanForm } from '../dom/scanner.js';
 import { applyPlan } from '../dom/filler.js';
 import { createEmptyProfile, setValueByPath } from '../core/profile-schema.js';
@@ -129,4 +129,66 @@ test('没有账本时一律按"别人的值"处理：不能因为取不到就随
   setValueByPath(p, 'basics.name', 'OUYANG Zhonghua');
   const plan = planFill(fields, p, { mode: 'incremental' });     // 不给 ledger
   assert.ok(plan.assignments.some(a => a.skip && a.reason === 'already_filled'), '取不到账本就别动别人的框');
+});
+
+/**
+ * 独立审查（2026-10-02）的 Critical 1：覆盖口径以前只在增量模式成立，
+ * 而面板默认走 full 模式 —— 于是"站点预填/用户手填一律不动"这句在最常走的路上是空的。
+ * 修法是把闸下沉到"要落笔"这个动作（filler.applyPlan），full / AI 落地都同守一条规矩。
+ */
+test('full 模式也不盖别人的值：站点预填与用户手填的栏位在写入入口被拦下', async () => {
+  const d = doc(`<form><label for="a">Name</label><input id="a" name="nm" type="text"></form>`);
+  const fields = scanForm(d);
+  fields[0].el.value = '站点预填：张伟';
+  fields[0].currentValue = '站点预填：张伟';
+  const p = createEmptyProfile();
+  setValueByPath(p, 'basics.name', 'OUYANG Zhonghua');
+  const plan = planFill(fields, p, { mode: 'full', fillSensitive: true });     // 计划里确实有这一笔
+  assert.ok(plan.assignments.some(a => a.index === 0 && !a.skip), '前置条件：full 模式排了这一笔');
+
+  const ledger = recordWrites({}, ORIGIN, []);                                 // 我们从没写过
+  const { results } = await applyPlan(fields, plan.assignments, { pageOrigin: ORIGIN, ledger });
+  assert.equal(results[0].status, 'skipped', `写入入口没拦下：${JSON.stringify(results[0])}`);
+  assert.equal(results[0].failReason, 'not_ours');
+  assert.equal(fields[0].el.value, '站点预填：张伟', '把站点预填盖掉了');
+  assert.match(gapReasonLabel('not_ours'), /不是我们写的/);
+});
+
+test('AI 落地那条路同样过两道闸：不能借 AI 之名盖掉别人的框、也不能把证件号写进电话框', async () => {
+  const d = doc(`<form>
+    <label for="a">Full Name</label><input id="a" name="fn" type="text">
+    <label for="b">Cell Number</label><input id="b" name="cell" type="tel" maxlength="11">
+  </form>`);
+  const fields = scanForm(d);
+  fields[0].el.value = '用户自己填的名字'; fields[0].currentValue = '用户自己填的名字';
+  const p = createEmptyProfile();
+  setValueByPath(p, 'basics.name', 'OUYANG Zhonghua');
+  setValueByPath(p, 'basics.idNumber', '330105199912034567');
+  const ledger = recordWrites({}, ORIGIN, []);
+  const { results } = await applyPlan(fields, [
+    { index: 0, path: 'basics.name', label: 'Full Name', value: 'OUYANG Zhonghua', tier: 'auto', aiChosen: true },
+    { index: 1, path: 'basics.idNumber', label: 'Cell Number', value: '330105199912034567', tier: 'auto', aiChosen: true, sensitive: true },
+  ], { pageOrigin: ORIGIN, ledger, fillSensitive: true });
+  assert.equal(results[0].status, 'skipped', 'AI 指认的路径把用户填的盖了');
+  assert.equal(results[0].failReason, 'not_ours');
+  assert.equal(results[1].failReason, 'shape_mismatch', `AI 路绕过了形状闸：${JSON.stringify(results[1])}`);
+  assert.equal(fields[0].el.value, '用户自己填的名字');
+  assert.equal(fields[1].el.value, '', '18 位证件号被写进 11 位电话框');
+});
+
+test('"已经对了不用重写"只认相等：上一轮写成「硕士研究生」、资料改成「硕士」必须重写', async () => {
+  const d = doc(`<form><label for="a">Highest Education</label><input id="a" name="edu" type="text"></form>`);
+  const fields = scanForm(d);
+  fields[0].el.value = '硕士研究生'; fields[0].currentValue = '硕士研究生';
+  const p = createEmptyProfile();
+  setValueByPath(p, 'education.0.degree', '硕士');
+  const ledger = recordWrites({}, ORIGIN, [
+    { fp: fingerprint(fields[0]), path: 'education.0.degree', valueHash: hashValue('硕士研究生') },
+  ]);
+  const plan = planFill(fields, p, { mode: 'incremental', ledger, pageOrigin: ORIGIN });
+  const redo = plan.assignments.find(a => a.index === 0 && !a.skip);
+  assert.ok(redo, `包含关系不能算"已经对了"：${JSON.stringify(plan.assignments)}`);
+  assert.equal(redo.overwrites, 'ours');
+  await applyPlan(fields, [redo], { pageOrigin: ORIGIN, ledger });
+  assert.equal(fields[0].el.value, '硕士', '没被改写');
 });

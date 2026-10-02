@@ -254,6 +254,61 @@ export function isKnownConcept(concept) {
   return Object.prototype.hasOwnProperty.call(CONCEPTS, String(concept || ''));
 }
 
+/**
+ * 整页目的判定（独立审查 2026-10-02 的 Critical 5：登录页的"用户名+密码+记住我"
+ * 会被当成网申的"姓名+自我介绍"，一次自动填写在登录页上改了三个框，还全绿）。
+ *
+ * 学 Bitwarden 的做法：**先判表单目的，再判字段**，并且非网申的证据要"强"才算数：
+ * 单个词（页面里出现一次 'sign in'）不足以定案，那样会把"登录后可查看投递进度"
+ * 这种正常网申误杀 —— 所以要求动词形 + 名词形同时出现，或密码/验证码控件成规模出现。
+ * 判成非网申时整页不动（一个字段都不写），但**允许用户明确放行**（界面上一次点击），
+ * 因为自建门户的措辞千奇百怪，误拦一整页比误填一栏更让人没法干活。
+ */
+const LOGIN_VERB = /(sign\s*in|log\s*in|login|logon|登录|登陆)/i;
+const LOGIN_NOUN = /(password|passwd|密码|口令)/i;
+const REGISTER = /(register|sign\s*up|signup|create\s*(an\s*)?account|注册|创建账号|新建账号)/i;
+const NEWSLETTER = /(newsletter|subscribe|subscription|unsubscribe|邮件订阅|订阅资讯|退订)/i;
+const SEARCH = /(search|query|find\s*anything|搜索|查询|检索)/i;
+const CAPTCHA = /(captcha|recaptcha|hcaptcha|turnstile|人机验证|验证码|滑块)/i;
+const APPLICATION = /(resume|cv|application|apply|position|education|experience|internship|resume url|网申|应聘|求职|教育经历|工作经[历历]|实习)/i;
+
+/**
+ * @returns {{purpose:string, evidence:string[], confidence:number}}
+ *  purpose: application | login | register | newsletter | search | unknown
+ */
+export function classifyPagePurpose(pageFields = [], { hasPasswordField = false, docTitle = '', bodyHint = '' } = {}) {
+  const text = [
+    docTitle, bodyHint,
+    ...pageFields.flatMap(f => [f.labelRaw, f.label, f.placeholder, f.name, f.id]),
+  ].filter(Boolean).join(' | ');
+  const evidence = [];
+  const kindCount = k => pageFields.filter(f => f.kind === k).length;
+  const controls = pageFields.length;
+
+  if (hasPasswordField || (LOGIN_VERB.test(text) && LOGIN_NOUN.test(text))) {
+    evidence.push(hasPasswordField ? '页面里有密码框' : '登录动词与密码类字段同页出现');
+  }
+  if (REGISTER.test(text)) evidence.push('注册类措辞');
+  if (NEWSLETTER.test(text)) evidence.push('订阅/退订类措辞');
+  if (SEARCH.test(text) && controls <= 3) evidence.push('整页只有极少的控件且措辞像搜索');
+
+  if (evidence.length) {
+    // 但同时有明确的网申证据（大表单 + 简历/教育/经历措辞）就不算登录页：
+    // "登录后填写"的门户首屏常常同时带 username 与 resume 上传。
+    if (APPLICATION.test(text) && controls >= 6 && !hasPasswordField) {
+      return { purpose: 'application', evidence: ['整页有 ' + controls + ' 栏且带简历/经历类措辞，登录字样不算数'], confidence: 0.6 };
+    }
+    const purpose = REGISTER.test(text) ? 'register'
+      : NEWSLETTER.test(text) ? 'newsletter'
+      : SEARCH.test(text) && controls <= 3 ? 'search'
+      : 'login';
+    return { purpose, evidence, confidence: 0.85 };
+  }
+  if (CAPTCHA.test(text) && controls <= 2) return { purpose: 'captcha', evidence: ['整页只有验证码'], confidence: 0.8 };
+  if (APPLICATION.test(text) || controls >= 5) return { purpose: 'application', evidence: ['字段数量与措辞像网申表格'], confidence: 0.5 };
+  return { purpose: 'unknown', evidence: ['既没有网申特征也没有排除特征'], confidence: 0.3 };
+}
+
 /** 概念 × 控件相容（不认识的概念一律放行；表里没有就不拦） */
 export function conceptFitsControl(concept, kind) {
   const allow = CONCEPT_KINDS[concept];

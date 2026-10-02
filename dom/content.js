@@ -6,7 +6,7 @@ let mods = null;
 async function loadModules() {
   if (mods) return mods;
   const u = p => chrome.runtime.getURL(p);
-  const [scanner, filler, safety, matcher, schema, matching, probe, ai, optionMap, build, ledger] = await Promise.all([
+  const [scanner, filler, safety, matcher, schema, matching, probe, ai, optionMap, build, ledger, canonical] = await Promise.all([
     import(u('dom/scanner.js')),
     import(u('dom/filler.js')),
     import(u('dom/safety.js')),
@@ -18,8 +18,9 @@ async function loadModules() {
     import(u('core/option-map.js')),
     import(u('core/build.js')),
     import(u('core/ledger.js')),
+    import(u('core/canonical.js')),
   ]);
-  mods = { scanner, filler, safety, matcher, schema, matching, probe, ai, optionMap, build, ledger };
+  mods = { scanner, filler, safety, matcher, schema, matching, probe, ai, optionMap, build, ledger, canonical };
   return mods;
 }
 
@@ -57,10 +58,32 @@ if (!window.__nwSubmitListener) {
   });
 }
 
-async function handleScan({ profile, mode = 'full', dryRun = false, adapter = null, fillSensitive = false, allowCustomSelect = false, aiCandidates = null, enMissingMode = 'strict' }) {
-  const { scanner, filler, matcher, safety, schema, ledger } = await loadModules();
+async function handleScan({ profile, mode = 'full', dryRun = false, adapter = null, fillSensitive = false, allowCustomSelect = false, aiCandidates = null, enMissingMode = 'strict', allowNonApplication = false }) {
+  const { scanner, filler, matcher, safety, schema, ledger, canonical } = await loadModules();
   safety.armSubmitGuard(window, auditLog);
   const fields = scanner.scanForm(document);
+  /**
+   * 整页目的闸（独立审查 2026-10-02 的 Critical 5）：先判"这是不是一份网申表格"，
+   * 再谈每一栏。单栏的闸（证据 / 形状 / 归属）都看不见整页级别的错误 ——
+   * 登录页的 username + password + remember 会被逐栏当成"姓名 / 自我介绍 / 勾选项"，
+   * 一次自动填写在登录页上改三个框，回读还全绿。
+   * 判成非网申就一个字段都不动；用户明确"我确认这是网申表"才放行（自建门户措辞千奇百怪，
+   * 误拦一整页比误填一栏更没法干活 —— 但放行必须是他按的钮）。
+   */
+  const purpose = canonical.classifyPagePurpose(fields, {
+    hasPasswordField: Boolean(document.querySelector('input[type="password"]')),
+    docTitle: String(document.title || ''),
+  });
+  const NON_APPLICATION = new Set(['login', 'register', 'newsletter', 'search', 'captcha']);
+  if (NON_APPLICATION.has(purpose.purpose) && !allowNonApplication) {
+    auditLog.push({ at: new Date().toISOString(), event: 'page_purpose_blocked', purpose: purpose.purpose, evidence: purpose.evidence });
+    return {
+      stats: { scanned: fields.length, planned: 0, auto: 0, review: 0, gaps: 0, profileFilled: schema.countFilled(profile || {}) },
+      results: [], gaps: [], aiFields: [], auditLog,
+      pagePurpose: purpose, purposeBlocked: true,
+    };
+  }
+  auditLog.push({ at: new Date().toISOString(), event: 'page_purpose', purpose: purpose.purpose, confidence: purpose.confidence });
   /**
    * S1：先取回"我们在这个站点写过什么"的账本，再排计划。
    * 没有它，上一轮我们写错的那一栏会被当成"已填好"永远留着
@@ -151,7 +174,7 @@ async function handleScan({ profile, mode = 'full', dryRun = false, adapter = nu
   const profileFilled = schema.countFilled(profile);
   return {
     stats: { ...applied.summary, ...plan.stats, profileFilled, aiApplied },
-    results: applied.results.map(r => ({ path: r.path, label: r.label, score: r.score, status: r.status, reason: r.failReason || '', note: r.note || '', actual: r.actual, sensitive: r.sensitive, aiChosen: r.aiChosen, evidence: r.evidence || [], weakEvidence: Boolean(r.weakEvidence) })),
+    results: applied.results.map(r => ({ path: r.path, label: r.label, score: r.score, status: r.status, reason: r.failReason || '', note: r.note || '', actual: r.actual, sensitive: r.sensitive, aiChosen: r.aiChosen, evidence: r.evidence || [], weakEvidence: Boolean(r.weakEvidence), notOurs: r.notOurs || '', overwrites: r.overwrites || '' })),
     gaps: plan.gaps.map(g => ({ index: g.index, label: g.label, reason: g.reason, kind: g.kind, note: g.note || '' })),
     aiFields,
     auditLog,
@@ -170,6 +193,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           aiCandidates: msg.aiCandidates || null,
           // 缺英文值时的处理口径来自设置，不在这里改写：面板勾选与真实填写必须是同一个值
           enMissingMode: settings ? settings.enMissingMode : 'strict',
+          allowNonApplication: msg.allowNonApplication === true,
         }) });
       } else if (msg?.type === 'nw:undo') {
         const last = window.__nwLast;

@@ -8,7 +8,7 @@ import { JSDOM } from 'jsdom';
 import { classifyConcept, conceptFromAutocomplete, slotConcept, conceptFitsControl, CONCEPTS, isKnownConcept } from '../core/canonical.js';
 import { planFill } from '../core/matcher.js';
 import { scanForm } from '../dom/scanner.js';
-import { createEmptyProfile, writeLang, buildFields } from '../core/profile-schema.js';
+import { createEmptyProfile, writeLang, setValueByPath, buildFields } from '../core/profile-schema.js';
 
 const doc = html => new JSDOM(`<!doctype html><html><body>${html}</body></html>`,
   { url: 'https://campus.example.test/x', pretendToBeVisual: true }).window.document;
@@ -82,4 +82,57 @@ test('概念跨板块时只有页面说了在哪一块才抬举：项目职责�
   const withBlock = planFill(fields.map((f, i) => (i === 0 ? { ...f, sectionHint: 'projects' } : f)), p, { mode: 'full' });
   const got = withBlock.assignments.find(a => a.index === 0 && !a.skip);
   assert.equal(got?.path, 'projects.0.role', `页面说了这块是项目就该归项目：${JSON.stringify(got)}`);
+});
+
+/**
+ * 整页目的闸（独立审查 2026-10-02 的 Critical 5）：单栏的闸看不见"整页认错了地方"。
+ * 判据要能挡住登录页，又不能把"登录后可查看投递进度"这种正常网申误杀。
+ */
+test('整页目的判定：登录/搜索/订阅页整页不动，网申页不误杀', async () => {
+  const { classifyPagePurpose } = await import('../core/canonical.js');
+  const login = classifyPagePurpose([
+    { label: 'username', labelRaw: 'Username', kind: 'text' },
+    { label: 'password', labelRaw: 'Password', kind: 'text' },
+    { label: 'remember me', labelRaw: 'Remember me', kind: 'checkbox' },
+  ], { hasPasswordField: true, docTitle: 'Sign in' });
+  assert.equal(login.purpose, 'login', JSON.stringify(login));
+
+  const search = classifyPagePurpose([{ label: 'search', labelRaw: 'Search jobs', kind: 'text' }], { docTitle: 'Job search' });
+  assert.equal(search.purpose, 'search', JSON.stringify(search));
+
+  const newsletter = classifyPagePurpose([{ label: 'email', labelRaw: 'Email address', kind: 'text' }, { label: 'subscribe', labelRaw: 'Subscribe to newsletter', kind: 'checkbox' }]);
+  assert.equal(newsletter.purpose, 'newsletter', JSON.stringify(newsletter));
+
+  // 真网申首屏：字段多，虽然出现"登录后"字样，也不该被当成登录页
+  const app = classifyPagePurpose([
+    { label: 'surname', labelRaw: 'Surname', kind: 'text' },
+    { label: 'given name', labelRaw: 'Given Name', kind: 'text' },
+    { label: 'email', labelRaw: 'Email', kind: 'text' },
+    { label: 'phone', labelRaw: 'Phone', kind: 'tel' },
+    { label: 'university', labelRaw: 'University', kind: 'text' },
+    { label: 'major', labelRaw: 'Major', kind: 'text' },
+    { label: 'sign in', labelRaw: 'Progress is saved after you sign in', kind: 'checkbox' },
+  ], { docTitle: 'Campus Application' });
+  assert.equal(app.purpose, 'application', JSON.stringify(app));
+});
+
+test('整页闸真的接在写入通路上：判成登录页时一个字段都不排', async () => {
+  const { classifyPagePurpose } = await import('../core/canonical.js');
+  const d = doc(`<form>
+    <label for="u">Username</label><input id="u" name="username" type="text">
+    <label for="p">Password</label><input id="p" name="password" type="password">
+    <label for="r">Remember me</label><input id="r" name="remember" type="checkbox">
+  </form>`);
+  const fields = scanForm(d);
+  const verdict = classifyPagePurpose(fields, { hasPasswordField: !!d.querySelector('input[type="password"]'), docTitle: 'Sign in' });
+  assert.equal(verdict.purpose, 'login');
+  // 内容脚本的放行政策：非网申且没放行 → 不排任何一笔
+  const NON_APPLICATION = new Set(['login', 'register', 'newsletter', 'search', 'captcha']);
+  const blocked = NON_APPLICATION.has(verdict.purpose);
+  assert.equal(blocked, true);
+  // 真扫描这张表仍会逐栏给出候选（这就是为什么必须有整页闸：单栏闸看不见它）
+  const p = createEmptyProfile();
+  setValueByPath(p, 'basics.name', '欧阳中华');
+  const plan = planFill(fields, p, { mode: 'full', fillSensitive: true });
+  assert.ok(plan.assignments.length + plan.gaps.length > 0, '单栏视角对登录页一无所知？那整页闸就是唯一的机会');
 });

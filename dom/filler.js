@@ -2,7 +2,7 @@
 // setNativeValue 的思路与上游 shared/fill-runtime.js 的"回读匹配"一致，此处独立实现。见 NOTICE.md。
 
 import { normalize, formatDate, shapeMismatch } from '../core/matching.js';
-import { classify } from '../core/ledger.js';
+import { classify, mayOverwrite } from '../core/ledger.js';
 import { pickCustomSelect, isCustomSelect, wordMatches, adapterHints } from './select-opener.js';
 // 选项可见文案的取法只留一处：扫描、写入、回读三边必须同口径，
 // 否则会出现"扫描看见的选项和写入时认的选项不是一套字"，皮肤结构（AntD/Element 的
@@ -258,11 +258,19 @@ export async function applyPlan(fields, assignments, opts = {}) {
     if (opts.pageOrigin) {
       const cur = String(field.currentValue ?? '').trim();
       if (cur) {
-        const who = classify(field, cur, opts.ledger || {}, opts.pageOrigin);
+        const state = classify(field, cur, opts.ledger || {}, opts.pageOrigin);
+        // 值对得上只是必要条件之一：当年写的若不是现在要写的这一格，也不许我们替它覆盖（Minor 9）
+        const who = state === 'us' && mayOverwrite(field, cur, opts.ledger || {}, opts.pageOrigin, entry.path)
+          ? 'us' : (state === 'us' ? 'otherpath' : state);
         if (who !== 'us') {
+          // 预演也要走这道闸（审查 Important 7）：不写是一回事，
+          // 让用户在「只预演」里看见"这一栏我们不会碰、因为不是我们写的"是另一回事。
+          const status = opts.dryRun ? 'planned' : 'skipped';
+          const WHO_ZH = { edited: '我们写过、后来被人改过', other: '站点预填或你手填', otherpath: '这个值是我们写的，但写的是另一格' };
           results.push({
-            ...entry, status: 'skipped', notOurs: who, failReason: 'not_ours',
-            note: `这一栏已经有值，而且不是我们写的（${who === 'edited' ? '我们写过、后来被人改过' : '站点预填或你手填'}）—— 按你定的口径不动它`,
+            ...entry, status, skip: opts.dryRun ? true : entry.skip, notOurs: who,
+            failReason: opts.dryRun ? '' : 'not_ours',
+            note: `这一栏已经有值，而且不是我们现在这一格该写的（${WHO_ZH[who] || who}）—— 按你定的口径不动它`,
           });
           continue;
         }

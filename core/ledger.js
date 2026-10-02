@@ -73,6 +73,19 @@ export function classify(pageField, currentValue, ledger, origin) {
   return 'edited';
 }
 
+/**
+ * "这一栏的值是我们写的、而且写的就是**这一格**" —— 覆盖判定必须连着槽位一起认。
+ * 只认指纹的话有个真实的错位场景（独立审查 Minor 9）：我们上轮把 X 值写进这一栏，
+ * 本轮改判成另一个槽位、而页面此刻是空的 → 归属是 empty 放行，写进去没人管；
+ * 反过来站点把值填回来时，那条旧记录会替新槽位说话，把该写的挡成 not_ours。
+ * 所以覆盖权 = 值哈希一致 **且** 当年写的槽位就是现在要写的槽位。
+ */
+export function mayOverwrite(pageField, currentValue, ledger, origin, wantPath) {
+  if (classify(pageField, currentValue, ledger, origin) !== 'us') return false;
+  const rec = ((ledger || {})[origin] || {})[fingerprint(pageField)];
+  return !rec || !wantPath || String(rec.path || '') === String(wantPath);
+}
+
 /** 记一笔：entries 里每项可以是 {pageField, path, value|valueHash} 或已算好的 {fp, path, valueHash}。
  *  内容脚本走后者（它把指纹算好再发消息，页面上的明文取值不会因此多走一跳）。 */
 export function recordWrites(ledger, origin, entries = [], { at = Date.now(), cap = LEDGER_CAP_PER_ORIGIN } = {}) {

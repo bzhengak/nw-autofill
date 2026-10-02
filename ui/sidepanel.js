@@ -12,6 +12,9 @@ import { describeUnfilledMap } from '../core/option-map.js';
 
 const $ = id => document.getElementById(id);
 let tabId = null;
+// 整页目的闸的"仅本次放行"：判成登录/搜索/订阅页时后台一个字段都不写，
+// 用户点了「我确认这是网申表」才重试。刻意不写进设置 —— 换页就该重新问。
+let allowNonApplicationOnce = false;
 let lastState = null;
 // 表单编辑区当前看的是哪一份取值（zh / en）。只影响编辑区，不影响填写与体检的读法：
 // 填写时用哪一份由页面语言决定，不取决于这个开关 —— 否则切个标签就把中文写进英文表单。
@@ -276,6 +279,18 @@ function render(data, meta = {}) {
     banners.push(`<div class="banner">这一页是英文表单，${noEn.length} 个槽位只有中文写法，已故意留空（把「南京大学」写进 English name 就是这种事故）。`
       + '去「分类编辑」切到 English 表单补齐；赶时间可勾「缺英文时写中文并标黄」。</div>');
   }
+  /**
+   * 整页目的闸拦下来的时候必须说人话：这一页被判定成什么、凭什么、以及"我确认是网申表"的出口。
+   * 误拦一整页比误填一栏更让人没法干活，所以放行按钮给的是**当次**放行（不写进设置）。
+   */
+  if (data?.purposeBlocked) {
+    const pp = data.pagePurpose || {};
+    const WHY = { login: '登录页', register: '注册页', newsletter: '订阅页', search: '搜索页', captcha: '只要验证码' };
+    banners.push(`<div class="banner">这一页看起来不是网申表格（判定：<b>${WHY[pp.purpose] || escapeHtml(pp.purpose || '未知')}</b>`
+      + (pp.evidence?.length ? `，依据：${escapeHtml(pp.evidence.join('；'))}` : '')
+      + '）。已经整页停止填写 —— 一个字段都没写、也没改。'
+      + '<br>确实要在这一页填：<button id="btnAllowPage" class="linkbtn">我确认这是网申表，照常填写（仅本次）</button></div>');
+  }
   const ai = meta.adapterInfo;
   if (!meta.adapterId && ai && !ai.loaded) {
     banners.push(`<div class="banner">适配器没加载成功：${escapeHtml(ai.error || '未知原因')}。这一页只能按通用规则匹配，钉位与槽位规则都不会生效。</div>`);
@@ -286,12 +301,18 @@ function render(data, meta = {}) {
     ['扫描到', s.scanned || 0], ['计划填', s.planned || 0], ['绿·自动', s.green || s.auto || 0],
     ['黄·待复核', s.yellow || s.review || 0], ['红·失败', s.red || 0], ['待你处理', s.gaps || 0],
     ['资料已填', s.profileFilled != null ? s.profileFilled : '-'],
-    // AI 补了几栏要单独看得见：这些行永远黄字，用户需要知道"这一栏的依据不是本地词典"
+    // AI 指认的栏位：非敏感按正常档位，但角标要看得见"这一栏的依据不是本地词典"
     ['AI 补栏', s.aiApplied || 0],
   ].map(([k, v]) => `<span><b>${k}</b> ${v}</span>`).join('') + adapterLine + banners.join('');
+  $('stats').querySelector('#btnAllowPage')?.addEventListener('click', async () => {
+    allowNonApplicationOnce = true;
+    await run('full');
+  });
 
+  // 'skipped' 一般是噪音（已经填过、预演条目），但 **"我们不动这一栏"必须看得见** ——
+  // 不然用户只会觉得"这一栏怎么没反应"，而真相是站点预填的值被我们的覆盖口径保住了。
   $('results').innerHTML = (data?.results || [])
-    .filter(r => !['skipped', 'planned'].includes(r.status) || r.status === 'planned')
+    .filter(r => !['skipped'].includes(r.status) || r.notOurs || r.status === 'planned')
     .map(r => `<tr><td><span class="dot ${r.status === 'manual' ? 'orange' : r.status}"></span></td>
       <td>${escapeHtml(r.label || '(无标签)')}${r.aiChosen ? ' <span class="note">〔AI 选路〕</span>' : ''}</td>
       <td class="note">${escapeHtml(r.path || '')}<br>${r.score != null ? '置信 ' + r.score : ''} ${r.note ? '· ' + escapeHtml(r.note) : ''} ${r.failReason ? '· ' + escapeHtml(r.failReason) : ''}</td>
@@ -313,7 +334,7 @@ let lastScan = null;   // 最近一次扫描的 {gaps, aiFields}：AI 兜底要�
 async function run(mode, extra = {}) {
   const tab = await activeTab();
   tabId = tab?.id;
-  const res = await chrome.runtime.sendMessage({ type: 'nw:scan', tabId, mode, dryRun: mode === 'preview', ...extra });
+  const res = await chrome.runtime.sendMessage({ type: 'nw:scan', tabId, mode, dryRun: mode === 'preview', allowNonApplication: allowNonApplicationOnce, ...extra });
   if (!res?.ok) {
     $('stats').innerHTML = `<span class="banner">页面未响应：${escapeHtml(res?.error || '未知错误')}。若是刚装扩展，请刷新目标页面后重试。</span>`;
     return;

@@ -12,7 +12,7 @@
 export const SECTIONS = [
   {
     k: 'basics', zh: '基本信息', en: 'Personal Information', fields: [
-      ['name', '姓名', 'name|full name|candidate name|您的姓名|名字|真实姓名', 'text', 'S'],
+      ['name', '姓名', 'name|full name|candidate name|您的姓名|名字|真实姓名|本人姓名|full name of candidate|candidate full name', 'text', 'S'],
       ['preferredName', '常用名', 'preferred name|nickname|常用名|英文名', 'text', ''],
       ['lastName', '姓', 'last name|surname|family name|姓（拼音）', 'text', 'S'],
       ['firstName', '名', 'first name|given name|forename|名（拼音）', 'text', 'S'],
@@ -21,7 +21,7 @@ export const SECTIONS = [
       ['nameEn', '英文姓名', 'english name|name in english|拼音姓名', 'text', ''],
       ['gender', '性别', 'gender|sex|性别（男/女）', 'enum', 'O:gender'],
       ['birthDate', '出生日期', 'date of birth|dob|birth date|出生年月|生日', 'date', 'S'],
-      ['birthYear', '出生年份', 'birth year|出生年份', 'year', ''],
+      ['birthYear', '出生年份', 'birth year|出生年份|本人出生年份|date of birth year', 'year', ''],
       ['age', '年龄', 'age|年龄（岁）', 'num', ''],
       ['nationality', '国籍', 'nationality|citizenship|country of nationality|國籍', 'text', ''],
       ['idType', '证件类型', 'id type|document type|证件类型', 'enum', 'O:idType'],
@@ -31,7 +31,7 @@ export const SECTIONS = [
       ['hukou', '户口所在地', 'hukou|household registration|户口所在地|户籍', 'text', ''],
       ['hukouType', '户口性质', 'hukou type|户口性质|农业/非农业', 'enum', 'O:hukouType'],
       ['hometown', '籍贯', 'hometown|place of origin|native place|籍贯（省市）', 'text', ''],
-      ['politicalStatus', '政治面貌', 'political status|政治面貌|党派', 'enum', 'O:political'],
+      ['politicalStatus', '政治面貌', 'political status|政治面貌|党派|本人政治面貌', 'enum', 'O:political'],
       ['partyDate', '入党时间', 'party membership date|入党日期|转正日期', 'date', ''],
       ['maritalStatus', '婚姻状况', 'marital status|婚姻状况|婚否', 'enum', 'O:marital'],
       ['children', '子女情况', 'number of children|子女数量|育有子女', 'text', 'S'],
@@ -49,7 +49,7 @@ export const SECTIONS = [
   },
   {
     k: 'contact', zh: '联系方式', en: 'Contact', fields: [
-      ['phone', '手机号', 'mobile|phone|cell|contact number|telephone|mobile number|手机号|联系电话|手机号码|移动电话', 'tel', 'S'],
+      ['phone', '手机号', 'mobile|phone|cell|contact number|telephone|mobile number|手机号|联系电话|手机号码|移动电话|本人手机号|本人电话|my phone number|personal mobile', 'tel', 'S'],
       ['altPhone', '备用电话', 'alternative phone|backup contact|other contact number|other phone|其他联系方式|其他联系电话|紧急电话', 'tel', 'S'],
       ['dialCode', '电话国家/地区区号', 'dial code|country code|国家或地区电话区号|区号', 'text', ''],
       ['extension', '电话分机', 'extension|ext|phone extension|分机号', 'text', ''],
@@ -97,11 +97,11 @@ export const SECTIONS = [
       ['company', '公司', 'company|employer|organization|公司名称|工作单位|任职公司', 'text', ''],
       ['title', '职位', 'title|position|job title|role|designation|职位|职务|岗位', 'text', ''],
       ['department', '部门', 'department|team|division|部门|所属团队', 'text', ''],
-      ['startDate', '开始时间', 'start date|from|joining date|入职时间|开始', 'month', ''],
-      ['endDate', '结束时间', 'end date|to|until|离开时间|结束', 'month', ''],
+      ['startDate', '开始时间', 'start date|from|joining date|入职时间|开始|开始时间|任职开始时间|work start date|employment start date', 'month', ''],
+      ['endDate', '结束时间', 'end date|to|until|离开时间|结束|开始时间|结束时间|任职结束时间|work end date|employment end date', 'month', ''],
       ['current', '是否在职', 'current job|present|currently|是否在职', 'bool', ''],
       ['city', '工作城市', 'work location|job location|city|工作地点|工作城市', 'text', ''],
-      ['summary', '工作内容', 'responsibilities|job description|duties|description|work content|工作内容|职责|工作描述', 'textarea', ''],
+      ['summary', '工作内容', 'responsibilities|job description|duties|description|work content|工作内容|职责|工作描述|work duties', 'textarea', ''],
       ['achievements', '主要业绩', 'achievements|highlights|accomplishments|业绩|成果', 'textarea', ''],
       ['reason4leave', '离职原因', 'reason for leaving|why left|离职原因', 'text', ''],
       ['reportsTo', '汇报对象', 'reports to|supervisor|汇报对象', 'text', ''],
@@ -115,8 +115,8 @@ export const SECTIONS = [
       ['company', '实习公司', 'company|internship company|实习单位|公司名称', 'text', ''],
       ['title', '实习岗位', 'position|intern title|role|实习岗位|职位', 'text', ''],
       ['department', '实习部门', 'department|team|部门', 'text', ''],
-      ['startDate', '开始时间', 'start date|from|开始时间', 'month', ''],
-      ['endDate', '结束时间', 'end date|to|结束时间', 'month', ''],
+      ['startDate', '实习开始时间', 'start date|from|开始时间|实习开始时间|internship start date|intern start date', 'month', ''],
+      ['endDate', '实习结束时间', 'end date|to|结束时间|实习结束时间|internship end date|intern end date', 'month', ''],
       ['city', '实习城市', 'location|city|实习地点', 'text', ''],
       ['summary', '实习内容', 'description|responsibilities|internship content|实习内容|工作描述|工作内容|工作职责|职责|duties', 'textarea', ''],
       ['offer', '是否获转正 offer', 'return offer|conversion|是否转正', 'bool', ''],
@@ -128,8 +128,8 @@ export const SECTIONS = [
       ['name', '项目名称', 'project name|project|title|项目名称|项目名', 'text', ''],
       ['role', '担任角色', 'role|responsibility|position|担任职责|角色', 'text', ''],
       ['org', '项目来源', 'organization|company|source|项目单位|所属组织', 'text', ''],
-      ['startDate', '开始时间', 'start date|from|开始时间', 'month', ''],
-      ['endDate', '结束时间', 'end date|to|结束时间', 'month', ''],
+      ['startDate', '项目开始时间', 'start date|from|开始时间|项目开始时间|project start date', 'month', ''],
+      ['endDate', '项目结束时间', 'end date|to|结束时间|项目结束时间|project end date', 'month', ''],
       ['description', '项目描述', 'description|details|background|project description|项目描述|项目背景|内容', 'textarea', ''],
       ['techStack', '技术栈', 'technologies|tech stack|tools|skills used|技术栈|使用技术', 'text', 'L'],
       ['outcome', '项目成果', 'outcome|result|achievement|impact|项目成果|业绩', 'textarea', ''],
@@ -141,10 +141,10 @@ export const SECTIONS = [
   {
     k: 'campus', zh: '校园经历', en: 'Campus Activities', maxItems: 3, fields: [
       ['org', '组织名称', 'organization|club|society|学生组织|社团名称', 'text', ''],
-      ['role', '职务', 'position|role|title|职务|担任', 'text', ''],
-      ['startDate', '开始时间', 'start date|from|开始时间', 'month', ''],
-      ['endDate', '结束时间', 'end date|to|结束时间', 'month', ''],
-      ['summary', '工作内容', 'description|responsibilities|activity description|工作内容|活动描述', 'textarea', ''],
+      ['role', '职务', 'position|role|title|职务|担任|校园担任职务|campus role', 'text', ''],
+      ['startDate', '校园活动开始时间', 'start date|from|开始时间|校园活动开始时间|campus start date|activity start date', 'month', ''],
+      ['endDate', '校园活动结束时间', 'end date|to|结束时间|校园活动结束时间|campus end date|activity end date', 'month', ''],
+      ['summary', '校园活动内容', 'description|responsibilities|activity description|工作内容|活动描述|校园活动内容|campus activity content', 'textarea', ''],
       ['scale', '组织规模', 'scale|members|人数规模', 'text', ''],
     ],
   },
@@ -162,7 +162,7 @@ export const SECTIONS = [
       ['name', '竞赛名称', 'competition|contest|hackathon|competition name|竞赛名称', 'text', ''],
       ['level', '级别', 'level|national|international|竞赛级别|国家级/省级', 'enum', 'O:awardLevel'],
       ['award', '获奖情况', 'result|prize|award|获奖|成绩', 'text', ''],
-      ['date', '时间', 'date|year|competition date|时间', 'month', ''],
+      ['date', '时间', 'date|year|competition date|时间|竞赛时间|competition time|contest date', 'month', ''],
       ['team', '队伍信息', 'team|teammates|队伍|队员', 'text', ''],
       ['role', '分工', 'role|responsibility|负责内容', 'text', ''],
     ],
@@ -173,7 +173,7 @@ export const SECTIONS = [
       ['type', '类型', 'type|category|paper|patent|类型|论文/专利', 'enum', 'O:ipType'],
       ['venue', '发表刊物/会议', 'venue|journal|conference|publisher|刊物|会议', 'text', ''],
       ['status', '状态', 'status|accepted|published|under review|状态|已录用/在投', 'enum', 'O:paperStatus'],
-      ['date', '时间', 'date|year|published|发表时间', 'month', ''],
+      ['date', '发表时间', 'date|year|published|发表时间|publication date|publish date', 'month', ''],
       ['authorOrder', '作者排序', 'author order|first author|corresponding|作者顺序|第几作者', 'text', ''],
       ['number', '编号', 'patent number|doi|isbn|id|专利号|DOI', 'text', ''],
       ['url', '链接', 'link|url|paper url|链接', 'url', ''],
@@ -282,13 +282,13 @@ export const SECTIONS = [
     k: 'family', zh: '家庭成员', en: 'Family Members', maxItems: 4, fields: [
       // 同上：家庭成员的「姓名」不能靠裸词 name 抢 —— 抢走一次，就把家属名字写进了页面某个
       // 叫 Name 的栏位（证书、项目、推荐人都会中招）。要它就得说"family member / member name"。
-      ['name', '姓名', 'family member name|成员姓名|member name|relative name|家属姓名', 'text', 'S'],
+      ['name', '家属姓名', 'family member name|成员姓名|member name|relative name|家属姓名|姓名', 'text', 'S'],
       ['relation', '与本人关系', 'relation|relationship|family relation|称谓|关系', 'text', ''],
-      ['birthYear', '出生年份', 'birth year|year of birth|出生年月', 'year', ''],
+      ['birthYear', '家属出生年份', 'birth year|year of birth|出生年月|家属出生年份|family member birth year', 'year', ''],
       ['employer', '工作单位', 'employer|work unit|company|工作单位|职业', 'text', ''],
-      ['position', '职务', 'position|title|occupation|职务|职业', 'text', ''],
-      ['political', '政治面貌', 'political status|政治面貌', 'text', ''],
-      ['phone', '联系电话', 'contact number|phone|联系电话', 'tel', 'S'],
+      ['position', '家属职务', 'position|title|occupation|职务|职业|家属职务|family member position|occupation', 'text', ''],
+      ['political', '家属政治面貌', 'political status|政治面貌|家属政治面貌|family member political status', 'text', ''],
+      ['phone', '联系电话', 'contact number|phone|联系电话|家属联系电话|family member phone', 'tel', 'S'],
     ],
   },
   {
@@ -602,7 +602,36 @@ export function englishCoverage(profile, fields = buildFields()) {
 const LATIN_LABEL = /^[A-Za-z][A-Za-z0-9 ()/'.\-]*$/;
 
 /** 栏位的英文显示名：取匹配词典里第一个纯拉丁别名，标题式大写。词典本来就是中英混排的。 */
+/**
+ * 英文显示名：只用于界面与导出，**不参与匹配**（匹配走 labels）。
+ * 为什么必须显式写出来：以前英文名是从别名里"挑第一个拉丁词"挑出来的，于是
+ * work / internship / projects / campus 四个板块的开始时间全叫 'Start Date'，
+ * 「本人姓名」和「家属姓名」全叫 'Name' —— English 表单里根本分不清哪一格是哪个，
+ * AI 拿这份名字表去对也会认错（2026-10-02 要求：en 和 zh 都不许重名）。
+ * 键是"板块.字段"（列表槽位去掉条号），没列出来的仍走原来的推导。
+ */
+export const EN_DISPLAY_NAMES = {
+      'work.title': 'Job Title',
+  'work.teamSize': 'Work Team Size',
+    'education.enrollDate': 'Education Start Date', 'internship.department': 'Internship Department',
+  'internship.startDate': 'Internship Start Date', 'internship.endDate': 'Internship End Date', 'internship.company': 'Internship Company',
+  'internship.title': 'Internship Position', 'internship.summary': 'Internship Description',
+  'projects.startDate': 'Project Start Date', 'projects.endDate': 'Project End Date', 'projects.role': 'Project Role',
+  'projects.org': 'Project Organization', 'projects.description': 'Project Description', 'projects.teamSize': 'Project Team Size',
+  'campus.startDate': 'Campus Activity Start Date', 'campus.endDate': 'Campus Activity End Date', 'campus.role': 'Campus Role',
+  'campus.org': 'Campus Organization', 'campus.summary': 'Campus Activity Description',
+  'awards.date': 'Award Date', 'awards.level': 'Award Level', 'awards.issuer': 'Award Issuer',
+  'competitions.date': 'Competition Date', 'competitions.role': 'Competition Role', 'competitions.level': 'Competition Level',
+  'publications.date': 'Publication Date', 'publications.title': 'Publication Title',
+  'certifications.issuer': 'Certifying Body', 'certifications.name': 'Certificate Name',
+  'languages.cert': 'Language Certificate', 'languages.level': 'Language Level',
+  'family.name': 'Family Member Name', 'family.birthYear': 'Family Member Birth Year', 'family.position': 'Family Member Occupation',
+  'family.political': 'Family Member Political Status', 'family.phone': 'Family Member Phone',
+};
+
 export function englishNameFor(field) {
+  const named = EN_DISPLAY_NAMES[`${field?.section}.${field?.key}`];
+  if (named) return named;
   const al = (field?.labels || []).map(s => String(s).trim()).filter(s => LATIN_LABEL.test(s) && s.length > 1);
   const base = al[0] || String(field?.zh || '');
   return base.replace(/\b[a-z]/g, c => c.toUpperCase());

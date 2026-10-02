@@ -233,3 +233,37 @@ function fieldFor(fields, path) {
   assert.ok(f, `schema 里没有 ${path}`);
   return f;
 }
+
+/**
+ * 槽位显示名不许重复（用户 2026-10-02 的要求："资料中字段名不能重复，避免产生歧义，
+ * 比如紧急联系人的电话和我的电话就不能混淆……en 和 zh 都要做好这一步"）。
+ * 规则是**只在会歧义时才改名**：裸名留给最典型的主人（「开始时间」= 工作，
+ * 「姓名」= 本人），另一个加限定（实习开始时间 / 家属姓名）。
+ * 这条测试是长期闸：以后加字段撞名，CI 当场红。
+ */
+test('槽位显示名（zh 与 en）互不重复，电话类尤其要分清是谁的', () => {
+  const fields = buildFields();
+  const collect = pick => {
+    const map = new Map();
+    for (const f of fields) {
+      const unit = `${f.section}.${f.key}`;
+      const name = pick(f);
+      if (!map.has(name)) map.set(name, new Set());
+      map.get(name).add(unit);
+    }
+    return [...map].filter(([, s]) => s.size > 1).map(([n, s]) => `${n} → ${[...s].join(', ')}`);
+  };
+  assert.deepEqual(collect(f => f.zh), [], '有中文显示名重复');
+  assert.deepEqual(collect(englishNameFor), [], '有英文显示名重复');
+  const byPath = p => fields.find(f => f.path === p);
+  const names = ['contact.phone', 'contact.altPhone', 'contact.emergencyPhone', 'family.0.phone']
+    .map(p => byPath(p).zh);
+  assert.equal(new Set(names).size, names.length, `电话类栏位没分清：${names.join(' / ')}`);
+  assert.match(byPath('contact.emergencyPhone').zh, /紧急/, '紧急联系人电话要一眼看出不是本人的');
+  assert.match(byPath('family.0.phone').zh, /家属|联系电话/, '家属的电话要能看出是家属的');
+  assert.match(englishNameFor(byPath('family.0.phone')), /family/i, '英文名同样要分清是谁的电话');
+  // 裸名留给最典型的主人，别把「开始时间」这种改成谁都不像
+  assert.equal(byPath('work.0.startDate').zh, '开始时间');
+  assert.equal(byPath('internship.0.startDate').zh, '实习开始时间');
+  assert.equal(byPath('campus.0.summary').zh, '校园活动内容');
+});

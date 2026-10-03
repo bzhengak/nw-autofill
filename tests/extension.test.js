@@ -208,3 +208,12 @@ test('nw:unfilledMap 必须在后台的转发白名单里（否则回包就是 u
   assert.ok(relay, '没找到后台的转发白名单那一行');
   assert.ok(relay.includes("'nw:unfilledMap'"), '白名单里没有 nw:unfilledMap：面板只会拿到 unknown_message');
 });
+
+/** 仓库约定：临时探针脚本用完即删。真出过事 —— 一次 `exit 1` 抢在 `rm` 前面退出，
+ *  两条 tmp-*.mjs 留在工作区，随后被一次 `git add -A` 收了进去。这条断言让它下次变成红的测试，
+ *  而不是躺在 git history 里没人看见。 */
+test('仓库里不许有临时脚本（tmp-*.mjs / tmp-*.txt）', () => {
+  const here = fileURLToPath(new URL('../', import.meta.url));
+  const junk = fs.readdirSync(here).filter(n => /^tmp-.*\.(mjs|txt|js)$/.test(n));
+  assert.deepEqual(junk, [], `这些临时脚本没删：${junk.join('、')}`);
+});

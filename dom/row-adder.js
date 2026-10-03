@@ -19,10 +19,14 @@
 export const ROW_CAP = 3;
 
 /** 明显不是"加一段"的写法：这些词出现就不点（宁可少补一段） */
-export const NOT_ADD_ROW_RE = /(删除|去掉|移除|清空|重置|提交|保存|发送|上传|下载|下一步|上一页|下一页|退出|登录|验证|delete|remove|clear|reset|submit|save|upload|download|next|prev|logout|sign\s?in|captcha)/i;
+export const NOT_ADD_ROW_RE = /(附件|文件|简历|推荐人|内推|投递|应聘|下载|删除|去掉|移除|清空|重置|提交|保存|发送|上传|下一步|上一页|下一页|退出|登录|验证|attachment|\bfile\b|resume|referr|applic|delete|remove|clear|reset|submit|save|upload|download|next|prev|logout|sign\s?in|captcha)/i;
 
 /** 像是"加一段/再加一条"的写法 */
-export const ADD_ROW_RE = /(添加|新增|再加|增加|补充|另可添加|add\s*(another|more|new|row|record|entry|\+)|\+\s*(添加|一段|一条|一条记录|经验|经历))/i;
+// 「段/条/行/记录/经历」这类量词是这一类按钮的身份证：只写「添加」两字的那枚，
+// 在真站点上更多是「添加附件」「添加推荐人」，不是「再加一段经历」。
+export const ADD_ROW_RE = /((添加|新增|再加|增加|补充)[^。]{0,6}(一段|一条|一行|一项|更多|其他|另一|经历|经验)|再?加?[^。]{0,3}(一段|一条|一行|一条记录)|(?:add|new)[\s-]+(another|more|row|record|entry|experience|section)|\+[\s-]*(添加|一段|一条|经验|经历|row|more))/i;
+/** 文字里明确点出"这是一段/一条记录"：优先级高于只写「添加」的那一枚 */
+export const ROWISH_RE = /(一段|一条|一行|一项|一条记录|经历|经验|记录|条目|another|[\s->_]row[\s<._-]|[\s->_]record|[\s->_]entry|experience|section)/i;
 
 /**
  * 这一节的容器：从本组第一个栏位往上找"能把整组都装下"的最近祖先。
@@ -30,7 +34,7 @@ export const ADD_ROW_RE = /(添加|新增|再加|增加|补充|另可添加|add\
  */
 export function blockContainerFor(pageFields = []) {
   const els = pageFields.map(f => f?.el).filter(Boolean);
-  if (!els.length) return null;
+  if (els.length < 2) return null;   // 只有一栏就说不上"这一节的容器"：往上一定会落到 form/body，那是整页
   let node = els[0].parentElement;
   for (let guard = 0; node && guard < 14; guard++, node = node.parentElement) {
     if (els.every(e => node.contains(e))) return node;
@@ -48,7 +52,13 @@ export function fieldsIn(container, pageFields = []) {
  * 找到加号 → 点下去。点击动作故意做成注入的：
  * 真实浏览器里就是 `el.click()`，测试里换成假实现，这样"点了没长出来"这条判据能被真跑到。
  */
-export function defaultClick(el) {
+// 最后一道：这一枚如果在 safety.js 的拒绝名单里（type=file、提交文案、会把页面导航走的链接），
+// 就不点。判据只有一处（dom/safety.js），这里不另写一份关键词表。
+export function defaultClick(el, safety) {
+  if (safety?.classifyClick) {
+    const gate = safety.classifyClick(el);
+    if (['submit_button', 'file_input', 'navigation'].includes(gate?.reason)) return false;
+  }
   try { el.scrollIntoView?.({ block: 'center' }); } catch { /* 没有排版也算点了 */ }
   if (typeof el.click === 'function') el.click();
   else el.dispatchEvent?.(new MouseEvent('click', { bubbles: true }));
@@ -102,6 +112,12 @@ export function isAddRowControl(el) {
   if (!text) return false;
   if (NOT_ADD_ROW_RE.test(text)) return false;
   if (!ADD_ROW_RE.test(text)) return false;
+  // 只允许锚点型的 <a>：href 指向别处的"加号"点下去会把标签页导航走，未保存的网申就没了。
+  // 判据刻意取严（不是"同源就行"）：同源带路径的链接同样会跳走页面。
+  if (String(el.tagName || '').toLowerCase() === 'a') {
+    const href = String(el.getAttribute?.('href') || '').trim();
+    if (href && !/^(#|javascript:|$)/i.test(href)) return false;
+  }
   // 得是能点的东西（真站点的加号常是 <a>、<span>、<i> 包一个 role=button）
   const tag = String(el.tagName || '').toLowerCase();
   const clickable = tag === 'button' || tag === 'a' || el.getAttribute?.('role') === 'button'
@@ -120,7 +136,10 @@ export function findAddRowButton(container) {
     for (const k of Array.from(el.children || [])) walk(k);
   };
   walk(container);
-  cands.sort((a, b) => String(a.textContent || '').length - String(b.textContent || '').length);
+  // 排序判据：① 文字里点明"一段/一条/记录"的先（这一档能压过「添加附件」那种只写「添加」的）；
+  // ② 同档再按文字短的优先（短的多半就是那枚加号本体）。
+  const rank = el => (ROWISH_RE.test(String(el.textContent || '')) ? 0 : 1);
+  cands.sort((a, b) => rank(a) - rank(b) || String(a.textContent || '').length - String(b.textContent || '').length);
   return cands[0] || null;
 }
 

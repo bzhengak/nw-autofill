@@ -442,3 +442,43 @@ test('「允许补经历行」是页面上的一枚闸：勾上会存设置，�
   const saved = sent.filter(m => m.type === 'nw:saveSettings').pop();
   assert.equal(saved?.settings?.allowAddRows, true, '勾了没存进设置：重载后又变回关');
 });
+
+test('我们替用户点了加号，就必须上屏说点了什么（审查 I1）', async () => {
+  const { p, fields } = fixture();
+  const data = scanData(p, fields);
+  data.rowExpansion = [{ section: 'internship', needed: 2, added: 2, stalled: false, why: '' }];
+  const { doc } = boot({ data });
+  await loadSidePanel();
+  await settle();
+  click(doc, 'btnScan');
+  await settle();
+  assert.match(doc.getElementById('mapWarn').textContent, /补行|点了「\+ 添加一段」/);
+  assert.match(doc.getElementById('mapWarn').textContent, /实习经历 2 行/);
+  assert.match(doc.getElementById('mapWarn').textContent, /最多补 3 行|取消「允许补经历行」/);
+});
+
+test('补行失败也要上屏：一行都没补出来时说清卡在哪', async () => {
+  const { p, fields } = fixture();
+  const data = scanData(p, fields);
+  data.rowExpansion = [{ section: 'work', needed: 1, added: 0, stalled: true, why: 'stalled' }];
+  const { doc } = boot({ data });
+  await loadSidePanel();
+  await settle();
+  click(doc, 'btnScan');
+  await settle();
+  assert.match(doc.getElementById('mapWarn').textContent, /一行都没补出来/);
+  assert.match(doc.getElementById('mapWarn').textContent, /点了之后没长出新行/);
+});
+
+test('没预览就点「问一次整页」：什么都不发出去（守卫独立于 disabled）', async () => {
+  const { p, fields } = fixture();
+  const { doc, sent } = boot({ data: scanData(p, fields), ai: true });
+  await loadSidePanel();
+  await settle();
+  click(doc, 'btnScan');
+  await settle();
+  doc.getElementById('btnMapAi').dispatchEvent(new doc.defaultView.MouseEvent('click', { bubbles: true }));
+  await settle();
+  assert.ok(!sent.some(m => m.type === 'nw:aiMapPage'), '预览解锁这道守卫只在 disabled 上，等于没有');
+  assert.match(doc.getElementById('mapAiStatus').textContent, /要先预览/);
+});

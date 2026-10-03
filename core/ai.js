@@ -561,46 +561,63 @@ export function expandConceptToSlots(profile, concept) {
 export function applyPageMapSuggestions(plan, profile, suggestions = [], opts = {}) {
   const slots = new Map(aiSlotCatalog(profile).map(s => [s.path, s]));
   const allowSensitive = opts.fillSensitive === true;
-  const byIndex = new Map();
-  /**
-   * 回答是"上一次扫描的下标 + 那一栏的指纹"发回来的。页面在两次扫描之间自己增删了控件，
-   * 下标就会漂到别的栏位上 —— 那等于把 A 栏的答案写进 B 栏。所以能按指纹重新对号就按指纹对，
-   * 指纹认不出来（调用方没给 fields，或这一栏自述变了）才退回下标 + 标签复核那一道。
-   */
-  const fpToIndex = new Map();
-  if (Array.isArray(opts.fields)) {
-    opts.fields.forEach((f, idx) => {
-      const fp = fingerprint(f);
-      if (fp && !fpToIndex.has(fp)) fpToIndex.set(fp, idx);
-    });
-  }
-  for (const s of (Array.isArray(suggestions) ? suggestions : [])) {
-    const i0 = Number(s?.index);
-    const anchored = s?.fp && fpToIndex.has(s.fp) ? fpToIndex.get(s.fp) : i0;
-    if (Number.isInteger(anchored) && s?.path) {
-      if (Number.isInteger(i0) && anchored !== i0) byIndex.set(anchored, { ...s, reanchored: { from: i0, to: anchored } });
-      else byIndex.set(anchored, s);
-    }
-  }
   const refused = [];
   /**
-   * 标签漂移的复核：面板那一侧递过来的标签是**页面原文**（labelRaw，'Awarding Body'），
-   * 而计划里的缺口标签是归一化过的（'awarding body'）。直接字符串相等会把这一路的
-   * 每一条答案都判成"标签对不上"——整页映射当场变成死代码。归一化之后再比，
-   * 并容忍导出/表格里常见的省略号截断。
+   * "这一条答案说的是哪一栏"的认法，按强弱排：
+   *  ① **指纹唯一命中**：面板带回来的 fp 在当前这一页只对应一栏 —— 最强，按它落点；
+   *  ② 指纹在这一页有**两栏以上自述完全相同**：不猜（这正是 plan-check 里 fingerprint_collision
+   *     那种页面），整条拒掉并说清为什么 —— 先命中先赢会把另一栏的答案悄悄吃掉（审查 C5）；
+   *  ③ 没有指纹可用：退回"上一次扫描的下标 + 标签复核"，且**两边都必须真的有标签** ——
+   *     空标签对空标签以前等于放行（审查 C4），而没标签的栏位在真页面上很常见。
    */
-  const labelSame = samePageLabel;
+  const fpCount = new Map();
+  const fpToIndex = new Map();
+  const fields = Array.isArray(opts.fields) ? opts.fields : null;
+  if (fields) {
+    fields.forEach((f, idx) => {
+      const fp = fingerprint(f);
+      if (!fp) return;
+      fpCount.set(fp, (fpCount.get(fp) || 0) + 1);
+      fpToIndex.set(fp, idx);
+    });
+  }
+  const byIndex = new Map();
+  for (const s of (Array.isArray(suggestions) ? suggestions : [])) {
+    const i0 = Number(s?.index);
+    if (!Number.isInteger(i0) || !s?.path) continue;
+    let put = { ...s, _index: i0 };
+    if (s.fp && fpCount.has(s.fp)) {
+      if ((fpCount.get(s.fp) || 0) > 1) {
+        refused.push({
+          index: i0, path: s.path, reason: 'ambiguous_fp',
+          why: `这一页有 ${fpCount.get(s.fp)} 栏自述完全相同，认不出这条答案说的是哪一栏，先不动`,
+        });
+        continue;
+      }
+      const anchored = fpToIndex.get(s.fp);
+      put = { ...put, _anchored: true, _index: anchored };
+      if (anchored !== i0) put.reanchored = { from: i0, to: anchored };
+    }
+    byIndex.set(put._index, put);
+  }
+  const used = new Set();
   const mkNote = (s, sf) => `AI 认这是「${sf.zh}」（概念 ${s.concept}${s.reason ? `；原话：${s.reason}` : ''}）`;
+  const identityOk = (s, curLabel) => Boolean(s._anchored)
+    || (String(s.label ?? '').trim() !== '' && String(curLabel ?? '').trim() !== '' && samePageLabel(s.label, curLabel));
+  const identityWhy = (s, curLabel) => (!String(s.label ?? '').trim() || !String(curLabel ?? '').trim())
+    ? '这一栏没有可比对的标签（页面标签是空的），认不出是不是同一栏'
+    : `标签对不上（期望「${s.label}」、现在是「${curLabel}」）`;
 
   const gaps = [];
   let added = 0;
   for (const g of (plan?.gaps || [])) {
     const s = byIndex.get(g.index);
     if (!s) { gaps.push(g); continue; }
-    if (!labelSame(s.label, g.label)) {
-      refused.push({ index: g.index, why: `标签对不上（这一页在两次扫描之间变了：期望「${s.label}」、现在是「${g.label}」）`, reason: 'stale_label' });
+    if (!identityOk(s, g.label)) {
+      refused.push({ index: g.index, path: s.path, reason: 'stale_label', why: `${identityWhy(s, g.label)}，这一栏仍留着` });
       gaps.push(g); continue;
     }
+    used.add(g.index);
     const sf = slots.get(s.path);
     if (!sf) { refused.push({ index: g.index, path: s.path, why: 'AI 给的槽位不在资料清单里，已丢弃', reason: 'unknown_path' }); gaps.push(g); continue; }
     const value = String(getValueByPath(profile, sf.path) ?? '').trim();
@@ -620,31 +637,32 @@ export function applyPageMapSuggestions(plan, profile, suggestions = [], opts = 
   let overridden = 0;
   for (const a of (plan?.assignments || [])) {
     const s = byIndex.get(a.index);
-    if (!s) { assignments.push(a); continue; }
-    // 覆盖既有判定时更要确认"还是同一栏"：漂移了就是把 A 栏的答案写进 B 栏
-    if (!labelSame(s.label, a.label)) {
-      refused.push({ index: a.index, path: s.path, was: a.path, reason: 'stale_label',
-        why: `标签对不上（期望「${s.label}」、现在是「${a.label}」），保留本地判定` });
+    if (!s || s._gap) { assignments.push(a); continue; }
+    if (!identityOk(s, a.label)) {
+      refused.push({ index: a.index, path: s.path, was: a.path, reason: 'stale_label', why: `${identityWhy(s, a.label)}，保留本地判定` });
       assignments.push(a); continue;
     }
-    const untouched = a.pinnedBy || a.tier === 'auto' || a.skip;
-    if (untouched) {
-      refused.push({ index: a.index, path: s.path, was: a.path,
-        why: a.skip ? '这一栏我们本来就不动（已填过/不写）'
-          : a.pinnedBy ? (a.pinnedBy === 'siteRule' ? '你在映射表里改过判，AI 不覆盖人的决定' : '站点规则钉住了这一栏，AI 不覆盖')
-          : '这一栏本地已经是绿字高置信，AI 不覆盖' });
+    used.add(a.index);
+    // 顺序即措辞：AI 上一跳给的判定不叫"绿字高置信"（那是本地词典的话），
+    // 混在一起会让人以为我们反悔了自己的建议（审查 I3）。
+    const whyUntouched = a.skip ? '这一栏我们本来就不动（已填过/不写）'
+      : a.pinnedBy ? (a.pinnedBy === 'siteRule' ? '你在映射表里改过判，AI 不覆盖人的决定' : '站点规则钉住了这一栏，AI 不覆盖')
+      : a.aiChosen ? '这一栏已经是上一轮 AI 的建议，不让另一条 AI 建议再盖一次'
+      : a.tier === 'auto' ? '这一栏本地已经是绿字高置信，AI 不覆盖' : '';
+    if (whyUntouched) {
+      refused.push({ index: a.index, path: s.path, was: a.path, why: whyUntouched });
       assignments.push(a);
       continue;
     }
     const sf = slots.get(s.path);
     if (!sf) { refused.push({ index: a.index, path: s.path, why: 'AI 给的槽位不在资料清单里，保留本地判定', reason: 'unknown_path' }); assignments.push(a); continue; }
+    if (sf.sensitive && !allowSensitive) {
+      refused.push({ index: a.index, path: sf.path, why: '敏感字段需要「允许填写敏感字段」才动，保留本地判定', reason: 'sensitive_withheld' });
+      assignments.push(a); continue;
+    }
     const value = String(getValueByPath(profile, sf.path) ?? '').trim();
     if (!value) {
       refused.push({ index: a.index, path: sf.path, why: 'AI 给的槽位在资料里是空的，保留本地判定', reason: 'empty_slot' });
-      assignments.push(a); continue;
-    }
-    if (sf.sensitive && !allowSensitive) {
-      refused.push({ index: a.index, path: sf.path, why: '敏感字段需要「允许填写敏感字段」才动，保留本地判定', reason: 'sensitive_withheld' });
       assignments.push(a); continue;
     }
     overridden++;
@@ -655,6 +673,12 @@ export function applyPageMapSuggestions(plan, profile, suggestions = [], opts = 
       aiOverrode: { path: a.path, zh: a.zh || a.path, why: a.note || '' },
       note: `${mkNote(s, sf)}；覆盖了本地那个没把握的判定`,
     });
+  }
+
+  // 答案里有、页面上却没套用过的：也必须成一条看得见的话，不能被循环顺手丢掉（审查 I4）
+  for (const [index, s] of byIndex) {
+    if (used.has(index) || s._gap) continue;
+    refused.push({ index, path: s.path, reason: 'index_gone', why: '这一栏已经不在这一页上了（指纹与标签都没对上），这条建议没套用' });
   }
 
   // 缺口里被 AI 解决的，换成正式一笔（顺序无关紧要，分配层已经跑完了）
@@ -678,6 +702,8 @@ export function applyPageMapSuggestions(plan, profile, suggestions = [], opts = 
       auto: assignments.filter(a => !a.skip && a.tier === 'auto').length,
       review: assignments.filter(a => !a.skip && a.tier === 'review').length,
       gaps: keptGaps.length,
+      // 缺口原因分布也要重算：不然界面"按原因看"那一块还是补行之前的旧数
+      gapReasons: keptGaps.reduce((acc, g) => (acc[g.reason] = (acc[g.reason] || 0) + 1, acc), {}),
     },
     applied: added + overridden,
     filledGaps: added,

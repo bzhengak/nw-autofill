@@ -6,13 +6,16 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { JSDOM } from 'jsdom';
 
-const PAGE = `<form><div id="intern">
+// 姓名排在实习块**之前**：否则板块标题的走向会把后面的栏位也算进 internship，
+// 那一节的容器就退化成整个 <form>，"新行长在容器之外"这种情形就构造不出来了。
+const PAGE = `<form>
+  <div class="ant-form-item"><label for="nm">姓名</label><input id="nm" name="name"></div>
+  <div id="intern">
     <h3>实习经历</h3>
     <div class="ant-form-item"><label for="c0">公司名称</label><input id="c0" name="company"></div>
     <div class="ant-form-item"><label for="d0">职责描述</label><input id="d0" name="duty"></div>
     <a id="add" class="ant-btn" href="#">+ 添加一段实习经历</a>
   </div>
-  <div class="ant-form-item"><label for="nm">姓名</label><input id="nm" name="name"></div>
 </form>`;
 
 const PROFILE = {
@@ -29,7 +32,7 @@ const PROFILE = {
 /**
  * @param grow 点一次加号长几行（0 = 这个按钮点了没反应，用来测"停"）
  */
-async function boot({ allowAddRows = true, grow = 1, settings = {} } = {}) {
+async function boot({ allowAddRows = true, grow = 1, settings = {}, outside = false } = {}) {
   const dom = new JSDOM(`<!doctype html><html><body>${PAGE}</body></html>`, { url: 'https://job.example.test/apply', pretendToBeVisual: true });
   const d = dom.window.document;
   let clicks = 0;
@@ -39,7 +42,7 @@ async function boot({ allowAddRows = true, grow = 1, settings = {} } = {}) {
     ev.preventDefault();
     clicks++;
     const n = clicks;
-    for (let i = 0; i < grow; i++) {
+    for (let i = 0; i < (outside ? 0 : grow); i++) {   // outside 模式：只长在外面，容器里数不到
       const a = d.createElement('div');
       a.className = 'ant-form-item';
       a.innerHTML = `<label for="c${n + i}">公司名称</label><input id="c${n + i}" name="company">`;
@@ -48,6 +51,12 @@ async function boot({ allowAddRows = true, grow = 1, settings = {} } = {}) {
       b.innerHTML = `<label for="d${n + i}">职责描述</label><input id="d${n + i}" name="duty">`;
       d.getElementById('intern').insertBefore(a, d.getElementById('add'));
       d.getElementById('intern').insertBefore(b, d.getElementById('add'));
+      }
+      if (outside) {   // 新行没长在容器里（页面把新区块追加到表单末尾，真站上见过）
+        const extra = d.createElement('div');
+        extra.className = 'ant-form-item';
+        extra.innerHTML = '<label for="x1">补充说明</label><input id="x1" name="extra">';
+        d.querySelector('form').appendChild(extra);
     }
   });
   globalThis.window = dom.window;
@@ -119,4 +128,17 @@ test('dryRun 单独也要挡住补行：mode=full 但 dryRun=true 时一个点�
   assert.equal(clicks(), 0, 'dryRun 还在点页面控件');
   assert.equal(res.data.rowExpansion.length, 0);
   assert.equal(res.data.stats.planned >= 1, true, '预演仍然要算出计划，只是不落笔');
+});
+
+test('新行长在容器之外（added 算成 0）也必须重扫：不许拿旧计划往变过的 DOM 上写（审查 I5）', async () => {
+  const { scan, d, clicks } = await boot({ grow: 1, outside: true });
+  const res = await scan();
+  assert.equal(clicks(), 1);
+  assert.equal(res.data.rowExpansion[0].added, 0, '新行在容器之外，本该算没补出来');
+  assert.equal(res.data.rowExpansion[0].stalled, true);
+  // 重扫的证据：回包里的栏位数把外面那一栏也算上了（点之前页面只有 5 栏）
+  console.log('AUDIT', JSON.stringify(res.data.auditLog), 'ROWEXP', JSON.stringify(res.data.rowExpansion), 'ids', [...globalThis.document.querySelectorAll('input')].map(i => i.id));
+  // 重扫的证据：外面那一栏进了扫描结果（点之前这一页只有 nm/c0/d0 三栏）
+  assert.ok(res.data.stats.scanned >= 4, `没重扫，计划仍是点加号之前那份：scanned=${res.data.stats.scanned}`);
+  assert.ok(res.data.auditLog.some(x => x.event === 'rescan_after_expand' && x.clicks >= 1), '点了加号却没重扫');
 });

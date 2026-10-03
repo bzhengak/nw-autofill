@@ -111,24 +111,36 @@ async function handleScan({ profile, mode = 'full', dryRun = false, adapter = nu
    * 补完行必须重扫重排：新出现的栏位要进同一张映射表，不能拿旧计划往新行上写。
    */
   let rowExpansion = [];
+  let clicksHappened = 0;
   const addRowSections = rowAdder.sectionsWithAddButton(fields);
   if (allowAddRows && !dryRun && mode !== 'preview') {
     const schemaFieldsForCheck = schema.buildFields();
     const pre = planCheck.checkPlan({ fields, plan, profile, schemaFields: schemaFieldsForCheck, addRowSections });
     for (const want of rowAdder.planRowExpansion(pre.warnings)) {
       const group = fields.filter(f => (f.sectionHint || '') === want.section);
-      const container = rowAdder.blockContainerFor(group.length ? group : fields);
-      if (!container) { rowExpansion.push({ section: want.section, added: 0, stalled: true, why: 'no_container' }); continue; }
+      // **不回落成全表单的容器**：那一节一栏都没认出归属时（比如整节都被改判/适配器钉住，
+      // 没有 sectionHint），往上退就成了 <form> —— 那时"页面任何角落长了东西"都算补行成功，
+      // 而我们点的可能是别人的加号（独立审查 C2）。认不出这一节就老实说认不出。
+      const container = rowAdder.blockContainerFor(group);
+      if (!container) {
+        rowExpansion.push({ section: want.section, needed: want.need, added: 0, stalled: true, why: 'no_section' });
+        auditLog.push({ at: new Date().toISOString(), event: 'row_expansion_skipped', section: want.section, why: 'no_section' });
+        continue;
+      }
       const res = await rowAdder.expandRows({
         container,
         willTry: want.willTry,
-        click: rowAdder.defaultClick,
+        // 真点击前再过一道 safety 的拒绝名单（type=file / 提交文案 / 会把页面导航走的链接）
+        click: el => rowAdder.defaultClick(el, safety),
         count: () => rowAdder.fieldsIn(container, scanner.scanForm(document)).length,
       });
+      clicksHappened += (res.log || []).length;
       rowExpansion.push({ section: want.section, needed: want.need, ...res, log: undefined });
       auditLog.push({ at: new Date().toISOString(), event: 'row_expansion', section: want.section, added: res.added, stalled: res.stalled, why: res.why });
     }
-    if (rowExpansion.some(r => r.added > 0)) {
+    // 只要点过就重扫：新行也许长在容器之外（"added=0 但页面确实变了"），
+    // 拿旧计划往变过的 DOM 上写，比少补一段危险得多（独立审查 I5）。
+    if (clicksHappened > 0) {
       const fresh = scanner.scanForm(document);
       fields.length = 0;
       fields.push(...fresh);
@@ -136,7 +148,7 @@ async function handleScan({ profile, mode = 'full', dryRun = false, adapter = nu
       plan.assignments = re.assignments;
       plan.gaps = re.gaps;
       plan.stats = re.stats;
-      auditLog.push({ at: new Date().toISOString(), event: 'rescan_after_expand', fields: fields.length });
+      auditLog.push({ at: new Date().toISOString(), event: 'rescan_after_expand', fields: fields.length, clicks: clicksHappened });
     }
   }
   // AI 候选在这里落地：路径白名单与"空槽/敏感槽"的判断都交给 core/ai.js，
@@ -160,7 +172,7 @@ async function handleScan({ profile, mode = 'full', dryRun = false, adapter = nu
     plan.assignments = aiPageMap.assignments;
     plan.gaps = aiPageMap.gaps;
     plan.stats = aiPageMap.stats;
-    aiApplied = aiPageMap.applied;
+    aiApplied += aiPageMap.applied;   // 缺口那条与整页那条各记各的：只等号会让面板上「AI 补栏」显示 0
     auditLog.push({ at: new Date().toISOString(), event: 'ai_page_map_applied', filledGaps: aiPageMap.filledGaps, overridden: aiPageMap.overridden, refused: aiPageMap.refused.length });
   }
   const applied = await filler.applyPlan(fields, plan.assignments, { dryRun, allowCustomSelect, adapter, pageOrigin: location.origin, ledger: fillLedger });

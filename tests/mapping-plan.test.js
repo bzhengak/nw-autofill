@@ -365,3 +365,18 @@ test('本轮确认压住已记住的规则时，两份都要看得见', () => {
   const same = buildMappingTable({ fields: [field], plan, schemaFields: SCHEMA, origin: '', siteRules: stored, storedRules: stored });
   assert.equal(same.rows[0].rule.alsoStored, null, '两份一致时不该虚张声势');
 });
+
+test('计划校验认"这一节有没有加号"当补行证据（S7 与校验共用同一份事实）', () => {
+  const p = createEmptyProfile();
+  for (let i = 0; i < 3; i++) setValueByPath(p, `internship.${i}.company`, `甲公司${i}`);
+  const fields = [pf({ label: '实习公司名称', name: 'ic', id: 'ic1' })];   // 没有编号证据
+  const bare = checkPlan({ fields, plan: planFill(fields, p, { mode: 'full' }), profile: p, schemaFields: SCHEMA });
+  assert.ok(!bare.warnings.some(w => w.kind === 'records_no_room'), '没编号又没加号 → 这一页多半只收一段，不该长红字');
+  const withAdd = checkPlan({
+    fields, plan: planFill(fields, p, { mode: 'full' }), profile: p, schemaFields: SCHEMA,
+    addRowSections: new Set(['internship']),
+  });
+  const w = withAdd.warnings.find(x => x.kind === 'records_no_room');
+  assert.ok(w, '页面备着加号就是说它准备收更多段 —— 这一条必须报，S7 才有触发依据');
+  assert.deepEqual([...(w.section ? [w.section] : [])], ['internship']);
+});

@@ -163,3 +163,49 @@ test('答案带指纹时按指纹重新对号；对不上号宁可不动', () =>
   assert.equal(gone.filledGaps, 0);
   assert.equal(gone.refused[0]?.reason, 'stale_label');
 });
+
+/** ── 第二轮独立审查：认栏这件事不能有"空对空也算对上" ─────────────── */
+test('标签是空的就不算认得这一栏：宁可不动，也不按空标签放行（C4）', () => {
+  const p = profile();
+  const fields = [pf({ label: 'Awarding Body', name: 'ab', id: 'z1' })];
+  const plan = planFill(fields, p, { mode: 'full' });
+  const noLabel = applyPageMapSuggestions(plan, p, [{ index: 0, path: 'certifications.0.name', label: '' }]);
+  assert.equal(noLabel.filledGaps, 0, '空标签对空标签曾经等于放行');
+  assert.match(noLabel.refused[0].why, /没有可比对的标签/);
+  // 但带指纹（唯一命中）时不需要标签也能认得 —— 那是更强的证据，不是放宽
+  const byFp = applyPageMapSuggestions(plan, p, [{ index: 0, fp: fingerprint(fields[0]), path: 'certifications.0.name', label: '' }], { fields });
+  assert.equal(byFp.filledGaps, 1, '指纹唯一命中时反而不认了');
+});
+
+test('两栏自述完全相同时不许"先命中先赢"：两条都拒，并说清为什么（C5）', () => {
+  const p = profile();
+  const a = pf({ label: '公司名称', name: 'c', id: 'value' });
+  const b = pf({ label: '公司名称', name: 'c', id: 'value' });
+  assert.equal(fingerprint(a), fingerprint(b), '前提：这两栏指纹相同');
+  const plan = planFill([a, b], p, { mode: 'full' });
+  const out = applyPageMapSuggestions(plan, p, [
+    { index: 0, fp: fingerprint(a), path: 'certifications.0.name', label: '公司名称' },
+    { index: 1, fp: fingerprint(b), path: 'awards.0.title', label: '公司名称' },
+  ], { fields: [a, b] });
+  assert.equal(out.filledGaps, 0, `撞车的指纹被"先命中先赢"吃掉了一条：${JSON.stringify(out.assignments)}`);
+  assert.ok(out.refused.length >= 2, JSON.stringify(out.refused));
+  assert.ok(out.refused.every(r => r.reason === 'ambiguous_fp'), JSON.stringify(out.refused));
+  assert.match(out.refused[0].why, /自述完全相同/);
+});
+
+test('上一轮 AI 自己的建议不被第二条 AI 建议盖掉；理由要说成"是 AI 建议"（I3）', () => {
+  const p = profile();
+  const base = { assignments: [{ index: 0, path: 'awards.0.title', tier: 'auto', aiChosen: true, label: '奖项名称' }], gaps: [], stats: {} };
+  const out = applyPageMapSuggestions(base, p, [{ index: 0, path: 'languages.0.score', label: '奖项名称' }]);
+  assert.equal(out.overridden, 0);
+  assert.match(out.refused[0].why, /上一轮 AI 的建议/, out.refused[0]?.why);
+  assert.ok(!/绿字高置信/.test(out.refused[0].why), '把 AI 自己的建议说成"本地词典的高置信"就是编理由');
+});
+
+test('页面上已经没有那一栏了：报 index_gone，不能悄悄丢（I4）', () => {
+  const p = profile();
+  const plan = { assignments: [], gaps: [], stats: {} };
+  const out = applyPageMapSuggestions(plan, p, [{ index: 7, path: 'awards.0.title', label: '已经不在了的那一栏' }]);
+  assert.equal(out.applied, 0);
+  assert.equal(out.refused[0]?.reason, 'index_gone', JSON.stringify(out.refused));
+});

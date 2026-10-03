@@ -417,6 +417,38 @@ function flattenValues(obj, prefix = '', out = {}) {
   return out;
 }
 
+/**
+ * 补行的账必须上屏（审查 I1）：我们真的点了页面上的控件，
+ * 却只在数据里留一个 rowExpansion 数组，等于动了手不报告。
+ */
+function renderRowExpansion(list) {
+  if (!list?.length) return;
+  const box = $('mapWarn');
+  box.hidden = false;
+  const head = document.createElement('div');
+  head.className = 'witem';
+  const t = document.createElement('b');
+  const okAdds = list.filter(x => x.added > 0);
+  t.textContent = okAdds.length
+    ? `补行：我们点了「+ 添加一段」，补出 ${okAdds.reduce((a, x) => a + x.added, 0)} 行（${okAdds.map(x => `${SECTION_ZH_NAME(x.section) || x.section} ${x.added} 行`).join('、')}）`
+    : `补行：试过了，一行都没补出来（${list.map(x => `${SECTION_ZH_NAME(x.section) || x.section}：${ROW_WHY_ZH[x.why] || x.why}`).join('；')}）`;
+  head.appendChild(t);
+  const act = document.createElement('span');
+  act.className = 'wact';
+  act.textContent = '下一步：每一轮最多补 3 行；不想让我们点加号，就去「填写授权」取消「允许补经历行」。';
+  head.appendChild(act);
+  box.appendChild(head);
+}
+
+const SECTION_ZH_NAME = s => ({ education: '教育经历', work: '工作经历', internship: '实习经历', projects: '项目经历', competitions: '竞赛', publications: '论文/专利', campus: '校园活动', awards: '获奖', certifications: '证书', languages: '语言', family: '家庭成员' }[s] || '');
+const ROW_WHY_ZH = {
+  no_section: '认不出这一节在页面上的范围，没敢点',
+  no_container: '找不到这一节的容器，没敢点',
+  no_add_button: '这一节里没找到能确认的「+ 添加一段」',
+  stalled: '点了之后没长出新行，立刻停了',
+  click_threw: '点击被页面拒绝，立刻停了',
+};
+
 function renderPlanWarnings(check) {
   const box = $('mapWarn');
   if (!box) return;
@@ -470,6 +502,7 @@ function renderMapping(data) {
   const table = data?.mapping || null;
   lastMapping = table;
   renderPlanWarnings(data?.planCheck);
+  renderRowExpansion(data?.rowExpansion);   // 清了警告框之后才算：补行的账不能被校验提示覆盖掉
   if (!host) return;
   if (!table?.rows?.length) {
     host.textContent = data?.purposeBlocked

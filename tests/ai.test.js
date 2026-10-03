@@ -432,3 +432,24 @@ test('AI 明确说不确定的栏位单独记一份 declined（带它的理由�
   assert.equal(r4.declined.length, 0);
   assert.equal(r4.dropped[0].reason, 'unknown_index');
 });
+
+/**
+ * 面板回来的标签是页面原文（'Awarding Body'），计划里的缺口标签是归一化过的（'awarding body'）。
+ * 旧实现按字节相等比较，于是**真实页面上每一条 AI 答案都被判成"标签漂移"丢掉** ——
+ * 用户看到的正是"问了 AI 却一栏都没补上"。防漂移要防的是"两次扫描之间控件变了"，不是大小写。
+ */
+test('缺口那条路认得"同一栏的两种写法"：不再按字节相等判漂移', async () => {
+  const { applyAiCandidates } = await import('../core/ai.js');
+  const { createEmptyProfile, setValueByPath } = await import('../core/profile-schema.js');
+  const p = createEmptyProfile();
+  setValueByPath(p, 'certifications.0.name', 'CFA Level II');
+  const plan = { assignments: [], gaps: [{ index: 3, label: 'awarding body', reason: 'no_candidate', kind: 'text' }], stats: { planned: 0, auto: 0, review: 0, gaps: 1 } };
+  const out = applyAiCandidates(plan, p, [{ index: 3, path: 'certifications.0.name', label: 'Awarding Body' }]);
+  assert.equal(out.applied, 1, JSON.stringify(out));
+  assert.equal(out.stale.length, 0);
+  assert.equal(out.assignments[0].path, 'certifications.0.name');
+  // 真的变了还得拦住：换一个明显不同的标签
+  const drifted = applyAiCandidates(plan, p, [{ index: 3, path: 'certifications.0.name', label: '手机号码' }]);
+  assert.equal(drifted.applied, 0, '标签真的换了却不拦，等于把 A 栏的答案写进 B 栏');
+  assert.equal(drifted.stale.length, 1);
+});

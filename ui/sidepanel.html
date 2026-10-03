@@ -116,6 +116,11 @@
     <button id="btnMapForget">忘记本站的改判</button>
     <button id="btnMapExport">导出映射表（无取值）</button>
   </div>
+  <div class="row">
+    <button id="btnMapAiPreview">预览要发给 AI 的栏位档案</button>
+    <button id="btnMapAi" disabled>问一次整页（AI 只认栏位）</button>
+  </div>
+  <div class="note" id="mapAiStatus">让 AI 把这一页**每一栏**都认一遍（不是只问缺口）：它只回答"这一栏是哪种东西"，看不到也没有你的任何取值。结果先进这张表，仍然要你点「按此映射填写」才写。每次问都要先预览一次。</div>
   <div class="note" id="mapNote">
     每一行是这一页的一栏：页面自述 / 我们的判定 / 凭什么 / 现在是谁写的 / 改判。
     改判只决定"这一格是什么"，取值仍来自你的资料 —— 资料空着就照旧留空，我们不造值。

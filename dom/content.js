@@ -60,7 +60,7 @@ if (!window.__nwSubmitListener) {
   });
 }
 
-async function handleScan({ profile, mode = 'full', dryRun = false, adapter = null, fillSensitive = false, allowCustomSelect = false, aiCandidates = null, enMissingMode = 'strict', allowNonApplication = false, siteRules = null, temporaryFps = [], siteRulesStored = null }) {
+async function handleScan({ profile, mode = 'full', dryRun = false, adapter = null, fillSensitive = false, allowCustomSelect = false, aiCandidates = null, enMissingMode = 'strict', allowNonApplication = false, siteRules = null, temporaryFps = [], siteRulesStored = null, aiPageMapSuggestions = null }) {
   const { scanner, filler, matcher, safety, schema, ledger, canonical, mappingTable, planCheck } = await loadModules();
   safety.armSubmitGuard(window, auditLog);
   const fields = scanner.scanForm(document);
@@ -109,6 +109,20 @@ async function handleScan({ profile, mode = 'full', dryRun = false, adapter = nu
     plan.gaps = merged.gaps;
     plan.stats = merged.stats;
     aiApplied = merged.applied;
+  }
+  /**
+   * 整页概念映射（S5 的回答 → S6 的表）：比缺口那条路宽，能覆盖"我们自己判得没把握"的黄字栏，
+   * 但用户改判、适配器钉位、绿字一律不动（判据在 core/ai.js 里，那里离线可测）。
+   * 顺序有讲究：先本地判定 → 缺口 AI → 整页映射，越靠后越接近"人来定"。
+   */
+  let aiPageMap = null;
+  if (aiPageMapSuggestions?.length) {
+    aiPageMap = mods.ai.applyPageMapSuggestions(plan, profile, aiPageMapSuggestions, { fillSensitive });
+    plan.assignments = aiPageMap.assignments;
+    plan.gaps = aiPageMap.gaps;
+    plan.stats = aiPageMap.stats;
+    aiApplied = aiPageMap.applied;
+    auditLog.push({ at: new Date().toISOString(), event: 'ai_page_map_applied', filledGaps: aiPageMap.filledGaps, overridden: aiPageMap.overridden, refused: aiPageMap.refused.length });
   }
   const applied = await filler.applyPlan(fields, plan.assignments, { dryRun, allowCustomSelect, adapter, pageOrigin: location.origin, ledger: fillLedger });
 
@@ -194,6 +208,8 @@ async function handleScan({ profile, mode = 'full', dryRun = false, adapter = nu
     results: applied.results.map(r => ({ path: r.path, label: r.label, score: r.score, status: r.status, reason: r.failReason || '', note: r.note || '', actual: r.actual, sensitive: r.sensitive, aiChosen: r.aiChosen, evidence: r.evidence || [], weakEvidence: Boolean(r.weakEvidence), notOurs: r.notOurs || '', overwrites: r.overwrites || '' })),
     gaps: plan.gaps.map(g => ({ index: g.index, label: g.label, reason: g.reason, kind: g.kind, note: g.note || '' })),
     mapping, planCheck: check,
+    // 整页概念映射落地后的账：填了几个缺口、覆盖几个黄字、拒了几条（界面逐条念，不静默）
+    aiMap: aiPageMap ? { filledGaps: aiPageMap.filledGaps, overridden: aiPageMap.overridden, refused: aiPageMap.refused } : null,
     // 面板拿它当"这张表是在哪家站点上算出来的"凭证：改判落盘时必须带上，
     // 后台用它和标签页**当前** origin 对一遍（独立审查 C1：切了页仍把上一页的改判存进新站点的桶）
     pageOrigin: location.origin,
@@ -219,6 +235,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           siteRules: msg.siteRules || null,
           temporaryFps: Array.isArray(msg.temporaryFps) ? msg.temporaryFps : [],
           siteRulesStored: msg.siteRulesStored || null,
+          // 整页概念映射的回答（面板问过 nw:aiMapPage 之后带回来）：只在预演里落进计划，
+          // 真正写页面仍然要用户点「按此映射填写」
+          aiPageMapSuggestions: Array.isArray(msg.aiPageMapSuggestions) ? msg.aiPageMapSuggestions : null,
         }) });
       } else if (msg?.type === 'nw:undo') {
         const last = window.__nwLast;

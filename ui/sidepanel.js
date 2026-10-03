@@ -373,8 +373,8 @@ async function run(mode, extra = {}) {
 // 用户主动发起的一次扫描该把上一轮的结论清掉（"已记住/被拒"是上一次动作的话）。
 // AI 那批候选也一起作废：它们是**上一次扫描的那些缺口**的答案，重新扫过之后 index 可能对不上，
 // 留着比丢掉危险。
-$('btnScan').onclick = () => { panelNotice = ''; pendingWritten = false; lastAiCandidates = null; run(mappingFirstOn() ? 'preview' : 'full', mappingFirstOn() ? { mappingGate: true } : {}); };
-$('btnPreview').onclick = () => { panelNotice = ''; pendingWritten = false; lastAiCandidates = null; run('preview'); };
+$('btnScan').onclick = () => { panelNotice = ''; pendingWritten = false; lastAiCandidates = null; forgetAiMap(); run(mappingFirstOn() ? 'preview' : 'full', mappingFirstOn() ? { mappingGate: true } : {}); };
+$('btnPreview').onclick = () => { panelNotice = ''; pendingWritten = false; lastAiCandidates = null; forgetAiMap(); run('preview'); };
 
 // ── S6 映射表：一栏一行，确认后才写 ──────────────────────────────────
 // 用户 2026-10-02 定的口径："一律先出映射表再写"。所以这张表不是"更多信息"，
@@ -676,6 +676,8 @@ $('btnMapFill').onclick = async () => {
   // 「问 AI」补的那几栏必须一起带上：写入那一跳不带 aiCandidates，它们在表里就"存在过又消失"，
   // 用户看到的是"我确认过的表，写出来少了 AI 补的那几栏"（独立审查 Important 2）。
   if (lastAiCandidates?.length) extra.aiCandidates = lastAiCandidates;
+  // 整页概念映射的回答同理：表上看得见 〔AI 概念映射〕 的那几栏，写入时必须还在
+  if (lastAiMapSuggestions?.length) extra.aiPageMapSuggestions = lastAiMapSuggestions;
   let persisted = false;
   if (confirmed.length && $('mapRemember').checked) {
     const put = await chrome.runtime.sendMessage({ type: 'nw:siteRulesPut', tabId, expectOrigin: scanOrigin, entries: confirmed });
@@ -735,6 +737,84 @@ $('btnMapForget').onclick = async () => {
   refreshMapSummary();
   await run('preview');
 };
+
+// ── 整页概念映射（S5 的回答进 S6 的表）──
+// 与「问 AI 补缺口」的三条不同：范围是全页、选择集是约 60 个概念、结果一律先进这张表。
+// 每次问都要先预览一次（预览把按钮解锁）—— 与缺口那条路同一套"按次确认"的规矩。
+let lastAiMapPreview = null;
+let lastAiMapSuggestions = null;
+
+function aiMapPayloadFromTable() {
+  const rows = lastMapping?.rows || [];
+  const stateZh = { us: 'ours', edited: 'user', other: 'site', empty: 'empty' };
+  const valueStates = {};
+  const fields = rows.map(r => {
+    valueStates[r.index] = stateZh[r.current] || 'empty';
+    return {
+      labelRaw: r.page.label, label: r.page.label, kind: r.page.kind, required: r.page.required,
+      description: r.page.description, sectionTitle: r.page.section,
+      options: r.page.options, nearbyLabels: r.page.nearby,
+    };
+  });
+  return { fields, valueStates };
+}
+
+function forgetAiMap() {
+  lastAiMapSuggestions = null;
+  lastAiMapPreview = null;
+  const btn = $('btnMapAi');
+  if (btn) btn.disabled = true;
+}
+
+function aiMapReady() {
+  const st = lastState?.settings || {};
+  const target = normalizeBaseUrl(st.aiBaseUrl);
+  return { ok: target.ok && Boolean(st.aiModel) && aiKeyPresent && aiConsentStored === (lastState?.aiKeyOrigin || ''), error: !target.ok ? (rulesZh(target.error) || '端点没填对') : (!st.aiModel ? '模型名没填' : (!aiKeyPresent ? '本次会话没有 Key' : '还没确认收件人')) };
+}
+
+$('btnMapAiPreview').onclick = async () => {
+  await currentTabId();
+  const status = $('mapAiStatus');
+  if (!lastMapping?.rows?.length) { status.textContent = '还没扫这一页：先「扫描并出映射表」，才有栏位档案可发。'; return; }
+  const gate = aiMapReady();
+  if (!gate.ok) { status.textContent = `AI 还没配好（${gate.error}）—— 去下面「AI 兜底」那一段填端点、模型与 Key。`; return; }
+  const { fields, valueStates } = aiMapPayloadFromTable();
+  const res = await chrome.runtime.sendMessage({ type: 'nw:aiMapPage', tabId, fields, valueStates, preview: true });
+  if (!res?.ok) { status.textContent = `预览失败：${res?.error || '未知原因'}`; lastAiMapPreview = null; $('btnMapAi').disabled = true; return; }
+  lastAiMapPreview = { bytes: res.bytes, count: res.count, at: Date.now() };
+  $('btnMapAi').disabled = false;
+  status.textContent = `要发 ${res.count} 栏的档案，共 ${res.bytes} 字节（${res.trim?.why || '完整档案'}）`
+    + '　里面只有页面文字与"这一栏空/已填"这类状态词，没有任何取值。确认无误再点「问一次整页」。';
+};
+
+$('btnMapAi').onclick = async () => {
+  const status = $('mapAiStatus');
+  if (!lastAiMapPreview) { status.textContent = '要先预览一次（每次问都重新预览、重新确认）。'; return; }
+  await currentTabId();
+  const { fields, valueStates } = aiMapPayloadFromTable();
+  status.textContent = '正在问这一整页（推理模型可能要几十秒）…';
+  const res = await chrome.runtime.sendMessage({ type: 'nw:aiMapPage', tabId, fields, valueStates });
+  lastAiMapPreview = null;
+  $('btnMapAi').disabled = true;
+  if (!res?.ok) { status.textContent = `问失败了：${res?.error || '未知原因'}${res?.detail ? `（${String(res.detail).slice(0, 120)}）` : ''}`; return; }
+  const suggestions = (res.mapping || []).filter(m => m.path).map(m => ({ index: m.index, path: m.path, concept: m.concept, reason: m.reason, label: m.label }));
+  const unclear = (res.mapping || []).filter(m => !m.path);
+  lastAiMapSuggestions = suggestions.length ? suggestions : null;
+  await run('preview', lastAiMapSuggestions ? { aiPageMapSuggestions: lastAiMapSuggestions } : {});
+  // 落地结果不在 AI 回包里，而在紧随其后的那次"预演扫描"的回答里（缺口补了几个、黄字覆盖几个）
+  const mapResult = lastScan?.aiMap || null;
+  const refused = mapResult?.refused || [];
+  status.textContent = `AI 答了 ${res.mapping?.length || 0} 栏：落到具体槽位 ${suggestions.length} 栏、说清"这栏是什么"但没法定位到唯一槽位 ${unclear.length} 栏；`
+    + `它说认不出 ${(res.declined || []).length} 栏、被本地丢弃 ${res.dropped?.length || 0} 条。`
+    + (mapResult ? `已按语义补进表里：补缺口 ${mapResult.filledGaps} 栏、覆盖没把握的黄字 ${mapResult.overridden} 栏` : '')
+    + (refused.length ? `；没动的 ${refused.length} 栏都写了原因（例如"你在映射表里改过判，AI 不覆盖"）` : '')
+    + `　${formatTiming(res.timing) || ''}`;
+  if ((res.declined || []).length) {
+    const first = res.declined.slice(0, 3).map(d => `「${d.label || `第 ${(Number(d.index) || 0) + 1} 栏`}」${d.reason || '没给理由'}`).join('；');
+    status.textContent += `　它原话举例：${first}`;
+  }
+};
+
 
 $('btnMapExport').onclick = () => {
   if (!lastMapping?.rows?.length) { panelNotice = '还没有映射表可导出（先扫一次这一页）。'; $('mapOut').value = ''; refreshMapSummary(); return; }

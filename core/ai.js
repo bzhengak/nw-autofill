@@ -10,6 +10,7 @@
 
 import { buildFields, getValueByPath } from './profile-schema.js';
 import { CONCEPTS, isKnownConcept, slotConcept } from './canonical.js';
+import { normalize } from './matching.js';
 
 /** 允许参与 AI 的缺口原因：本地词典答不上来的那三种 */
 export const AI_ELIGIBLE_REASONS = new Set(['no_candidate', 'required_no_candidate', 'conflict_unresolved']);
@@ -30,6 +31,23 @@ export const AI_MAX_BYTES = 24000;
  *  姓名/生日/电话这类 sensitive 槽位允许被提名，但写入仍要走 fillSensitive 那道闸（见 applyAiCandidates）。 */
 const AI_FORBIDDEN_SECTION = new Set(['records', 'declaration']);
 export const AI_FORBIDDEN_KEY = /(idNumber|passport|visa|credential|signature|consent|agree|salary|expect|criminal|background)/i;
+
+/**
+ * "还是不是同一栏"的宽松比对：面板递回来的标签是**页面原文**（labelRaw，'Awarding Body'），
+ * 而计划里的缺口标签是归一化过的（'awarding body'）。直接字符串相等会把每一条答案
+ * 都判成"标签漂移"，于是整条 AI 通路在真实页面上静默变成死的 ——
+ * 这条判据的目的只是防"两次扫描之间页面自己增删了控件"，不是比字节。
+ * 两边都空时按"认不出来"处理（放行由白名单与敏感闸把关），不因为缺标签就丢弃答案。
+ */
+export function samePageLabel(a, b) {
+  // 注意先判空再归一化：normalize(undefined) 会给出字符串 'undefined'，
+  // 那样"这一侧压根没带标签"会被当成一个真的标签去比，把不带标签的候选全误杀。
+  const norm = s => (s == null ? '' : String(s).replace(/…$/u, '').trim()).toLowerCase();
+  const raw = s => (norm(s) ? norm(normalize(s)) : '');
+  const x = raw(a);
+  const y = raw(b);
+  return !x || !y || x === y;
+}
 
 export function aiEligibleGaps(gaps = []) {
   return gaps.filter(g => AI_ELIGIBLE_REASONS.has(g.reason));
@@ -371,7 +389,7 @@ export function applyAiCandidates(plan, profile, candidates = [], opts = {}) {
     if (!c) { keptGaps.push(g); continue; }
     // 索引是"上一次扫描时的下标"。页面在两次扫描之间自己插掉/新增了控件，
     // 下标就会漂到别的栏位上 —— 那等于把 A 栏的答案写进 B 栏。用标签复核，不符就整条丢弃。
-    if (c.label && String(c.label).slice(0, 60) !== String(g.label || '').slice(0, 60)) {
+    if (!samePageLabel(c.label, g.label)) {
       stale.push({ index: g.index, expected: c.label, found: g.label });
       keptGaps.push(g);
       continue;
@@ -524,4 +542,129 @@ export function expandConceptToSlots(profile, concept) {
   const chosen = filled.length ? filled : hit;
   if (chosen.length === 1) return { path: chosen[0].path, candidates: chosen.map(f => f.path), empty: !filled.length };
   return { path: '', candidates: chosen.map(f => f.path), ambiguous: chosen.length > 1, empty: !filled.length };
+}
+
+/**
+ * 整页概念映射的结果落到计划上（S5 的回答 → S6 的表）。
+ *
+ * 为什么单独一个函数，而不是复用 applyAiCandidates：那一套只处理**缺口**，
+ * 而整页映射的价值恰恰在于"我们自己判得也没把握的那些栏"——
+ * 用户 2026-10-02 的原话是"我希望 AI 可以直接填写所有的，最主要是获取的页面信息要完整清晰"。
+ * 但"能动哪些"必须划线，越靠后的判定越该尊重：
+ *   · **永远不动**：用户在映射表里的改判（pinnedBy='siteRule'）、适配器钉位/摊平规则（'adapter'）、
+ *     绿字（证据足、置信过线）—— 那是人的决定或站点的自述，不是一个更聪明的猜测；
+ *   · **可以动**：黄字（置信不足或只有弱证据）与冲突未决的那些栏，以及缺口；
+ *   · 敏感字段与空槽位的两道闸与缺口那条路一字不差（AI 只有权说"这一格是什么"）。
+ * 覆盖留下的痕迹（aiOverrode）是给表里"来历"那一列念的，不是日志里埋着的。
+ */
+export function applyPageMapSuggestions(plan, profile, suggestions = [], opts = {}) {
+  const slots = new Map(aiSlotCatalog(profile).map(s => [s.path, s]));
+  const allowSensitive = opts.fillSensitive === true;
+  const byIndex = new Map();
+  for (const s of (Array.isArray(suggestions) ? suggestions : [])) {
+    const i = Number(s?.index);
+    if (Number.isInteger(i) && s?.path) byIndex.set(i, s);
+  }
+  const refused = [];
+  /**
+   * 标签漂移的复核：面板那一侧递过来的标签是**页面原文**（labelRaw，'Awarding Body'），
+   * 而计划里的缺口标签是归一化过的（'awarding body'）。直接字符串相等会把这一路的
+   * 每一条答案都判成"标签对不上"——整页映射当场变成死代码。归一化之后再比，
+   * 并容忍导出/表格里常见的省略号截断。
+   */
+  const labelSame = samePageLabel;
+  const mkNote = (s, sf) => `AI 认这是「${sf.zh}」（概念 ${s.concept}${s.reason ? `；原话：${s.reason}` : ''}）`;
+
+  const gaps = [];
+  let added = 0;
+  for (const g of (plan?.gaps || [])) {
+    const s = byIndex.get(g.index);
+    if (!s) { gaps.push(g); continue; }
+    if (!labelSame(s.label, g.label)) {
+      refused.push({ index: g.index, why: `标签对不上（这一页在两次扫描之间变了：期望「${s.label}」、现在是「${g.label}」）`, reason: 'stale_label' });
+      gaps.push(g); continue;
+    }
+    const sf = slots.get(s.path);
+    if (!sf) { refused.push({ index: g.index, path: s.path, why: 'AI 给的槽位不在资料清单里，已丢弃', reason: 'unknown_path' }); gaps.push(g); continue; }
+    const value = String(getValueByPath(profile, sf.path) ?? '').trim();
+    if (sf.sensitive && !allowSensitive) {
+      gaps.push({ ...g, reason: 'sensitive_withheld', note: `${mkNote(s, sf)}，但它属于敏感字段，勾选「允许填写敏感字段」后才会写` });
+      continue;
+    }
+    if (!value) {
+      gaps.push({ ...g, reason: 'ai_empty_slot', note: `${mkNote(s, sf)}，但你资料里那栏是空的 —— 去资料里补上再扫` });
+      continue;
+    }
+    gaps.push({ ...g, resolvedBy: sf.path });      // 计数与成笔都在下面 resolved 那一趟
+    byIndex.set(g.index, { ...s, _gap: g, _value: value, _sf: sf });
+  }
+
+  const assignments = [];
+  let overridden = 0;
+  for (const a of (plan?.assignments || [])) {
+    const s = byIndex.get(a.index);
+    if (!s) { assignments.push(a); continue; }
+    // 覆盖既有判定时更要确认"还是同一栏"：漂移了就是把 A 栏的答案写进 B 栏
+    if (!labelSame(s.label, a.label)) {
+      refused.push({ index: a.index, path: s.path, was: a.path, reason: 'stale_label',
+        why: `标签对不上（期望「${s.label}」、现在是「${a.label}」），保留本地判定` });
+      assignments.push(a); continue;
+    }
+    const untouched = a.pinnedBy || a.tier === 'auto' || a.skip;
+    if (untouched) {
+      refused.push({ index: a.index, path: s.path, was: a.path,
+        why: a.skip ? '这一栏我们本来就不动（已填过/不写）'
+          : a.pinnedBy ? (a.pinnedBy === 'siteRule' ? '你在映射表里改过判，AI 不覆盖人的决定' : '站点规则钉住了这一栏，AI 不覆盖')
+          : '这一栏本地已经是绿字高置信，AI 不覆盖' });
+      assignments.push(a);
+      continue;
+    }
+    const sf = slots.get(s.path);
+    if (!sf) { refused.push({ index: a.index, path: s.path, why: 'AI 给的槽位不在资料清单里，保留本地判定', reason: 'unknown_path' }); assignments.push(a); continue; }
+    const value = String(getValueByPath(profile, sf.path) ?? '').trim();
+    if (!value) {
+      refused.push({ index: a.index, path: sf.path, why: 'AI 给的槽位在资料里是空的，保留本地判定', reason: 'empty_slot' });
+      assignments.push(a); continue;
+    }
+    if (sf.sensitive && !allowSensitive) {
+      refused.push({ index: a.index, path: sf.path, why: '敏感字段需要「允许填写敏感字段」才动，保留本地判定', reason: 'sensitive_withheld' });
+      assignments.push(a); continue;
+    }
+    overridden++;
+    assignments.push({
+      ...a,
+      path: sf.path, value, profileType: sf.type, sensitive: sf.sensitive,
+      score: 0, tier: sf.sensitive ? 'review' : 'auto', aiChosen: true,
+      aiOverrode: { path: a.path, zh: a.zh || a.path, why: a.note || '' },
+      note: `${mkNote(s, sf)}；覆盖了本地那个没把握的判定`,
+    });
+  }
+
+  // 缺口里被 AI 解决的，换成正式一笔（顺序无关紧要，分配层已经跑完了）
+  const resolved = new Map(gaps.filter(g => g.resolvedBy).map(g => [g.index, g]));
+  const keptGaps = gaps.filter(g => !g.resolvedBy);
+  for (const [index, g] of resolved) {
+    const s = byIndex.get(index);
+    added++;
+    assignments.push({
+      index, path: s._sf.path, value: s._value, profileType: s._sf.type, sensitive: s._sf.sensitive,
+      label: g.label, score: 0, tier: s._sf.sensitive ? 'review' : 'auto', aiChosen: true,
+      note: `${mkNote(s, s._sf)}`,
+    });
+  }
+  return {
+    assignments,
+    gaps: keptGaps,
+    stats: {
+      ...plan.stats,
+      planned: assignments.filter(a => !a.skip).length,
+      auto: assignments.filter(a => !a.skip && a.tier === 'auto').length,
+      review: assignments.filter(a => !a.skip && a.tier === 'review').length,
+      gaps: keptGaps.length,
+    },
+    applied: added + overridden,
+    filledGaps: added,
+    overridden,
+    refused,
+  };
 }

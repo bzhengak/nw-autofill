@@ -24,7 +24,7 @@ const PAGE = `<form class="ant-form">
  * @param {object} opts.siteRules 后台合流后下发的规则（{fp → rule}）
  * @param {Array}  opts.temporaryFps
  */
-async function boot({ profile = {}, siteRules = null, temporaryFps = [], settings = {} } = {}) {
+async function boot({ profile = {}, siteRules = null, temporaryFps = [], settings = {}, suggestions = null } = {}) {
   const dom = new JSDOM(`<!doctype html><html><body>${PAGE}</body></html>`, { url: PAGE_URL, pretendToBeVisual: true });
   const listenerBox = { fn: null };
   const base = import.meta.url;
@@ -45,7 +45,7 @@ async function boot({ profile = {}, siteRules = null, temporaryFps = [], setting
   await import('../dom/content.js?run=' + Math.random().toString(36).slice(2));
   const send = msg => new Promise(resolve => listenerBox.fn(msg, {}, resolve));
   /** 面板发扫描时不自己带规则（规则由后台按 tabId 合流）；这里直接扮演后台那一跳 */
-  const scan = (extra = {}) => send({ type: 'nw:scan', tabId: 1, mode: 'preview', dryRun: true, siteRules, temporaryFps, ...extra });
+  const scan = (extra = {}) => send({ type: 'nw:scan', tabId: 1, mode: 'preview', dryRun: true, siteRules, temporaryFps, aiPageMapSuggestions: suggestions, ...extra });
   return { send, scan, dom };
 }
 
@@ -141,4 +141,36 @@ test('登录页被整页目的闸拦下时，回包也带 mapping/planCheck 的�
   assert.equal(res?.data?.purposeBlocked, true, `登录页没被拦：${JSON.stringify(res?.data?.pagePurpose)}`);
   assert.deepEqual(res.data.mapping.rows, [], '拦下时映射表应是空数组而不是 undefined');
   assert.ok(Array.isArray(res.data.planCheck.warnings));
+});
+
+test('aiPageMapSuggestions 穿得过内容脚本：表里出现 〔AI 概念映射〕，且预演不写页面', async () => {
+  const profile = { certifications: [{ name: 'CFA Level II' }], awards: {} };
+  const first = await boot({ profile });
+  const probe = (await first.scan()).data;
+  const row = probe.mapping.rows.find(r => /Awarding/.test(r.page.label));
+  assert.ok(row && !row.decision.path, '前提：这一栏本地认不出');
+  const { scan } = await boot({
+    profile,
+    suggestions: [{ index: row.index, path: 'certifications.0.name', concept: 'cert-name', reason: '像是证书名', label: row.page.label }],
+  });
+  const data = (await scan({ aiPageMapSuggestions: [{ index: row.index, path: 'certifications.0.name', concept: 'cert-name', reason: '像是证书名', label: row.page.label }] })).data;
+  const after = data.mapping.rows[row.index];
+  assert.equal(after.decision.path, 'certifications.0.name', JSON.stringify(after.decision));
+  assert.equal(after.decision.by, 'ai', '来历要写成 AI，不是本地词典');
+  assert.equal(data.aiMap.filledGaps, 1);
+  assert.equal(globalThis.document.querySelector('[data-nw-test="cert"]').value, '', '预演阶段就把 AI 的答案写进页面了');
+});
+
+test('旧「问 AI 补缺口」那条路在真实扫描产物上也认得标签（回归：整条路曾静默为死）', async () => {
+  const profile = { certifications: [{ name: 'CFA Level II' }] };
+  const first = await boot({ profile });
+  const probe = (await first.scan()).data;
+  const aiField = probe.aiFields.find(f => /Awarding/i.test(f.label));
+  assert.ok(aiField, '前提：这一栏要出现在"可以问 AI"的清单里');
+  const { scan } = await boot({ profile });
+  const data = (await scan({ aiCandidates: [{ index: aiField.index, path: 'certifications.0.name', label: aiField.label }] })).data;
+  assert.equal(data.stats.aiApplied, 1, '拿面板自己给的标签回来都还不认，说明判据仍然过严');
+  const row = data.mapping.rows[aiField.index];
+  assert.equal(row.decision.path, 'certifications.0.name');
+  assert.equal(row.decision.by, 'ai');
 });

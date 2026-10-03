@@ -156,7 +156,7 @@ async function handleScan({ profile, mode = 'full', dryRun = false, adapter = nu
    */
   let aiPageMap = null;
   if (aiPageMapSuggestions?.length) {
-    aiPageMap = mods.ai.applyPageMapSuggestions(plan, profile, aiPageMapSuggestions, { fillSensitive });
+    aiPageMap = mods.ai.applyPageMapSuggestions(plan, profile, aiPageMapSuggestions, { fillSensitive, fields });
     plan.assignments = aiPageMap.assignments;
     plan.gaps = aiPageMap.gaps;
     plan.stats = aiPageMap.stats;

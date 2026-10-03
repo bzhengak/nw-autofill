@@ -133,3 +133,33 @@ test('stats 是重算出来的，且缺口与覆盖不会被双计', () => {
   assert.equal(out.filledGaps + out.overridden, out.applied, JSON.stringify(out));
   assert.equal(out.assignments.filter(a => a.aiChosen).length, out.applied);
 });
+
+/**
+ * 回答里带上下标是按"上一次扫描"算的，页面自己插掉一个控件就会漂到别的栏位上。
+ * 标签复核只能挡住"标签变了"的那种；两栏标签一模一样时（真站点上一整排 id="value"）挡不住。
+ * 所以答案带指纹时按指纹重新对号 —— 这一条是把那最后一格缝隙关掉。
+ */
+test('答案带指纹时按指纹重新对号；对不上号宁可不动', () => {
+  const p = profile();
+  const fields = [
+    pf({ label: 'Awarding Body', name: 'a', id: 'q1' }),
+    pf({ label: 'Awarding Body', name: 'b', id: 'q2' }),   // 与上一栏标签完全相同，只有 id 不同
+  ];
+  const plan = planFill(fields, p, { mode: 'full' });
+  assert.equal(plan.gaps.length, 2, '前提：两栏都认不出');
+  const fpOf = f => fingerprint(f);
+  // 面板以为答案是给第 0 栏的，但它的指纹其实是第 1 栏那格的
+  const out = applyPageMapSuggestions(plan, p, [
+    { index: 0, fp: fpOf(fields[1]), path: 'certifications.0.name', label: 'Awarding Body' },
+  ], { fields });
+  assert.equal(out.filledGaps, 1);
+  assert.equal(out.assignments[0].index, 1, '按指纹重新对号后，答案该落在第 2 栏');
+  assert.equal(out.assignments[0].path, 'certifications.0.name');
+
+  // 指纹在这一页已经找不到了（页面变了）：不许按旧下标硬套
+  const gone = applyPageMapSuggestions(plan, p, [
+    { index: 0, fp: 'stale-fp-not-on-this-page', path: 'certifications.0.name', label: '完全不同的另一栏' },
+  ], { fields });
+  assert.equal(gone.filledGaps, 0);
+  assert.equal(gone.refused[0]?.reason, 'stale_label');
+});

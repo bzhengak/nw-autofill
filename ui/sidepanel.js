@@ -804,7 +804,9 @@ $('btnMapAi').onclick = async () => {
   lastAiMapPreview = null;
   $('btnMapAi').disabled = true;
   if (!res?.ok) { status.textContent = `问失败了：${res?.error || '未知原因'}${res?.detail ? `（${String(res.detail).slice(0, 120)}）` : ''}`; return; }
-  const suggestions = (res.mapping || []).filter(m => m.path).map(m => ({ index: m.index, path: m.path, concept: m.concept, reason: m.reason, label: m.label }));
+  const rowAt = i => (lastMapping?.rows || []).find(r => r.index === i) || {};
+  // 带上栏位指纹：页面在两跳之间自己增删过控件时，后台按指纹重新对号，而不是拿旧下标往别的栏位上写
+  const suggestions = (res.mapping || []).filter(m => m.path).map(m => ({ index: m.index, fp: rowAt(m.index).fp || '', path: m.path, concept: m.concept, reason: m.reason, label: m.label }));
   const unclear = (res.mapping || []).filter(m => !m.path);
   lastAiMapSuggestions = suggestions.length ? suggestions : null;
   await run('preview', lastAiMapSuggestions ? { aiPageMapSuggestions: lastAiMapSuggestions } : {});

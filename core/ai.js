@@ -11,6 +11,7 @@
 import { buildFields, getValueByPath } from './profile-schema.js';
 import { CONCEPTS, isKnownConcept, slotConcept } from './canonical.js';
 import { normalize } from './matching.js';
+import { fingerprint } from './ledger.js';
 
 /** 允许参与 AI 的缺口原因：本地词典答不上来的那三种 */
 export const AI_ELIGIBLE_REASONS = new Set(['no_candidate', 'required_no_candidate', 'conflict_unresolved']);
@@ -561,9 +562,25 @@ export function applyPageMapSuggestions(plan, profile, suggestions = [], opts = 
   const slots = new Map(aiSlotCatalog(profile).map(s => [s.path, s]));
   const allowSensitive = opts.fillSensitive === true;
   const byIndex = new Map();
+  /**
+   * 回答是"上一次扫描的下标 + 那一栏的指纹"发回来的。页面在两次扫描之间自己增删了控件，
+   * 下标就会漂到别的栏位上 —— 那等于把 A 栏的答案写进 B 栏。所以能按指纹重新对号就按指纹对，
+   * 指纹认不出来（调用方没给 fields，或这一栏自述变了）才退回下标 + 标签复核那一道。
+   */
+  const fpToIndex = new Map();
+  if (Array.isArray(opts.fields)) {
+    opts.fields.forEach((f, idx) => {
+      const fp = fingerprint(f);
+      if (fp && !fpToIndex.has(fp)) fpToIndex.set(fp, idx);
+    });
+  }
   for (const s of (Array.isArray(suggestions) ? suggestions : [])) {
-    const i = Number(s?.index);
-    if (Number.isInteger(i) && s?.path) byIndex.set(i, s);
+    const i0 = Number(s?.index);
+    const anchored = s?.fp && fpToIndex.has(s.fp) ? fpToIndex.get(s.fp) : i0;
+    if (Number.isInteger(anchored) && s?.path) {
+      if (Number.isInteger(i0) && anchored !== i0) byIndex.set(anchored, { ...s, reanchored: { from: i0, to: anchored } });
+      else byIndex.set(anchored, s);
+    }
   }
   const refused = [];
   /**

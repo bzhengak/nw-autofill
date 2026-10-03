@@ -68,8 +68,10 @@ const sectionOf = path => String(path || '').split('.')[0];
  * @param {object} o.profile     资料
  * @param {Array}  o.schemaFields buildFields()
  * @param {object} o.table       buildMappingTable 的结果（可选，用来报"这一页一个都不写"）
+ * @param {Set|Array} o.addRowSections 页面上**有「+ 添加一段」按钮**的那些节（S7 的触发证据）
  */
-export function checkPlan({ fields = [], plan, profile = {}, schemaFields = [], table = null } = {}) {
+export function checkPlan({ fields = [], plan, profile = {}, schemaFields = [], table = null, addRowSections = null } = {}) {
+  const addRow = addRowSections instanceof Set ? addRowSections : new Set(addRowSections || []);
   const warnings = [];
   const assignments = (plan?.assignments || []).filter(a => !a.skip && a.path);
   const gaps = plan?.gaps || [];
@@ -103,9 +105,10 @@ export function checkPlan({ fields = [], plan, profile = {}, schemaFields = [], 
     const members = [...inSection];
     const have = filledRecordCount(profile, schemaFields, s);
     const page = pageRecordGroups(fields, members);
-    // 页面这一节有没有"这是第几组"的证据：没有编号就说不清页面准备收几段，
-    // 那"资料有 3 段而页面只有 1 组"多半是这一页只要最高学历/最近一份工作 —— 不是故障。
-    const numbered = members.some(i => (fields[i] || {}).itemIndex != null);
+    // 页面这一节有没有"还能再收一段"的迹象：① 已经排了带编号的多组；② 旁边备着「+ 添加一段」。
+    // 两样都没有时，"资料有 3 段而页面只有 1 栏"多半是这一页本来就只收最高学历/最近一份 ——
+    // 那不是故障（独立审查 I6d：这条以前在 12 份判分页面里 8 份都触发，红字长挂就等于没有）。
+    const numbered = addRow.has(s) || members.some(i => (fields[i] || {}).itemIndex != null);
     const planned = members.filter(i => fields[i]?.itemIndex != null).map(i => fields[i].itemIndex);
     const maxPlanned = planned.length ? Math.max(...planned) + 1 : 0;
     const zh = SECTION_ZH[s] || s;
@@ -113,7 +116,7 @@ export function checkPlan({ fields = [], plan, profile = {}, schemaFields = [], 
       warnings.push({
         kind: 'records_no_room', section: s, have, page,
         zh: `资料里有 ${have} 段「${zh}」，这一页只排到第 ${page} 组：后面 ${have - page} 段在这一页没地方写。`,
-        action: '这一页多半有个「+ 添加一段」，点下去才出得了新行 —— 那是 S7 的扩行代理，默认关着；要我们代点就去设置里打开。',
+        action: '这一页多半有个「+ 添加一段」，点下去才出得了新行。要我们替你点：在「填写授权」里勾「允许补经历行」（默认关着；每轮最多 3 行，点了没长出来立刻停）。不勾就自己去点一下再扫。',
       });
     } else if (page > have && maxPlanned > have - 1) {
       warnings.push({

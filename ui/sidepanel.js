@@ -75,6 +75,7 @@ async function refresh() {
   stampVersions(state);
   $('fillSensitive').checked = Boolean(state?.settings?.fillSensitive);
   $('allowCustomSelect').checked = Boolean(state?.settings?.allowCustomSelect);
+  $('allowAddRows').checked = Boolean(state?.settings?.allowAddRows);
   $('enZhFallback').checked = state?.settings?.enMissingMode === 'zh_yellow';
   // 映射表先行是默认态：设置里没这个键（老配置）也算开
   $('mappingFirst').checked = state?.settings?.mappingFirst !== false;
@@ -255,6 +256,12 @@ $('fillSensitive').onchange = async e => {
 };
 // 点开自定义下拉 = 扩展会真的点击页面上的控件，这是一次独立授权，默认关，
 // 与「允许填写敏感字段」分开勾：两者风险性质不同（改内容 vs 动页面）。
+$('allowAddRows').onchange = async e => {
+  await chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { allowAddRows: e.target.checked } });
+  lastState = { ...(lastState || {}), settings: { ...(lastState?.settings || {}), allowAddRows: e.target.checked } };
+  panelNotice = e.target.checked ? '已允许补行：下一次「按此映射填写」时，段数不够的那一节我们会试着点「+ 添加一段」。' : '已关闭补行：段数不够时那一节的后面几行会一直留着不写。';
+  refreshMapSummary();
+};
 $('allowCustomSelect').onchange = async e => {
   await chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { allowCustomSelect: e.target.checked } });
   lastState = { ...(lastState || {}), settings: { ...(lastState?.settings || {}), allowCustomSelect: e.target.checked } };

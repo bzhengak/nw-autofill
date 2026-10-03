@@ -427,3 +427,18 @@ test('撤销之后映射表还在：重新只读扫一遍，而不是抹成"没�
   assert.ok(doc.getElementById('mapTable').querySelectorAll('.mrow').length >= 3, '撤销把映射表抹掉了：改判与导出下一跳就失效');
   assert.match(doc.getElementById('mapSummary').textContent, /回滚/);
 });
+
+test('「允许补经历行」是页面上的一枚闸：勾上会存设置，默认关着', async () => {
+  const { p, fields } = fixture();
+  const { doc, sent } = boot({ data: scanData(p, fields) });
+  await loadSidePanel();
+  await settle();
+  const box = doc.getElementById('allowAddRows');
+  assert.ok(box, '填写授权区里没有这枚开关');
+  assert.equal(box.checked, false, '补行默认必须是关着的');
+  box.checked = true;
+  box.dispatchEvent(new doc.defaultView.Event('change', { bubbles: true }));
+  await settle();
+  const saved = sent.filter(m => m.type === 'nw:saveSettings').pop();
+  assert.equal(saved?.settings?.allowAddRows, true, '勾了没存进设置：重载后又变回关');
+});

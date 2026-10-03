@@ -6,7 +6,7 @@ let mods = null;
 async function loadModules() {
   if (mods) return mods;
   const u = p => chrome.runtime.getURL(p);
-  const [scanner, filler, safety, matcher, schema, matching, probe, ai, optionMap, build, ledger, canonical, mappingTable, planCheck] = await Promise.all([
+  const [scanner, filler, safety, matcher, schema, matching, probe, ai, optionMap, build, ledger, canonical, mappingTable, planCheck, rowAdder] = await Promise.all([
     import(u('dom/scanner.js')),
     import(u('dom/filler.js')),
     import(u('dom/safety.js')),
@@ -21,8 +21,9 @@ async function loadModules() {
     import(u('core/canonical.js')),
     import(u('core/mapping-table.js')),
     import(u('core/plan-check.js')),
+    import(u('dom/row-adder.js')),
   ]);
-  mods = { scanner, filler, safety, matcher, schema, matching, probe, ai, optionMap, build, ledger, canonical, mappingTable, planCheck };
+  mods = { scanner, filler, safety, matcher, schema, matching, probe, ai, optionMap, build, ledger, canonical, mappingTable, planCheck, rowAdder };
   return mods;
 }
 
@@ -60,8 +61,9 @@ if (!window.__nwSubmitListener) {
   });
 }
 
-async function handleScan({ profile, mode = 'full', dryRun = false, adapter = null, fillSensitive = false, allowCustomSelect = false, aiCandidates = null, enMissingMode = 'strict', allowNonApplication = false, siteRules = null, temporaryFps = [], siteRulesStored = null, aiPageMapSuggestions = null }) {
-  const { scanner, filler, matcher, safety, schema, ledger, canonical, mappingTable, planCheck } = await loadModules();
+async function handleScan({ profile, mode = 'full', dryRun = false, adapter = null, fillSensitive = false, allowCustomSelect = false, aiCandidates = null, enMissingMode = 'strict', allowNonApplication = false, siteRules = null, temporaryFps = [], siteRulesStored = null, aiPageMapSuggestions = null,
+  allowAddRows = false }) {
+  const { scanner, filler, matcher, safety, schema, ledger, canonical, mappingTable, planCheck, rowAdder } = await loadModules();
   safety.armSubmitGuard(window, auditLog);
   const fields = scanner.scanForm(document);
   /**
@@ -100,6 +102,43 @@ async function handleScan({ profile, mode = 'full', dryRun = false, adapter = nu
     fillLedger = (await chrome.runtime.sendMessage({ type: 'nw:ledgerGet' }).catch(() => null))?.ledger || {};
   }
   const plan = matcher.planFill(fields, profile, { mode, adapter, fillSensitive, allowCustomSelect, enMissingMode, ledger: fillLedger, pageOrigin: location.origin, siteRules: siteRules || null });
+  /**
+   * S7 补行：段数不够时替用户点页面自己的「+ 添加一段」。三条限制一道不能少：
+   *  · 只在**真的要写**的那一跳做（预演一个点击都不发）；
+   *  · 要在设置里显式勾「允许补经历行」（allowAddRows）；
+   *  · 每节最多 ROW_CAP 次，且每次点击都必须让这一节里扫得到的栏位变多，
+   *    没变多立刻停 —— 连点一个没有反馈的按钮是在页面上制造未知状态。
+   * 补完行必须重扫重排：新出现的栏位要进同一张映射表，不能拿旧计划往新行上写。
+   */
+  let rowExpansion = [];
+  const addRowSections = rowAdder.sectionsWithAddButton(fields);
+  if (allowAddRows && !dryRun && mode !== 'preview') {
+    const schemaFieldsForCheck = schema.buildFields();
+    const pre = planCheck.checkPlan({ fields, plan, profile, schemaFields: schemaFieldsForCheck, addRowSections });
+    for (const want of rowAdder.planRowExpansion(pre.warnings)) {
+      const group = fields.filter(f => (f.sectionHint || '') === want.section);
+      const container = rowAdder.blockContainerFor(group.length ? group : fields);
+      if (!container) { rowExpansion.push({ section: want.section, added: 0, stalled: true, why: 'no_container' }); continue; }
+      const res = await rowAdder.expandRows({
+        container,
+        willTry: want.willTry,
+        click: rowAdder.defaultClick,
+        count: () => rowAdder.fieldsIn(container, scanner.scanForm(document)).length,
+      });
+      rowExpansion.push({ section: want.section, needed: want.need, ...res, log: undefined });
+      auditLog.push({ at: new Date().toISOString(), event: 'row_expansion', section: want.section, added: res.added, stalled: res.stalled, why: res.why });
+    }
+    if (rowExpansion.some(r => r.added > 0)) {
+      const fresh = scanner.scanForm(document);
+      fields.length = 0;
+      fields.push(...fresh);
+      const re = matcher.planFill(fields, profile, { mode, adapter, fillSensitive, allowCustomSelect, enMissingMode, ledger: fillLedger, pageOrigin: location.origin, siteRules: siteRules || null });
+      plan.assignments = re.assignments;
+      plan.gaps = re.gaps;
+      plan.stats = re.stats;
+      auditLog.push({ at: new Date().toISOString(), event: 'rescan_after_expand', fields: fields.length });
+    }
+  }
   // AI 候选在这里落地：路径白名单与"空槽/敏感槽"的判断都交给 core/ai.js，
   // 内容脚本只负责把结果并进 plan，再走同一条 applyPlan（写入与回读口径不另开一套）。
   let aiApplied = 0;
@@ -202,12 +241,15 @@ async function handleScan({ profile, mode = 'full', dryRun = false, adapter = nu
     origin: location.origin, siteRules: siteRules || {}, temporaryFps,
     storedRules: siteRulesStored || null, schemaFields,
   });
-  const check = planCheck.checkPlan({ fields, plan, profile, schemaFields, table: mapping });
+  // 补行之后页面可能又长出新的加号：这里按**当前**这一版栏位重算一次
+  const check = planCheck.checkPlan({ fields, plan, profile, schemaFields, table: mapping, addRowSections: rowAdder.sectionsWithAddButton(fields) });
   return {
     stats: { ...applied.summary, ...plan.stats, profileFilled, aiApplied },
     results: applied.results.map(r => ({ path: r.path, label: r.label, score: r.score, status: r.status, reason: r.failReason || '', note: r.note || '', actual: r.actual, sensitive: r.sensitive, aiChosen: r.aiChosen, evidence: r.evidence || [], weakEvidence: Boolean(r.weakEvidence), notOurs: r.notOurs || '', overwrites: r.overwrites || '' })),
     gaps: plan.gaps.map(g => ({ index: g.index, label: g.label, reason: g.reason, kind: g.kind, note: g.note || '' })),
     mapping, planCheck: check,
+    // 这一轮我们替用户点了几次加号、补出几行、卡在哪一节（空数组=没动过）
+    rowExpansion,
     // 整页概念映射落地后的账：填了几个缺口、覆盖几个黄字、拒了几条（界面逐条念，不静默）
     aiMap: aiPageMap ? { filledGaps: aiPageMap.filledGaps, overridden: aiPageMap.overridden, refused: aiPageMap.refused } : null,
     // 面板拿它当"这张表是在哪家站点上算出来的"凭证：改判落盘时必须带上，
@@ -227,6 +269,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           profile: profile || {}, mode: msg.mode, dryRun: msg.dryRun,
           adapter: msg.adapter || null, fillSensitive: settings ? settings.fillSensitive === true : false,
           allowCustomSelect: settings ? settings.allowCustomSelect === true : false,
+          allowAddRows: settings ? settings.allowAddRows === true : false,
           aiCandidates: msg.aiCandidates || null,
           // 缺英文值时的处理口径来自设置，不在这里改写：面板勾选与真实填写必须是同一个值
           enMissingMode: settings ? settings.enMissingMode : 'strict',

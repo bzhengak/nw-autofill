@@ -90,6 +90,7 @@
   <label class="chk"><input type="checkbox" id="fillSensitive">允许填写证件号等敏感字段</label>
   <label class="chk"><input type="checkbox" id="allowCustomSelect">允许点开自定义下拉并选中（会真的点击页面控件）</label>
   <label class="chk"><input type="checkbox" id="enZhFallback">英文表单遇到只有中文写法的栏位：写中文并标黄（默认不写，列入"需要你处理"）</label>
+  <label class="chk"><input type="checkbox" id="allowAddRows">允许补经历行：资料里段数比页面给的行多时，替我点页面上的「+ 添加一段」（会真的点击控件；每轮最多 3 行，点了没长出来立刻停）</label>
   <div class="note" id="authNote">
     这三条各管一件事：改敏感内容、动页面控件、降级填中文。默认都不动 —— 关掉时对应栏位进「需要你处理」，
     不是"悄悄少填"。它们以前藏在「编辑 / 导入 JSON」里，很多人根本找不到。

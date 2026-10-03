@@ -7,7 +7,7 @@
  *  mappingFirst（S6「映射表先行」）必须在列：不在就等于这个开关永远存不下来。 */
 export const SETTING_KEYS = ['mode', 'fillSensitive', 'autoSubmitNever', 'allowCustomSelect', 'aiEnabled',
   'aiBaseUrl', 'aiModel', 'aiMaxGaps', 'aiConsentOrigin', 'aiTimeoutSec', 'aiMaxOutput', 'aiStream', 'editorLang', 'enMissingMode',
-  'mappingFirst'];
+  'mappingFirst', 'allowAddRows'];
 
 const SECRETISH = /(key|token|secret|password|credential|auth)/i;
 

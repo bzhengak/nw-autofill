@@ -459,6 +459,22 @@ export function equivalentsOf(value) {
 const SENSITIVE = 'S';
 const MULTI = 'L';
 
+/**
+ * 给用户看的句子只有一条硬规矩：**不许带资料取值**（note/gap 说明会随「导出没填的字段与选项」
+ * 与诊断包离机，2026-10-04 的真实导出里就是 `按「粤语」定位槽位` 让映射表整段被自检拒收）。
+ *
+ * 内部键名（`languages`、`basics.name`）不作废整句：那类句子往往是用户唯一看得懂的线索，
+ * 而且判定列本来就写着槽位路径 —— 以"防内部名"为由抹掉说明，实测一次抹掉了四条有用的解释
+ * （判分集当场红）。要治的是**措辞**，不是句子本身：见 core/matcher.js 的 sectionZhList，
+ * 我们自己生成的说明一律用板块中文名 + 第几段。
+ */
+export function userSafeText(text, values = []) {
+  const s = String(text || '').trim();
+  if (!s) return '';
+  for (const v of values) { const x = String(v || '').trim(); if (x.length >= 2 && s.includes(x)) return false; }
+  return s;
+}
+
 function parseField(tuple, sectionKey, indexInSection) {
   const [key, zh, aliasStr, type, flags = ''] = tuple;
   const labels = [zh, ...(aliasStr || '').split('|').map(s => s.trim())].filter(Boolean);
@@ -472,8 +488,9 @@ function parseField(tuple, sectionKey, indexInSection) {
    * 误判会让'已发表/在投'这类枚举既要多勾一个框，又被当成不该外发的东西。
    */
   const flagSet = new Set(String(flags).split(';').map(x => x.trim()).filter(Boolean));
+  const path = indexInSection === null ? `${sectionKey}.${key}` : `${sectionKey}.${indexInSection}.${key}`;
   return {
-    path: indexInSection === null ? `${sectionKey}.${key}` : `${sectionKey}.${indexInSection}.${key}`,
+    path,
     key,
     section: sectionKey,
     itemIndex: indexInSection,
@@ -811,6 +828,7 @@ function applyExtraAliases(field) {
   for (const key of candidates) {
     for (const alias of EXTRA_ALIASES[key] || []) {
       const a = String(alias).trim().toLowerCase();
+      // 补充别名同样要过裸词这一关（同一条规矩只该有一处实现）
       if (a && !field.labels.includes(a)) field.labels.push(a);
     }
   }

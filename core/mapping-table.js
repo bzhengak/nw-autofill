@@ -217,16 +217,40 @@ export function describeMappingTable(table) {
  *    这里是唯一可能被人把简历内容手打进导出的口子 —— 用户在理由框里写"这就是我妈的名字"，
  *    那条值就跟着进文件了，而它不出现在 value 字段里。
  */
+/**
+ * 导出前的取值自检：**只查我们自己写出去的那几列**，页面自己说的词不算泄漏。
+ *
+ * 上一版把整份 JSON 当成一根字符串去比对，结果用户那份真实诊断包里映射表整段被拒：
+ * 页面标签写着 "english name"，而资料里 languages.1.language = 'English' ——
+ * 那是页面的词，本来就在页面上，不是因为我们导出才离开的机器
+ * （与 core/ai.js 里 `pageTokens` 同一套判据，同一类误报踩过两次）。
+ *
+ * 两档阈值不变：说明/理由那两列 ≥2 字就不许有取值（它们最容易被顺手拼上"按「粤语」定位"
+ * 这种话），其余非页面列 ≥6 字。判定对象是**行内我们自己产生的字段**。
+ */
 export function findValueLeaks(view, values = []) {
-  const all = JSON.stringify(view ?? null);
-  const notes = (view?.rows || [])
-    .map(r => `${r.note || ''}\n${r.rule?.note || ''}\n${r.slotGuess || ''}`)
-    .join('\n');
+  const rows = view?.rows || [];
+  // 我们自己产生的文字：来历说明、改判理由、缺口点名。取值混进这里就是泄漏（≥2 字就查）。
+  const own = r => [r.note || '', r.rule?.note || '', r.slotGuess || ''].join('\n');
+  // 页面自己写过的每一段：这些本来就在页面上，不因为我们导出而离开机器
+  const PAGE_FIELDS = ['label', 'labelSource', 'description', 'placeholder', 'section', 'nearby', 'options', 'kind'];
+  let hay = JSON.stringify(view ?? null);
+  for (const r of rows) {
+    for (const k of PAGE_FIELDS) {
+      const piece = JSON.stringify(r[k]);
+      if (piece && piece !== 'null' && piece !== '""' && piece !== '[]') hay = hay.split(piece).join('""');
+    }
+  }
   const hits = new Set();
   for (const raw of values) {
     const s = String(raw || '').trim();
-    if (s.length >= 6 && all.includes(s)) hits.add(`${s.slice(0, 3)}…（出现在表格正文）`);
-    else if (s.length >= 2 && notes.includes(s)) hits.add(`${s.slice(0, 3)}…（出现在说明/理由里）`);
+    if (s.length < 2) continue;
+    for (const r of rows) {
+      if (own(r).includes(s)) { hits.add(`${s.slice(0, 3)}…（出现在说明/理由里）`); break; }
+    }
+    // 其余位置仍按"长值"整份扫一遍：万一将来有人加了新列，兜底还在（短值不做全文扫是刻意的：
+    // 页面与词典里到处是两三个字的词，那样会把好端端的导出判成泄漏）
+    if (s.length >= 6 && hay.includes(s)) hits.add(`${s.slice(0, 3)}…（出现在表格正文）`);
   }
   return [...hits].slice(0, 8);
 }

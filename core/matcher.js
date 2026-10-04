@@ -1,7 +1,7 @@
 // 匹配流水线：页面字段描述 × profile → 分配方案（含置信分层与缺口归因）。
 // 纯函数，输入是 dom/scanner.js 产出的字段描述对象，不接触 DOM。
 
-import { buildFields, getValueByPath, equivalentsOf, isLangNeutral, geoEnglishFor } from './profile-schema.js';
+import { buildFields, getValueByPath, equivalentsOf, isLangNeutral, geoEnglishFor, SECTIONS, userSafeText } from './profile-schema.js';
 import { planFromAdapter, dateFormatOverride } from './adapters.js';
 import { assignMaxWeight, scorePair, normalize, core, inferDateFormat, boolLike, signals, negationMismatch, AMBIGUOUS_SECTIONS, dateParts, isQuestionLabel, labelEvidence, shapeMismatch, valueShape, GENERIC_HEAD_WORDS, AMBIGUOUS_WORDS } from './matching.js';
 import { classify } from './ledger.js';
@@ -48,8 +48,76 @@ function slotValueEquivalent(a, b) {
  * 摊平型列表字段（学历：「硕士毕业学校」；家庭成员：「父亲工作单位」）→ profile 里真正属于那个归属的槽位。
  * 定位不到返回 null，交人工；绝不用"最像的那一行"猜，猜错就是把母亲单位填进父亲那行。
  */
-function resolveListSlot(profile, schemaFields, slot) {
-  const hits = [];
+const escRe = s => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** 资料里所有非空取值（note 清洗要拿它当"不许出现的东西"清单） */
+function flatValues(profile) {
+  const out = [];
+  const walk = node => {
+    if (typeof node === 'string') { const s = node.trim(); if (s) out.push(s); return; }
+    if (Array.isArray(node)) { node.forEach(walk); return; }
+    if (node && typeof node === 'object') Object.values(node).forEach(walk);
+  };
+  walk(profile || {});
+  return out;
+}
+
+/**
+ * 来历说明与缺口说明是要离机的文字（「导出没填的字段与选项」与诊断包都带它们）：
+ * 取值换成长度掩码 —— 句子还读得通，但拿不回任何一个值。
+ * 词边判定与长度分档同 `core/mapping-table.js` 的 findValueLeaks，两道口径要能对上；
+ * 短值（'男'、'7.0'）本来就构不成身份，不掩。
+ * 内部键名不在这条路上治（抹句子会把用户看得懂的线索一起抹掉），改在**措辞**上治：
+ * 见 sectionZhList / slotSectionZh，我们自己生成的说明一律用板块中文名 + 第几段。
+ */
+export function maskValues(text, values) {
+  const s = String(text || '');
+  if (!s) return '';
+  if (userSafeText(s) === false) return '';
+  let out = s;
+  for (const v of values) {
+    if (v.length >= 6 && out.includes(v)) out = out.split(v).join('•'.repeat(v.length));
+  }
+  for (const v of values) {
+    if (v.length < 2 || v.length >= 6) continue;
+    const re = new RegExp(`(^|[^\\p{L}\\p{N}@])${escRe(v)}`, 'gu');
+    out = out.replace(re, (m, p1) => p1 + '•'.repeat(v.length));
+  }
+  return out;
+}
+
+/**
+ * 裸词标签的歧义判定（用户 2026-10-02 起报了四次的同一件事："name 就是 name"、
+ * "我需要的是这个 name 在哪个板块的"）。两种"分不清是谁的"：
+ *  · **页面上**同一个裸词出现两次以上（多个板块都在问「职责」）；
+ *  · **词典里**这个裸词是两个以上板块的字面别名（`title` 25 个、`level` 13 个、`date` 12 个）。
+ * 只有含糊词名单里的词走第二条：'name' 有唯一主人（姓名）就照常归它，
+ * 「职责」这类有区分度的双字词仍按老规矩（写最像的板块 + 黄字念出候选，判分集钉过）。
+ * 返回 null 表示这一栏不裸、或裸得不歧义。
+ */
+function bareWordAmbiguity(pageField, pageFields = [], schemaFields = []) {
+  const w = normalize(pageField?.label || '');
+  if (!w) return null;
+  const isBare = /^[a-z][a-z.'-]{1,15}$/.test(w) || /^[\u4e00-\u9fff]{1,2}$/.test(w);
+  if (!isBare) return null;
+  const repeated = pageFields.filter(x => normalize(x.label || '') === w).length >= 2;
+  const known = AMBIGUOUS_WORDS.has(w) || GENERIC_HEAD_WORDS.has(w);
+  const sections = known ? [...new Set(schemaFields.filter(f => (f.labels || []).includes(w)).map(f => f.section))] : [];
+  if (!repeated && !(known && sections.length >= 2)) return null;
+  return { word: w, sections, repeated };
+}
+
+/** 板块中文名清单：note 是会被导出的文字，内部键名不给用户看 */
+function sectionZhList(keys = []) {
+  return (keys || []).slice(0, 6).map(k => (SECTIONS.find(s => s.k === k) || {}).zh || k).join(' / ');
+}
+
+/** 板块中文名：写进 note 的是**词典名**，不是资料取值（note 会随诊断导出离开本机） */
+function slotSectionZh(key = '') {
+  return (SECTIONS.find(s => s.k === String(key)) || {}).zh || String(key || '资料');
+}
+
+function resolveListSlot(profile, schemaFields, slot) {  const hits = [];
   for (let i = 0; i < 12; i++) {
     const got = String(getValueByPath(profile, `${slot.section}.${i}.${slot.keyField}`) ?? '').trim();
     if (got && slotValueEquivalent(got, slot.want)) hits.push(i);
@@ -576,10 +644,15 @@ export function planFill(pageFields, profile, opts = {}) {
           tier: hit.ambiguous || hit.field.sensitive ? 'review' : 'auto', pinned: true,
           // 来历要说清是站点规则给的（摊平型槽位规则），不能到了表里变成"本地词典匹配"
           pinnedBy: 'adapter',
-          note: hit.ambiguous ? `资料里有 ${hit.slots.length} 行「${slot.want}」，取第一行，请复核` : `按「${slot.want}」定位槽位`,
+          // **note 里不引用资料取值**：这一句会随「导出没填的字段与选项」与诊断包离开本机
+          // （真实一次导出里就是 `按「粤语」定位槽位` 让映射表整段被自检拒收）。
+          // 行号 + 板块中文名足够核对，判定列本来就写着「语言（第 2 条）」这种显示名。
+          note: hit.ambiguous
+            ? `资料里有 ${hit.slots.length} 行都对得上页面这句，取第 ${hit.slots[0] + 1} 行，请复核`
+            : `按页面那句「${String(pf.label || '').slice(0, 30)}」对上资料里第 ${hit.slots[0] + 1} 段那一行定位`,
         });
       } else {
-        gaps.push({ index, label: pf.label || '(无标签)', reason: slot.gapReason, kind: pf.kind, note: `资料里没有「${slot.want}」这一行（或该栏为空），需人工填写` });
+        gaps.push({ index, label: pf.label || '(无标签)', reason: slot.gapReason, kind: pf.kind, note: `资料里没有任何一段「${slotSectionZh(slot.section)}」对得上页面这句「${String(pf.label || '').slice(0, 30)}」（或那几栏是空的），需人工填写` });
       }
       return;
     }
@@ -850,6 +923,19 @@ export function planFill(pageFields, profile, opts = {}) {
         continue;
       }
       if (miss) {
+        /**
+         * 这一槽只填了中文写法： normally 报"缺英文值"。但如果这一栏的标签是个**多主人的裸词**
+         * （title / level / date…），说"它对应到「职位」"就是替用户猜板块 —— 先把歧义说出来。
+         */
+        const amb = bareWordAmbiguity(pf, pageFields, schemaFields);
+        if (amb && amb.sections.length >= 2) {
+          gaps.push({
+            index: item.index, label: pf.label || '(未命名字段)',
+            reason: 'block_ambiguous', kind: pf.kind, slotPath: miss.sf.path,
+            note: `这一栏只写了「${amb.word}」，而资料里有 ${amb.sections.length} 个板块都有同名位（${sectionZhList(amb.sections)}）；先在映射表里点名它是哪一栏，再补英文写法`,
+          });
+          continue;
+        }
         // 按标签本来能对上、只是这一槽没英文写法：把它说成"缺英文值"而不是"我们没有这个词"，
         // 否则用户会去补别名，而真正该补的是 EN 表单里的这一栏
         gaps.push({
@@ -998,24 +1084,19 @@ export function planFill(pageFields, profile, opts = {}) {
     // 所以：**光秃秃一个词的标签 + 跨板块并列 + 页面上没有板块证据** → 不猜，退成交给人工，
     // 并把候选板块念出来。判据只收"一个拉丁单词"或"一两个汉字"：Moka 的「公司名称」是 4 个汉字、
     // "公司"本身有区分度，那种按老规矩写+黄字（有测试钉着"两栏都该进计划"）。
-    const bareLabel = normalize(pf.label || '');
-    const bareGeneric = (/^[a-z][a-z.'-]{1,15}$/.test(bareLabel) && !bareLabel.includes(' '))
-      || /^[\u4e00-\u9fff]{1,2}$/.test(bareLabel);
-    // 只在"这个光秃秃的词在页面上出现不止一次"时才拒。只问一次就没有"哪个框属于哪个板块"
-    // 的问题（Klook 一整个表单里「职责」只出现一次，按最像的板块写是对的，判分钉过这条）；
-    // 出现两次以上才说明同一页有多个板块都在问同名的一栏。
-    const sameBareLabel = pageFields.filter(x => normalize(x.label || '') === bareLabel).length;
+    // 裸词歧义与上面那条"缺英文值"分支共用同一个判据函数（两处口径不能各写一份）
+    const ambBare = bareWordAmbiguity(pf, pageFields, schemaFields);
     const tiedSections = [...new Set(row.cells
       .filter(c => c.score >= chosen.score - 0.12 && c.cand?.sf?.itemIndex != null)
       .map(c => c.cand.sf.section))];
-    if (bareGeneric && sameBareLabel >= 2 && sf.itemIndex != null && tiedSections.length >= 2 && !domEvidence && !sectionEvidence) {
+    if (ambBare && sf.itemIndex != null && tiedSections.length >= 2 && !domEvidence && !sectionEvidence) {
       gaps.push({
         index: row.index,
         label: pf.label || '(未命名字段)',
         reason: 'block_ambiguous',
         kind: pf.kind,
         slotPath: sf.path,
-        note: `这一栏只写了「${sf.key}」，而资料里有 ${tiedSections.length} 个板块都有同名位（${tiedSections.join(' / ')}）；页面上找不到能判断归属的板块标题`,
+        note: `这一栏只写了「${ambBare.word}」，而资料里有 ${tiedSections.length} 个板块都有同名位（${sectionZhList(tiedSections)}）；页面上找不到能判断归属的板块标题`,
       });
       return;
     }
@@ -1029,7 +1110,8 @@ export function planFill(pageFields, profile, opts = {}) {
       entry.tier = 'review';
       // 追加而不是覆盖：一栏可以同时有两个问题（既是"第几段说不清"，又是"写的是中文值"），
       // 后面那条被前面那条顶掉过，用户就少知道一件事
-      const why = `无法确定这是第 ${(sf.itemIndex ?? 0) + 1} 段「${sf.section}」经历，请核对`;
+      // 用板块中文名：这句会被导出，内部键名（languages / work）念给用户也看不懂
+      const why = `无法确定这是第 ${(sf.itemIndex ?? 0) + 1} 段「${slotSectionZh(sf.section)}」，请核对`;
       entry.note = entry.note ? `${entry.note}；${why}` : why;
     }
     // 配对错位检测：页面这一栏是"某个标签的第 k 次出现"，却被派到资料里序号不等于 k 的条目上，
@@ -1165,6 +1247,16 @@ export function planFill(pageFields, profile, opts = {}) {
     }
   }
   assignments.splice(0, assignments.length, ...expanded);
+
+  /**
+   * 来历说明与缺口说明是要离机的文字：「导出没填的字段与选项」与诊断包都带着它们走。
+   * 这一道清洗放在**收口处**而不是各个 push 点 —— 挂在出口就有后门（这条规矩在写入层
+   * 已经验证过一次：full 模式与 AI 路都曾绕过只挂在某条出口上的闸）。
+   * 2026-10-04 的真实导出里，就是 `按「粤语」定位槽位` 这一句让映射表整段被导出自检拒收。
+   */
+  const noteValues = flatValues(profile);
+  for (const a of assignments) if (a.note) a.note = maskValues(a.note, noteValues);
+  for (const g of gaps) if (g.note) g.note = maskValues(g.note, noteValues);
 
   const total = pageFields.length;
   const stats = {

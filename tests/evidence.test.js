@@ -96,7 +96,10 @@ test('形状不相容直接不写，并说清是配错了槽位（不是"我们�
 test('含糊词单独命中不定性：Number / Code / 名称 都不能算强证据', () => {
   const num = labelEvidence({ label: 'number', labelRaw: 'Number' }, field('contact.phone'));
   assert.equal(num.strong, false, `裸词 number 蹭到"联系电话"不该算强证据：${JSON.stringify([...num.kinds])}`);
-  assert.equal(num.weakOnly, true);
+  // 2026-10-04 收紧之后更强：裸词连"弱证据"都不再产生（'contact number' 里的 number 不算它说了是谁的）。
+  // 原来这里断言的是 weakOnly=true —— 那是"有证据但没定性"，而用户四次报的同一件事要求的是"别给证据"。
+  assert.equal(num.kinds.size, 0, `裸词 number 仍留了证据：${JSON.stringify([...num.kinds])}`);
+  assert.equal(num.weakOnly, false, '没有任何证据时不该叫"弱证据"');
   const code = labelEvidence({ label: 'code', labelRaw: 'Code' }, field('basics.idNumber'));
   assert.equal(code.strong, false, JSON.stringify([...code.kinds]));
   const cname = labelEvidence({ label: '名称', labelRaw: '名称' }, field('certifications.0.name'));

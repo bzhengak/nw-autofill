@@ -333,6 +333,26 @@ export const AMBIGUOUS_WORDS = new Set([
   '语言', '其他', '备注', '说明', '编号', '号码', '名称', '日期', '类型', '级别', '程度',
 ]);
 
+/**
+ * 包含判定：拉丁串必须**整词**命中，中文串才允许直接包含。
+ *
+ * 为什么这一刀是必须的：以前用 `hay.includes(needle)`，于是
+ *  · 'surname in chinese' ⊇ 'name' → 英文页面上的裸词 name 被判给「中文姓」；
+ *  · 'nickname' ⊇ 'name' → 「常用名」与「姓名」互相抢。
+ * 中文没有词边界，'姓名' ⊃ '姓' 这类包含是语言事实，保留；
+ * 拉丁有词边界，跨词的字母串不算这个词（和 core/option-map 里 `containable()` 那条
+ * "两个字母的区号不许命中 Washington" 是同一族事故）。
+ */
+const CJK_ANY = /[㐀-鿿぀-ヿ가-힯]/;
+export function wholeWord(hay, needle) {
+  const h = String(hay || '');
+  const n = String(needle || '');
+  if (!h || !n) return false;
+  if (CJK_ANY.test(h) || CJK_ANY.test(n)) return h.includes(n);
+  const esc = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[^a-z0-9])${esc}([^a-z0-9]|$)`, 'i').test(h);
+}
+
 export function labelEvidence(pageField, profileField) {
   const kinds = new Set();
   const normLabel = normalize(pageField.label || '');
@@ -340,6 +360,13 @@ export function labelEvidence(pageField, profileField) {
   const lw = labelCore.split(' ').filter(Boolean);
   const head = lw.length > 1 ? lw[lw.length - 1] : '';
   const heads = new Set(lw.slice(-2));                      // 末词/末两词都算中心词位置
+  /**
+   * 整条标签就一个含糊裸词（name / number / score / title / 名称 / 号码…）。
+   * 这种标签**没有说"是谁的"**，所以它只许命中把该词当成自己名字的槽位（'name' → 姓名），
+   * 不许凭"某个别名里包含这串字母"胜出 —— 用户从 2026-10-02 起到现在报了四次同一件事：
+   * "name 就是 name"、"我需要的是这个 name 在哪个板块的"、"你把 name 识别成 姓 而不是 name"。
+   */
+  const bareGeneric = lw.length === 1 && AMBIGUOUS_WORDS.has(labelCore);
   for (const alias of profileField.labels || []) {
     const a = normalize(alias);
     if (!a) continue;
@@ -348,16 +375,22 @@ export function labelEvidence(pageField, profileField) {
     if (normLabel === a) { kinds.add('exact'); continue; }
     if (labelCore && labelCore === ac) { kinds.add('exact'); continue; }
     if (labelCore.includes(ac)) {
+      // 拉丁串要整词命中：'nickname' 里那串 -name 不算 'name'（否则常用名会把姓名抢走）
       const cover = Math.min(1, ac.length / Math.max(labelCore.length, 1));
       const aw = ac.split(' ').filter(Boolean);
       const isHead = aw.length === 1 ? (heads.has(aw[0]) || head === aw[0]) : labelCore.endsWith(ac);
-      if (cover >= 0.5) kinds.add('full-cover');
+      if (!wholeWord(labelCore, ac)) { /* 跨词边的包含不算证据 */ }
+      else if (cover >= 0.5) kinds.add('full-cover');
       else if (aw.length === 1 && AMBIGUOUS_WORDS.has(aw[0])) kinds.add('head-only');   // 含糊词：单独出现不定性
       else if (isHead && GENERIC_HEAD_WORDS.has(aw[aw.length - 1])) kinds.add('head-only');
       else if (isHead) kinds.add('head-noun');
       else kinds.add('qualifier');
-    } else if (ac.includes(labelCore) && labelCore.length >= 2) {
-      kinds.add('broader');                                  // 别名比标签还宽："是否在职" ⊃ "在职"
+    } else if (labelCore.length >= 2 && wholeWord(ac, labelCore)) {
+      // 反方向同理：'surname in chinese' 里的 sur-name 不是 'name' 这个词，
+      // 而这一支以前的写法是 `ac.includes(labelCore)` —— 真实导出里第 0 栏
+      // （label="name" → 中文姓，evidence=broader，0.68）就是这么来的。
+      // 裸词标签更是不许走这一支：长别名包含裸词 = 它说的是别的东西。
+      if (!bareGeneric) kinds.add('broader');              // 别名比标签还宽："是否在职" ⊃ "在职"
     }
   }
   if (pageField.autocomplete) kinds.add('struct-autocomplete');

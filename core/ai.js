@@ -8,7 +8,7 @@
 //  3. AI 只能指认槽位，不能造值：非敏感栏按正常档位（用户 2026-10-02 改判，不再一律黄字），
 //     敏感/声明/附件/验证码类控件根本不进候选。
 
-import { buildFields, getValueByPath } from './profile-schema.js';
+import { buildFields, getValueByPath, OPTION_SETS } from './profile-schema.js';
 import { CONCEPTS, isKnownConcept, slotConcept } from './canonical.js';
 import { normalize } from './matching.js';
 import { fingerprint } from './ledger.js';
@@ -31,7 +31,15 @@ export const AI_MAX_BYTES = 24000;
  *  注意：这拦的是"路径能否被提名"，不是"值能否外发"（值本来就不外发）。
  *  姓名/生日/电话这类 sensitive 槽位允许被提名，但写入仍要走 fillSensitive 那道闸（见 applyAiCandidates）。 */
 const AI_FORBIDDEN_SECTION = new Set(['records', 'declaration']);
-export const AI_FORBIDDEN_KEY = /(idNumber|passport|visa|credential|signature|consent|agree|salary|expect|criminal|background)/i;
+/**
+ * 不进「可提名槽位」目录的路径。
+ *
+ * 2026-10-04 把 `visa` 拆成 `visa.*number`：用户纠正"港站的 work permit 是在港签证/进入许可类别的下拉，
+ * 不是 Yes/No"，而老写法把 `hkGlobal.visaType`（签证类别）和签证号一起隔在目录外 ——
+ * 拦"号码"是对的，拦"类别"就等于这一栏 AI 连提名的资格都没有。
+ * 真正的外发闸是 `assertNoProfileValues`（取值一个字节都不发）与 core/ai-security.js 的取值白名单。
+ */
+export const AI_FORBIDDEN_KEY = /(idNumber|passport|visa.*number|credential|signature|consent|agree|salary|expect|criminal|background)/i;
 
 /**
  * "还是不是同一栏"的宽松比对：面板递回来的标签是**页面原文**（labelRaw，'Awarding Body'），
@@ -220,18 +228,33 @@ export function isIdentifyingValue(s) {
 /**
  * 运行时自证：待发送文本里只要出现任何一个"资料里已经填过的值"，就拒绝发送。
  *
+ * allowValues（2026-10-04 档 C）：这次**故意**发出去的那批取值。传进来只免掉这些字符串本身，
+ * 其余取值照样抓 —— 所以"闸门改成带孔的闸"是可数的：孔就是调用方给的那个集合，
+ * 而集合由 core/ai-security.js 的 shareableValues() 生成（里面有硬排除清单），不在这里放宽。
+ *
  * exempt 用来屏蔽"我们自己的词表"：槽位目录里的中文名（掌握程度、与推荐人关系…）是必须发出去的，
  * 而它们会和资料里的短值（'熟练'、'导师'）撞字。不屏蔽的话每次请求都会被自己拦下，
  * 这条闸门就变成"永远拒绝"，等于没有。屏蔽只针对**构造出来的目录文本**，其余区域一律不豁免。
  *
  * pageTokens 是"这一词是页面自己说的"：资料值与页面标签/选项**整串相同**时（国籍 'China'
  * 对上拉里的选项 'China'），这个词不因为我们外发而泄露任何东西 —— 它本来就在页面上。
- * 只认整串相等，不做子串匹配：真泄漏通常是把值拼进了更长的句子。
+ * 只认整串相等（含归一化后相等，处理 'Master' 与 'master ' 这种空格大小写差），不做子串匹配：
+ * 真泄漏通常是把值拼进了更长的句子。
+ *
+ * 选项空间相同的词（`OPTION_SETS`）同样不算泄漏：代号词表把 'Master' 发给模型时，
+ * 资料里恰好存着 'Master' 的那个槽位会被误判成泄漏 —— 而这一栏的取值本来就在同一个词表里。
+ * 这条豁免只覆盖**整个字符串等于某个枚举项**的情形。
  */
-export function assertNoProfileValues(text, profile, { exempt = [], pageTokens = [] } = {}) {
+export function assertNoProfileValues(text, profile, { exempt = [], pageTokens = [], allowValues = [] } = {}) {
   let hay = String(text || '');
   for (const e of exempt) { if (e) hay = hay.split(String(e)).join('【槽位目录】'); }
+  const sq = s => String(normalize(s) || '').replace(/\s+/g, '');
   const pageSaid = new Set(pageTokens.map(t => String(t ?? '').trim().toLowerCase()).filter(Boolean));
+  const pageSame = new Set(pageTokens.map(sq).filter(Boolean));
+  // 全站共用的枚举词表：它是"我们的词典"，不是任何人的隐私
+  const vocabulary = new Set(Object.values(OPTION_SETS).flat().map(sq).filter(Boolean));
+  // 故意外发的那批：按整串相等免掉（不做包含，包含会让"我的值是别人值的子串"跟着漏）
+  const sent = new Set(allowValues.map(t => String(t ?? '').trim()).filter(Boolean));
   const leaks = [];
   const walk = (node, pathSoFar) => {
     if (node == null) return;
@@ -239,7 +262,8 @@ export function assertNoProfileValues(text, profile, { exempt = [], pageTokens =
     if (typeof node === 'object') { for (const [k, v] of Object.entries(node)) walk(v, pathSoFar ? `${pathSoFar}.${k}` : k); return; }
     const s = String(node).trim();
     if (!isIdentifyingValue(s) || !hay.includes(s)) return;
-    if (pageSaid.has(s.toLowerCase())) return;
+    if (pageSaid.has(s.toLowerCase()) || pageSame.has(sq(s)) || vocabulary.has(sq(s))) return;
+    if (sent.has(s)) return;
     leaks.push({ path: pathSoFar, sample: s.slice(0, 6) });
   };
   walk(profile, '');

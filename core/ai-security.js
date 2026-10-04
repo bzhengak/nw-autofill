@@ -3,11 +3,13 @@
 // 所以"什么算合法端点、Key 能不能发出去、settings 里能不能存 Key"必须能离线断言，
 // 而不是等有人在浏览器里试。
 
+import { getValueByPath } from './profile-schema.js';
+
 /** 可以持久化的设置白名单。Key 不在里面 —— 它只配活在 chrome.storage.session。
  *  mappingFirst（S6「映射表先行」）必须在列：不在就等于这个开关永远存不下来。 */
 export const SETTING_KEYS = ['mode', 'fillSensitive', 'autoSubmitNever', 'allowCustomSelect', 'aiEnabled',
   'aiBaseUrl', 'aiModel', 'aiMaxGaps', 'aiConsentOrigin', 'aiTimeoutSec', 'aiMaxOutput', 'aiStream', 'editorLang', 'enMissingMode',
-  'mappingFirst', 'allowAddRows'];
+  'mappingFirst', 'allowAddRows', 'allowAiValues'];
 
 const SECRETISH = /(key|token|secret|password|credential|auth)/i;
 
@@ -311,3 +313,61 @@ export function redact(text, secret) {
   if (!s) return String(text ?? '');
   return String(text ?? '').split(s).join('[REDACTED]');
 }
+
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 档 C（2026-10-04 用户放行）：勾了「允许 AI 看取值」之后，哪些槽位的取值**仍然绝不外发**。
+ *
+ * 用户原话给的是一份**排除清单**："除了身份证号和电话号、家人姓名和家人电话、还有姓名、
+ * 单独的姓和名以外的，其他都可以白名单。不用询问过多，点了勾选框就可以。"
+ * 所以这里是"默认放开 + 硬排除"，而不是"默认关闭 + 逐条放开"：
+ * 加新字段不需要动这段代码，但把某个人的姓名写进请求永远需要改这里 —— 而那会被测试钉住。
+ *
+ * 两条不是他清单里、但沿用仓库既有名单的（会在界面上逐条列出来，不静默）：
+ *  · records / declaration 两段（经历正文与声明勾选）；
+ *  · core/ai.js 的 AI_FORBIDDEN_KEY 那批路径（证件号形状、薪酬期望、犯罪记录…）。
+ * 之所以不静默：他说得很清楚"拿不准就留空并说清楚，不要静默降级"。
+ */
+export const VALUE_SHARE_NEVER = [
+  { why: '证件号码类（身份证/护照/HKID/税号）', re: /(idNumber|passport|idForWork|hkid|ssn|socialSecurity|taxId|nationalId|identityNumber)/i },
+  { why: '电话类（含备用电话、紧急联系人电话、家人电话、区号与分机）', re: /(phone|mobile|telephone|fax|dialCode|extension|referenceContact)|tel$/i },
+  { why: '即时通讯账号（微信号这类可反查到人的把手）', re: /(wechat|whatsapp|lineId|telegram)/i },
+  // 一眼就是"某个人的名字"的路径写法。**不含泛用 `.name`**：`projects.0.name` 是项目名称，
+  // 用户明确说项目名称可以发；把它一起拦等于偷偷比他的清单更严（下一条规则按板块补回来）。
+  { why: '姓名类（英文键名点明是人的名字）', re: /(lastName|firstName|surname|givenName|fullName|preferredName|formerName|nameEn|nameZh|emergencyName|referralName|referenceName|contactName|guardianName)/i },
+];
+/** 中文栏名说它是"谁的姓名"：家属姓名 / 紧急联系人姓名 / 推荐人 1 姓名 全都算 */
+export const VALUE_SHARE_NEVER_ZH = /(姓名|^姓$|^名$|常用名|曾用名|姓氏)$/;
+/** 裸 `.name` 落在这些板块里 = 是一个人的名字；落在 projects/competitions/certifications 里 = 是一样东西的名称 */
+export const PERSON_SECTIONS = new Set(['basics', 'contact', 'family', 'intent', 'hkGlobal', 'recommendations']);
+export const VALUE_SHARE_NEVER_SECTIONS = new Set(['records', 'declaration']);
+
+/**
+ * @param {object} field buildFields() 出来的槽位描述（含 path / zh / section / type）
+ * @returns {string} 空串 = 可以发；非空 = 不发的原因（要显示给用户看）
+ */
+export function valueShareBlocked(field = {}) {
+  const path = String(field.path || '');
+  const zh = String(field.zh || '').trim();
+  const section = String(field.section || '');
+  if (!path) return '不是资料里的槽位';
+  if (VALUE_SHARE_NEVER_SECTIONS.has(section)) return '经历正文/声明勾选类（整段不外发）';
+  for (const r of VALUE_SHARE_NEVER) if (r.re.test(path)) return r.why;
+  if (/\.name$/i.test(path) && PERSON_SECTIONS.has(section)) return '姓名类';
+  if (String(field.type || '').toLowerCase() === 'tel') return '电话类控件';
+  if (VALUE_SHARE_NEVER_ZH.test(zh)) return '姓名类';
+  return '';
+}
+
+/** 沿用的既有名单（薪酬/犯罪记录/证件号形状…）：由调用方传进来，避免这里反向依赖 core/ai.js */
+export function shareableValue(profile, path, { schemaFields = [], forbiddenRe = null } = {}) {
+  const f = schemaFields.find(x => x.path === path) || null;
+  if (!f) return { ok: false, path, why: '资料里没有这一栏' };
+  const byList = valueShareBlocked(f);
+  if (byList) return { ok: false, path, zh: f.zh, why: byList };
+  if (forbiddenRe && forbiddenRe.test(path)) return { ok: false, path, zh: f.zh, why: '沿用既有 AI 禁入名单（薪酬/背景声明类）' };
+  const v = String(getValueByPath(profile, path) ?? '').trim();
+  if (!v) return { ok: false, path, zh: f.zh, why: '这一栏还是空的' };
+  return { ok: true, path, zh: f.zh, value: v.slice(0, 60), section: f.section || '' };
+}
+

@@ -76,6 +76,7 @@ async function refresh() {
   $('fillSensitive').checked = Boolean(state?.settings?.fillSensitive);
   $('allowCustomSelect').checked = Boolean(state?.settings?.allowCustomSelect);
   $('allowAddRows').checked = Boolean(state?.settings?.allowAddRows);
+  $('allowAiValues').checked = Boolean(state?.settings?.allowAiValues);
   $('enZhFallback').checked = state?.settings?.enMissingMode === 'zh_yellow';
   // 映射表先行是默认态：设置里没这个键（老配置）也算开
   $('mappingFirst').checked = state?.settings?.mappingFirst !== false;
@@ -254,6 +255,18 @@ $('fillSensitive').onchange = async e => {
   await chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { fillSensitive: e.target.checked } });
   lastState = { ...(lastState || {}), settings: { ...(lastState?.settings || {}), fillSensitive: e.target.checked } };
 };
+// 档 C（2026-10-04 放行）：勾了就把"这一栏我打算写的那条取值"一起发给模型，让它认下拉里哪一项对得上。
+// 用户口径是"勾选即可用，不必逐次确认"，所以这一跳没有预览；换来的是每次回答都如实列出
+// "这次发出去的是哪几栏"（列的是栏名，取值本身不进日志、不进导出）。
+$('allowAiValues').onchange = async e => {
+  await chrome.runtime.sendMessage({ type: 'nw:saveSettings', settings: { allowAiValues: e.target.checked } });
+  lastState = { ...(lastState || {}), settings: { ...(lastState?.settings || {}), allowAiValues: e.target.checked } };
+  // 换了口径就把上一轮的结论作废：那些决定是按"发/不发取值"其中一种模式问出来的
+  lastOptionDecisions = null;
+  panelNotice = e.target.checked ? '已允许 AI 看取值认选项。仍永不外发：证件号、电话、姓名与单独的姓/名（含家属、紧急联系人、推荐人）、经历正文与声明勾选。' : '已收回：AI 只能用页面自己的文字归类选项，看不到你的任何取值。';
+  refreshMapSummary();
+};
+
 // 点开自定义下拉 = 扩展会真的点击页面上的控件，这是一次独立授权，默认关，
 // 与「允许填写敏感字段」分开勾：两者风险性质不同（改内容 vs 动页面）。
 $('allowAddRows').onchange = async e => {
@@ -718,6 +731,7 @@ $('btnMapFill').onclick = async () => {
   if (lastAiCandidates?.length) extra.aiCandidates = lastAiCandidates;
   // 整页概念映射的回答同理：表上看得见 〔AI 概念映射〕 的那几栏，写入时必须还在
   if (lastAiMapSuggestions?.length) extra.aiPageMapSuggestions = lastAiMapSuggestions;
+  if (lastOptionDecisions?.length) extra.aiOptionDecisions = lastOptionDecisions;
   let persisted = false;
   if (confirmed.length && $('mapRemember').checked) {
     const put = await chrome.runtime.sendMessage({ type: 'nw:siteRulesPut', tabId, expectOrigin: scanOrigin, entries: confirmed });
@@ -784,6 +798,9 @@ $('btnMapForget').onclick = async () => {
 let lastAiMapPreview = null;
 let lastAiMapSuggestions = null;
 
+// 认选项（档 A/C）的决定：只在这一页有效，重新扫描或改授权即作废
+let lastOptionDecisions = null;
+
 function aiMapPayloadFromTable() {
   const rows = lastMapping?.rows || [];
   const stateZh = { us: 'ours', edited: 'user', other: 'site', empty: 'empty' };
@@ -802,6 +819,7 @@ function aiMapPayloadFromTable() {
 function forgetAiMap() {
   lastAiMapSuggestions = null;
   lastAiMapPreview = null;
+  lastOptionDecisions = null;
   const btn = $('btnMapAi');
   if (btn) btn.disabled = true;
 }
@@ -857,6 +875,64 @@ $('btnMapAi').onclick = async () => {
   }
 };
 
+
+// ── 认选项（档 A 默认 / 档 C 勾了「允许 AI 看取值」）──────────────────
+// 目标只有那一类栏位：槽位我们判对了，但页面选项与取值字面上对不上（needsChoice）。
+// 一次点击问一轮；落笔仍在「按此映射填写」那一跳（决定随那一次扫描一起带下去）。
+function alignTargetsFromTable() {
+  const rows = lastMapping?.rows || [];
+  const out = [];
+  for (const r of rows) {
+    if (!r?.decision?.path || r.decision.skip) continue;   // 没判给槽位、或你勾了不填：没有"我这一条"可比
+    if (!r.decision.needsChoice) continue;                 // 本地已经认出来了，不该来问 AI
+    if (r.decision.aiOption) continue;                     // 这一轮已经认过一次
+    const options = (r.page?.options || []).filter(Boolean);
+    if (options.length < 2) continue;                      // 没得挑：含还没点开的自定义下拉（选项尚未渲染）
+    out.push({ fp: r.fp, path: r.decision.path, label: r.page.label, section: r.page.section, options });
+  }
+  return out;
+}
+
+const UNRESOLVED_ZH = {
+  none: '页面里没有一项落进这个代号',
+  ambiguous: '有两项都说得通，不猜',
+  no_token: '你资料里那条值折不出代号',
+  option_blank: '那一项是空的',
+};
+
+$('btnMapOptions').onclick = async () => {
+  await currentTabId();
+  const status = $('mapAiStatus');
+  if (!lastMapping?.rows?.length) { status.textContent = '还没扫这一页：先「扫描并出映射表」。'; return; }
+  const gate = aiMapReady();
+  if (!gate.ok) { status.textContent = `AI 还没配好（${gate.error}）—— 去下面「AI 兜底」那一段填端点、模型与 Key。`; return; }
+  const targets = alignTargetsFromTable();
+  if (!targets.length) {
+    status.textContent = '这一页没有需要 AI 认的下拉栏：要么本地已经认出来了，要么那一栏还没点开看到选项（勾「允许点开自定义下拉」再扫一次）。';
+    return;
+  }
+  const allowValues = $('allowAiValues')?.checked === true;
+  status.textContent = `正在问 ${targets.length} 栏的选项${allowValues ? '（本次允许带取值）' : '（只发页面文字与代号词表）'}…`;
+  const res = await chrome.runtime.sendMessage({ type: 'nw:aiAlignOptions', tabId, targets });
+  if (!res?.ok) {
+    status.textContent = `认选项失败了：${res?.error || '未知原因'}${res?.detail ? `（${String(res.detail).slice(0, 120)}）` : ''}`
+      + ((res?.skipped || []).length ? `；先跳过 ${res.skipped.length} 栏：${res.skipped.slice(0, 2).map(s => `「${s.label}」${s.why}`).join('；')}` : '');
+    return;
+  }
+  lastOptionDecisions = (res.decisions || []).length ? res.decisions : null;
+  await run('preview', lastOptionDecisions ? { aiOptionDecisions: lastOptionDecisions } : {});
+  // 落没落成不看 AI 回包，看紧随其后的那次预演扫描：决定是在那里并进计划的
+  const got = lastScan?.aiOption || null;
+  const refused = got?.refused || [];
+  const sent = res.valuesSent || [];
+  status.textContent = `问了 ${res.count} 栏：认下 ${got?.applied ?? 0} 栏该选哪一项`
+    + (sent.length ? `；这次把你的 ${sent.length} 条取值发了出去（${sent.map(v => v.zh).slice(0, 6).join('、')}${sent.length > 6 ? '…' : ''}）`
+      : '；没有任何取值离开本机（AI 只给页面选项归了代号）')
+    + ((res.unresolved || []).length ? `；没落成 ${res.unresolved.length} 栏（${res.unresolved.slice(0, 2).map(u => `「${u.label}」${UNRESOLVED_ZH[u.why] || u.why}`).join('；')}）` : '')
+    + ((res.skipped || []).length ? `；没问 ${res.skipped.length} 栏（${res.skipped.slice(0, 2).map(s => `「${s.label}」${s.why}`).join('；')}）` : '')
+    + (refused.length ? `；本地拒收 ${refused.length} 条（原因：${refused.slice(0, 3).map(x => x.why).join('、')}；表里那一栏没动）` : '')
+    + `　${formatTiming(res.timing) || ''}`;
+};
 
 $('btnMapExport').onclick = () => {
   if (!lastMapping?.rows?.length) { panelNotice = '还没有映射表可导出（先扫一次这一页）。'; $('mapOut').value = ''; refreshMapSummary(); return; }

@@ -11,9 +11,11 @@
 
 import { compileAdapters } from '../core/adapters.js';
 import { BUILD } from '../core/build.js';
-import { buildAiRequest, assertNoProfileValues, parseAiResponse, aiSlotCatalog, AI_MAX_BYTES, buildPageMapRequest, parsePageMapResponse, expandConceptToSlots } from '../core/ai.js';
+import { buildAiRequest, assertNoProfileValues, parseAiResponse, aiSlotCatalog, AI_MAX_BYTES, AI_FORBIDDEN_KEY, buildPageMapRequest, parsePageMapResponse, expandConceptToSlots } from '../core/ai.js';
+import { buildOptionAlignRequest, parseOptionAlignReply, decisionsFromReply } from '../core/option-align.js';
+import { spaceForSlotField } from '../core/value-tokens.js';
 import { extractFragments, buildExtractRequest, parseExtractResponse } from '../core/ai-extract.js';
-import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, findLeaksInExport, SECRETS_BUCKET, consentAfterSettingsPatch, siteConsentCheck, withSiteConsent, siteConsentAfterEndpoint, SITE_CONSENT_BUCKET, effectiveTimeoutSec, effectiveMaxTokens, effectiveStream, AI_TIMEOUT_DEFAULT_SEC, AI_MAX_TOKENS_DEFAULT, chatEndpointCandidates } from '../core/ai-security.js';
+import { normalizeBaseUrl, sanitizeSettings, sanityCheckKey, maySendKey, findLeaksInExport, SECRETS_BUCKET, consentAfterSettingsPatch, siteConsentCheck, withSiteConsent, siteConsentAfterEndpoint, SITE_CONSENT_BUCKET, effectiveTimeoutSec, effectiveMaxTokens, effectiveStream, AI_TIMEOUT_DEFAULT_SEC, AI_MAX_TOKENS_DEFAULT, chatEndpointCandidates, shareableValue } from '../core/ai-security.js';
 import { callChatEndpoint, pingAiEndpoint } from '../core/ai-endpoint.js';
 import { ensureEnSkeleton } from '../core/profile-schema.js';
 import { LEDGER_BUCKET, recordWrites, forgetWrites } from '../core/ledger.js';
@@ -332,6 +334,105 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         endpoint: mCall.endpoint || mTarget.url, timing: mCall.timing,
         streamFallback: Boolean(mCall.streamFallback), firstChunkMs: mCall.firstChunkMs ?? null,
         rawChars: String(mCall.content || '').length,
+      });
+    } else if (msg.type === 'nw:aiAlignOptions') {
+      /**
+       * 认选项（2026-10-04 放行）：面板发来"哪些栏有选项、我们判给了哪个槽位"，
+       * 这里补齐**代号空间**与**取值能不能发**，构造请求、跑闸、发一次、把决定带回侧边栏。
+       * 判据一概不在这个文件里：能不能发看 core/ai-security.js 的 shareableValue（硬排除清单），
+       * 怎么折代号看 core/value-tokens.js，接受哪些回答看 core/option-align.js。
+       * 出网四闸一道不少：取值自检、体积上限、端点确认、站点确认。
+       */
+      const rawTargets = Array.isArray(msg.targets) ? msg.targets : [];
+      if (!rawTargets.length) { sendResponse({ ok: false, error: 'no_targets' }); return; }
+      const aSettings = (await chrome.storage.local.get('settings')).settings || {};
+      const allowValues = aSettings.allowAiValues === true;
+      // 取值从后台自己那份资料里读：面板不往这条消息里塞 profile（少一份 IPC 上的明文），
+      // 而"折代号"这一步本地就要用到值 —— 这里拿不到值，档 A 会静默变成"每栏都折不出代号"。
+      const aProfile = msg.profile || (await chrome.storage.local.get('profile')).profile || {};
+      const aFields = buildFields();
+      const targets = [];
+      const skipped = [];
+      for (const t of rawTargets.slice(0, 40)) {
+        const sf = aFields.find(x => x.path === t.path) || null;
+        const fpShort = String(t.fp || '').slice(0, 12);
+        const label = String(t.label || '').slice(0, 40);
+        if (!sf) { skipped.push({ fp: fpShort, label, why: '这一栏判给的槽位不在资料里' }); continue; }
+        const space = spaceForSlotField(sf);
+        const sv = shareableValue(aProfile, t.path, { schemaFields: aFields, forbiddenRe: AI_FORBIDDEN_KEY });
+        const ourValue = sv.ok ? sv.value : '';
+        if (!space && !allowValues) {
+          skipped.push({ fp: fpShort, label, why: `这一栏的枚举没有代号表（${sf.zh}），而未勾选「允许 AI 看取值」` });
+          continue;
+        }
+        if (!space && allowValues && !ourValue) {
+          skipped.push({ fp: fpShort, label, why: sv.why || '没有可发的取值' });
+          continue;
+        }
+        targets.push({
+          fp: String(t.fp || ''), path: t.path, label, section: String(t.section || ''),
+          slotZh: sf.zh, options: (t.options || []).map(String), space,
+          // ourValue 是**本地**折代号要用的（档 A），送不送出去由 buildOptionAlignRequest 上的
+          // allowValues 那道闸决定。以前在这里就抹成空串，于是档 A 永远"折不出代号"——
+          // 装配层测试一跑就红：每个函数都对，整条链是死的。
+          ourValue,
+          blockedWhy: allowValues || sv.ok ? '' : sv.why,
+        });
+      }
+      if (!targets.length) { sendResponse({ ok: false, error: 'nothing_alignable', skipped }); return; }
+      const alignReq = buildOptionAlignRequest({ targets, allowValues });
+      const alignLeaks = assertNoProfileValues(alignReq.text, aProfile, {
+        exempt: [alignReq.vocabText], pageTokens: alignReq.pageTokens,
+        allowValues: alignReq.targets.filter(t => t.ourValue).map(t => t.ourValue),
+      });
+      if (alignLeaks.length) { sendResponse({ ok: false, error: 'value_leak', leaks: alignLeaks.slice(0, 8), skipped }); return; }
+      const alignBytes = new TextEncoder().encode(alignReq.text).length;
+      if (alignBytes > AI_MAX_BYTES) { sendResponse({ ok: false, error: 'payload_too_large', bytes: alignBytes, trim: alignReq.trim, skipped }); return; }
+      if (msg.preview) {
+        sendResponse({
+          ok: true, preview: true, text: alignReq.text, bytes: alignBytes,
+          mode: alignReq.mode, count: alignReq.count, trim: alignReq.trim, skipped,
+          // 这一份就是"这次要离开本机的取值清单"，界面原样列出来
+          valuesToSend: alignReq.sharedPaths.map(path => ({ path, zh: (alignReq.targets.find(x => x.path === path) || {}).slotZh || path })),
+          blocked: targets.filter(t => t.blockedWhy).map(t => ({ path: t.path, zh: t.slotZh, why: t.blockedWhy })),
+        });
+        return;
+      }
+      const aTarget = normalizeBaseUrl(aSettings.aiBaseUrl);
+      const aSess = await readAiSession();
+      if (!aTarget.ok) { sendResponse({ ok: false, error: `endpoint_${aTarget.error}`, skipped }); return; }
+      if (!aSettings.aiModel || !aSess.key) { sendResponse({ ok: false, error: 'ai_not_configured', skipped }); return; }
+      const aGate = maySendKey({ keyOrigin: aSess.keyOrigin, targetOrigin: aTarget.origin, consentOrigin: aSettings.aiConsentOrigin });
+      if (!aGate.ok) { sendResponse({ ok: false, error: aGate.error, skipped }); return; }
+      const aOrigin = await originOfTab(tabId);
+      const aSite = siteConsentCheck({ consents: await readSiteConsents(), pageOrigin: aOrigin, targetOrigin: aTarget.origin });
+      if (!aSite.ok) { sendResponse({ ok: false, error: aSite.error, pageOrigin: aOrigin, skipped }); return; }
+      const aCall = await callChatEndpoint({
+        baseUrl: aSettings.aiBaseUrl, model: aSettings.aiModel, key: aSess.key, text: alignReq.text,
+        timeoutSec: effectiveTimeoutSec(aSettings), maxTokens: effectiveMaxTokens(aSettings), stream: effectiveStream(aSettings),
+      });
+      if (!aCall.ok) {
+        sendResponse({
+          ok: false, error: aCall.error, detail: aCall.detail, finishReason: aCall.finishReason,
+          attempted: aCall.attempted, endpoint: aCall.endpoint, timing: aCall.timing, bytes: alignBytes, skipped,
+        });
+        return;
+      }
+      const aParsed = parseOptionAlignReply(aCall.content, { targets: alignReq.targets });
+      const aDecided = decisionsFromReply({ req: alignReq, picks: aParsed.picks, labels: aParsed.labels });
+      sendResponse({
+        ok: true,
+        decisions: aDecided.decisions,
+        unresolved: aDecided.unresolved,
+        declined: aParsed.declined, dropped: aParsed.dropped, skipped,
+        mode: alignReq.mode, bytes: alignBytes, count: alignReq.count, trim: alignReq.trim,
+        // 报的是"真的进了请求体"的那些：targets 本地一直带着 ourValue（档 A 折代号要用），
+        // 拿它当"已外发"来报会让没勾档 C 的一次问看起来勾了（装配层测试抓到的）。
+        valuesSent: alignReq.sharedPaths.map(path => ({ path, zh: (alignReq.targets.find(x => x.path === path) || {}).slotZh || path })),
+        blocked: targets.filter(t => t.blockedWhy).map(t => ({ path: t.path, zh: t.slotZh, why: t.blockedWhy })),
+        endpoint: aCall.endpoint || aTarget.url, timing: aCall.timing,
+        streamFallback: Boolean(aCall.streamFallback), firstChunkMs: aCall.firstChunkMs ?? null,
+        rawChars: String(aCall.content || '').length,
       });
     } else if (msg.type === 'nw:aiPreview' || msg.type === 'nw:aiAsk') {
       // 预览与真正发送共用同一次构造：看到的就必须是发出去的，不能两套逻辑

@@ -6,7 +6,7 @@ let mods = null;
 async function loadModules() {
   if (mods) return mods;
   const u = p => chrome.runtime.getURL(p);
-  const [scanner, filler, safety, matcher, schema, matching, probe, ai, optionMap, build, ledger, canonical, mappingTable, planCheck, rowAdder] = await Promise.all([
+  const [scanner, filler, safety, matcher, schema, matching, probe, ai, optionMap, build, ledger, canonical, mappingTable, planCheck, rowAdder, optionAlign] = await Promise.all([
     import(u('dom/scanner.js')),
     import(u('dom/filler.js')),
     import(u('dom/safety.js')),
@@ -22,8 +22,9 @@ async function loadModules() {
     import(u('core/mapping-table.js')),
     import(u('core/plan-check.js')),
     import(u('dom/row-adder.js')),
+    import(u('core/option-align.js')),
   ]);
-  mods = { scanner, filler, safety, matcher, schema, matching, probe, ai, optionMap, build, ledger, canonical, mappingTable, planCheck, rowAdder };
+  mods = { scanner, filler, safety, matcher, schema, matching, probe, ai, optionMap, build, ledger, canonical, mappingTable, planCheck, rowAdder, optionAlign };
   return mods;
 }
 
@@ -61,7 +62,7 @@ if (!window.__nwSubmitListener) {
   });
 }
 
-async function handleScan({ profile, mode = 'full', dryRun = false, adapter = null, fillSensitive = false, allowCustomSelect = false, aiCandidates = null, enMissingMode = 'strict', allowNonApplication = false, siteRules = null, temporaryFps = [], siteRulesStored = null, aiPageMapSuggestions = null,
+async function handleScan({ profile, mode = 'full', dryRun = false, adapter = null, fillSensitive = false, allowCustomSelect = false, aiCandidates = null, enMissingMode = 'strict', allowNonApplication = false, siteRules = null, temporaryFps = [], siteRulesStored = null, aiPageMapSuggestions = null, aiOptionDecisions = null,
   allowAddRows = false }) {
   const { scanner, filler, matcher, safety, schema, ledger, canonical, mappingTable, planCheck, rowAdder } = await loadModules();
   safety.armSubmitGuard(window, auditLog);
@@ -175,6 +176,16 @@ async function handleScan({ profile, mode = 'full', dryRun = false, adapter = nu
     aiApplied += aiPageMap.applied;   // 缺口那条与整页那条各记各的：只等号会让面板上「AI 补栏」显示 0
     auditLog.push({ at: new Date().toISOString(), event: 'ai_page_map_applied', filledGaps: aiPageMap.filledGaps, overridden: aiPageMap.overridden, refused: aiPageMap.refused.length });
   }
+  /**
+   * 认选项（档 A 默认 / 档 C 勾选后）：AI 只指认"这栏的哪一项"，值永远取自页面自己的选项。
+   * 放在概念映射之后、写入之前：越靠后越接近"人来定"，而它对本地已经对上眼的栏位一律不动
+   * （判据在 core/option-align.js 的四条 refusal 里）。
+   */
+  let aiOptions = null;
+  if (aiOptionDecisions?.length) {
+    aiOptions = mods.optionAlign.applyOptionDecisions(plan, aiOptionDecisions, { fields });
+    auditLog.push({ at: new Date().toISOString(), event: 'ai_option_applied', applied: aiOptions.applied, refused: aiOptions.refused.length });
+  }
   const applied = await filler.applyPlan(fields, plan.assignments, { dryRun, allowCustomSelect, adapter, pageOrigin: location.origin, ledger: fillLedger });
 
   /**
@@ -264,6 +275,7 @@ async function handleScan({ profile, mode = 'full', dryRun = false, adapter = nu
     rowExpansion,
     // 整页概念映射落地后的账：填了几个缺口、覆盖几个黄字、拒了几条（界面逐条念，不静默）
     aiMap: aiPageMap ? { filledGaps: aiPageMap.filledGaps, overridden: aiPageMap.overridden, refused: aiPageMap.refused } : null,
+    aiOption: aiOptions ? { applied: aiOptions.applied, refused: aiOptions.refused } : null,
     // 面板拿它当"这张表是在哪家站点上算出来的"凭证：改判落盘时必须带上，
     // 后台用它和标签页**当前** origin 对一遍（独立审查 C1：切了页仍把上一页的改判存进新站点的桶）
     pageOrigin: location.origin,
@@ -293,6 +305,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           // 整页概念映射的回答（面板问过 nw:aiMapPage 之后带回来）：只在预演里落进计划，
           // 真正写页面仍然要用户点「按此映射填写」
           aiPageMapSuggestions: Array.isArray(msg.aiPageMapSuggestions) ? msg.aiPageMapSuggestions : null,
+          // 认选项的回答（nw:aiAlignOptions 问出来的）：按指纹落回这一栏
+          aiOptionDecisions: Array.isArray(msg.aiOptionDecisions) ? msg.aiOptionDecisions : null,
         }) });
       } else if (msg?.type === 'nw:undo') {
         const last = window.__nwLast;

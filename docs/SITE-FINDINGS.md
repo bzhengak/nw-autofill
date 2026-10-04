@@ -975,3 +975,20 @@ Important 里那条**「动了手不报告」**最扎眼：`rowExpansion` 一路
 审查还点出我写的几条断言"摘掉实现也不红"（空标签守卫、导航 `<a>`、`safety` 闸、`renderRowExpansion` 等）。
 逐条做了变异验证：现在这 11 条各自摘掉实现都会红，包括把 `defaultClick` 的 safety 参数拿掉、
 把"只有一栏不定容器"退回旧写法这类以前测不到的（有一条测试原来是自己重实现了被测函数 —— 已改成调真函数）。
+
+## 2026-10-04 认选项（档 A 代号 + 档 C 取值）与签证类别建模
+
+用户纠正了一处领域假设：港站的 Work Permit 不是 Yes/No，而是**在港签证/进入许可类别**的下拉。
+代码里三处按 Yes/No 建模（optionRules 只有 yes/no 两侧、needSponsorship 是 bool、visaType 是自由文本，
+而且 `AI_FORBIDDEN_KEY` 里的 `visa` 把 visaType 连提名资格都拿掉了）。现已改成 `O:visaCategory` 枚举
++ `visa.*number` 只拦号码。词表来源：https://www.immd.gov.hk/eng/forms/hk-visas.html
+
+新链路：`core/value-tokens.js`（封闭代号 + 值→代号）与 `core/option-align.js`（label / pick 两种任务、
+回答只收下标与清单内代号、落进 plan 时写的是页面自己的选项码值）。判分语料里"带选项的栏位"共 28 个，
+本地 `resolveOption` 已经认对 24 个，剩 2 个正是这条链路要解决的（是否全日制 vs 是/否；官网 vs company website）
+—— 所以这不是"把已经能用的东西再外包给模型"，而是补那两类**页面换了一种问法**的栏位。
+
+两处装配层才照得见的死链（纯函数测全绿）：后台在交给构造函数之前把 `ourValue` 抹空，
+于是档 A 本地折代号永远拿不到值；以及大小写 —— 扫描器把 option 文案统一转小写，
+回找真选项时按原文整串比，判成 `option_gone`（与 2026-10-02 的 Awarding Body 同族）。
+细节与变异检查结果记在 docs/AI-VALUE-ALIGNMENT.md 第 5b 节。

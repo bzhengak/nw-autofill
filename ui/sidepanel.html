@@ -91,9 +91,10 @@
   <label class="chk"><input type="checkbox" id="allowCustomSelect">允许点开自定义下拉并选中（会真的点击页面控件）</label>
   <label class="chk"><input type="checkbox" id="enZhFallback">英文表单遇到只有中文写法的栏位：写中文并标黄（默认不写，列入"需要你处理"）</label>
   <label class="chk"><input type="checkbox" id="allowAddRows">允许补经历行：资料里段数比页面给的行多时，替我点页面上的「+ 添加一段」（会真的点击控件；每轮最多 3 行，点了没长出来立刻停）</label>
+  <label class="chk"><input type="checkbox" id="allowAiValues">允许 AI 看取值来认下拉选项：只在这次要填的那些下拉里，把"我打算写进这一栏的那条值"发出去比对（勾选即可用，不必逐次确认）。<b>永远不发</b>：证件号、电话、姓名与单独的姓/名（含家属、紧急联系人、推荐人）、经历正文与声明勾选</label>
   <div class="note" id="authNote">
-    这三条各管一件事：改敏感内容、动页面控件、降级填中文。默认都不动 —— 关掉时对应栏位进「需要你处理」，
-    不是"悄悄少填"。它们以前藏在「编辑 / 导入 JSON」里，很多人根本找不到。
+    每一条各管一件事：改敏感内容、动页面控件、降级填中文、让 AI 看到取值。默认都不动 ——
+    关掉时对应栏位进「需要你处理」，不是"悄悄少填"。它们以前藏在「编辑 / 导入 JSON」里，很多人根本找不到。
   </div>
 
   <h2>本次结果</h2>
@@ -120,6 +121,7 @@
   <div class="row">
     <button id="btnMapAiPreview">预览要发给 AI 的栏位档案</button>
     <button id="btnMapAi" disabled>问一次整页（AI 只认栏位）</button>
+    <button id="btnMapOptions">认选项（下拉里该选哪一项）</button>
   </div>
   <div class="note" id="mapAiStatus">让 AI 把这一页**每一栏**都认一遍（不是只问缺口）：它只回答"这一栏是哪种东西"，看不到也没有你的任何取值。结果先进这张表，仍然要你点「按此映射填写」才写。每次问都要先预览一次。</div>
   <div class="note" id="mapNote">

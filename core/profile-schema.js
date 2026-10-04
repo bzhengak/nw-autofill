@@ -246,7 +246,7 @@ export const SECTIONS = [
     k: 'hkGlobal', zh: '港企/海外合规', en: 'Work Authorization (HK & Overseas)', fields: [
       ['workAuth', '工作许可身份', 'work authorization|right to work|working status|visa status|工作许可|合法工作身份', 'enum', 'O:workAuth'],
       ['needSponsorship', '是否需要签证担保', 'do you require sponsorship|visa sponsorship required|need work visa|是否需要担保|签证赞助', 'bool', ''],
-      ['visaType', '当前签证类型', 'visa type|current visa|identification type|签证类型|身份证类型', 'text', ''],
+      ['visaType', '当前签证类别', 'visa type|visa category|current visa|type of visa|identification type|签证类型|签证类别|进入许可', 'enum', 'O:visaCategory'],
       ['idForWork', '工作证件号码', 'hkid|social security number|ssn|work permit number|身份证（工作）', 'text', 'S'],
       ['taxResidency', '税务居民身份', 'tax residency|tax resident country|where are you a tax resident|税务居民', 'text', ''],
       ['nationalIdCountry', '证件签发国家', 'country of issue|issuing country|签发国家', 'text', ''],
@@ -332,6 +332,22 @@ export const OPTION_SETS = {
   gradStatus: ['应届毕业生', '毕业一年内', '已毕业', '在读', 'Fresh Graduate', 'Graduating', 'Alumni'],
   channel: ['官网', '牛客', '应届生求职网', '学校就业网', '学长学姐内推', 'LinkedIn', 'Company Website', 'Careers Fair', 'Referral', '其他'],
   workAuth: ['本地居民', '公民', '永久居民', 'IANG（内地应届毕业生留港计划）', '持工作签证', '学生签证（可兼职/OPT/CPT）', '需申请工作签证', 'Citizen', 'Permanent Resident', 'Holder of Employment Visa', 'Require Sponsorship'],
+  /**
+   * 在港签证 / 进入许可类别（用户 2026-10-04 纠正："work permit 不是 yes/no，往往是选择在香港签证种类"）。
+   * 词表按入境处那一套写：https://www.immd.gov.hk/eng/forms/hk-visas.html
+   * 中英都收，因为港企门户两种写法都有（"IANG Visa" 与「非本地毕业生留港安排」）。
+   * 这一栏只是**候选项容器**：填哪一项是你的决定，插件把它选中也仍走"敏感之外还要你核对"的黄字口径。
+   */
+  visaCategory: [
+    '香港永久性居民', '香港居民', '中国公民（持外国签证不适用）',
+    'IANG（非本地毕业生留港／回港就业安排）',
+    '高端人才通行证计划（TTPS）', '一般就业政策（GEP）', '输入内地人才计划（ASMTP）',
+    '优秀人才入境计划（QMAS）', '科技人才入境计划（TechTAS）', '受养人（Dependant）',
+    '学生签证／进入许可（兼职受限）', '其他工作签证', '需雇主担保才能工作', '无香港工作签证',
+    'Permanent Resident', 'Hong Kong Resident', 'IANG Visa', 'Top Talent Pass (TTPS)',
+    'Employment under GEP', 'ASMTP Visa', 'QMAS', 'Dependant Visa', 'Student Label (Part-time Limited)',
+    'Other Employment Visa', 'Require Sponsorship',
+  ],
 };
 
 /**

@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildAiRequest, assertNoProfileValues, parseAiResponse, applyAiCandidates, aiSlotCatalog, aiEligibleGaps, interpretAiReply, compactSlotCatalog, AI_MAX_BYTES } from '../core/ai.js';
+import { buildAiRequest, assertNoProfileValues, parseAiResponse, applyAiCandidates, aiSlotCatalog, aiEligibleGaps, interpretAiReply, compactSlotCatalog, AI_MAX_BYTES, AI_FORBIDDEN_KEY } from '../core/ai.js';
 import { createEmptyProfile, setValueByPath, buildFields, getValueByPath } from '../core/profile-schema.js';
 import { sampleProfile } from './fixtures/sample-profile.js';
 import { planFill } from '../core/matcher.js';
@@ -123,11 +123,17 @@ test('页面自带词与短数字撞字不算泄漏：放行；真正的身份�
     '不带 pageTokens 的旧形状应当仍然严格');
 });
 
-test('证件号/签证/薪酬/声明类路径根本不进白名单，AI 连提名机会都没有', () => {
+test('证件号/薪酬/声明类路径根本不进白名单；签证类别是例外（2026-10-04 用户纠正）', () => {
   const paths = aiSlotCatalog(richProfile()).map(s => s.path);
-  for (const bad of ['basics.idNumber', 'basics.passportNumber', 'hkGlobal.visaType', 'work.0.salary', 'intent.salary', 'records.noCriminal']) {
+  for (const bad of ['basics.idNumber', 'basics.passportNumber', 'work.0.salary', 'intent.salary', 'records.noCriminal']) {
     assert.ok(!paths.includes(bad), `${bad} 不该出现在可提名槽位里`);
   }
+  // `visa` 老写法把"签证类别"和"签证号"一起隔在门外，用户在港页遇到的恰恰是前者：
+  // 「Work permit / 在港签证类别」是一个下拉，选项是入境处那一套类别。
+  assert.ok(paths.includes('hkGlobal.visaType'), '签证类别（不含号码）该能被提名');
+  assert.ok(AI_FORBIDDEN_KEY.test('hkGlobal.visaNumber'), '签证号码形状仍须拦住');
+  assert.ok(AI_FORBIDDEN_KEY.test('basics.visaPermitNumber'), '进入许可号码仍须拦住');
+  assert.ok(!AI_FORBIDDEN_KEY.test('hkGlobal.visaCategory'), '类别这类名字不该被号码规则误伤');
   assert.ok(paths.includes('basics.lastName'), '白名单不能一路收紧到什么都不剩');
   assert.ok(paths.length > 100, `白名单只剩 ${paths.length} 个槽位，AI 基本无从下手`);
   // 白名单里只有路径与中文名，没有取值、没有 profile 结构

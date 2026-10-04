@@ -72,6 +72,9 @@ export function buildMappingTable({ fields = [], plan, results = [], ledger = {}
        */
       skipKind: a.skip ? (a.reason === 'user_excluded' ? 'yours' : 'kept') : '',
       weak: Boolean(a.weakEvidence),
+      aiOption: Boolean(a.aiOption),
+      optionHow: a.optionHow || '',
+      needsChoice: Boolean(a.needsChoice),
       shape: a.shapeMismatch || '',
     });
   }
@@ -149,6 +152,10 @@ export function buildMappingTable({ fields = [], plan, results = [], ledger = {}
         skipReason: d.skipReason || '',
         skipKind: d.skipKind || (d.gap === 'user_excluded' ? 'yours' : ''),
         weak: Boolean(d.weak),
+        // 认选项（档 A/C）：这一栏的**选项**是 AI 挑的，不是本地词典挑的
+        aiOption: Boolean(d.aiOption),
+        optionHow: d.optionHow || '',
+        needsChoice: Boolean(d.needsChoice),
       },
       current: origin ? classify(f || {}, cur, ledger, origin) : (cur ? 'other' : 'empty'),
       currentZh: { us: '我们上一轮写的', edited: '我们写过、被人改过', other: '站点或你自己填的', empty: '空的' }[origin ? classify(f || {}, cur, ledger, origin) : (cur ? 'other' : 'empty')] || '',
@@ -179,6 +186,7 @@ export function buildMappingTable({ fields = [], plan, results = [], ledger = {}
     alreadyFilled: count(r => r.current === 'other' || r.current === 'edited'),
     oursToFix: count(r => r.current === 'us' && r.decision.path),
     ai: count(r => r.decision.by === 'ai'),
+    aiOption: count(r => r.decision.aiOption),
   };
   return { rows, stats };
 }

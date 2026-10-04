@@ -21,7 +21,26 @@ jobs:
           node-version: ${{ matrix.node-version }}
       - run: npm install --no-audit --no-fund
       - name: 单元测试
-        run: npm test
+        shell: bash
+        # 直接把 npm test 丢给 Actions 的话，屏幕上只有"# fail 91"这种数字，
+        # 数字不能定位问题。所以失败时把"哪几条红了 + 第一条的完整报错"折叠打印出来，
+        # 一次展开就能看出是共性问题还是散点问题。
+        run: |
+          set +e
+          npm test > /tmp/nw-test.log 2>&1
+          code=$?
+          set -e
+          tail -n 12 /tmp/nw-test.log
+          if [ "$code" -ne 0 ]; then
+            echo "::group::失败的用例（共 $(grep -c '^not ok ' /tmp/nw-test.log) 条，列前 40 条）"
+            grep '^not ok ' /tmp/nw-test.log | head -40
+            echo '--- 第一条失败的完整报错 ---'
+            grep -A 28 -m 1 '^not ok ' /tmp/nw-test.log
+            echo '--- 按文件汇总 ---'
+            grep -A 20 -m 99 '^not ok ' /tmp/nw-test.log | grep -oE "tests[/\\\\][A-Za-z0-9._-]+\.js" | sort | uniq -c | sort -rn
+            echo '::endgroup::'
+          fi
+          exit $code
       - name: 仿真表单命中率（门槛 85%）
         run: npm run hit
       - name: 语法检查

@@ -252,3 +252,25 @@ test('仓库里不许有临时脚本（tmp-*.mjs / tmp-*.txt）', () => {
   const junk = fs.readdirSync(here).filter(n => /^tmp-.*\.(mjs|txt|js)$/.test(n));
   assert.deepEqual(junk, [], `这些临时脚本没删：${junk.join('、')}`);
 });
+
+/**
+ * Node 21+ 把 globalThis.navigator 定义成"只有 getter"的全局属性，ESM 是严格模式，
+ * `globalThis.navigator = ...` 当场抛 TypeError —— 2026-10-05 首跑 CI 的 Node 22 上
+ * 90 条测试一起红，而本机 Node 20 全绿（那儿 navigator 压根不存在，赋值等于新建属性）。
+ * "只在高版本 Node 上坏"这种东西靠记性是记不住的，扫一遍钉住：
+ * 要给这类全局换值，用 Object.defineProperty(globalThis, name, { value, configurable: true, writable: true })。
+ */
+test('测试里不许给 Node 自带的全局直接赋值（navigator 等在 Node 21+ 只有 getter）', () => {
+  const dir = fileURLToPath(new URL('./', import.meta.url));
+  const files = fs.readdirSync(dir).filter(n => n.endsWith('.test.js'));
+  // 目录扫空了这条断言就恒过，比没写还坏（幻影规则）
+  assert.ok(files.length > 20, `只扫到 ${files.length} 个测试文件，路径不对：${dir}`);
+  const bad = [];
+  const re = /^\s*globalThis\.(navigator|crypto|performance|localStorage|sessionStorage)\s*=/;
+  for (const f of files) {
+    fs.readFileSync(`${dir}${f}`, 'utf8').split(/\r?\n/).forEach((line, i) => {
+      if (re.test(line)) bad.push(`${f}:${i + 1} → ${line.trim()}`);
+    });
+  }
+  assert.deepEqual(bad, [], `这些行在 Node 22 上会让整个测试文件变红：\n${bad.join('\n')}`);
+});

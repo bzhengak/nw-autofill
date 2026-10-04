@@ -79,7 +79,9 @@ function boot({ data, rules = {}, putResult = null, ai = false, aiCandidates = n
   dom.window.fetch = async () => ({ json: async () => high });
   globalThis.window = dom.window;
   globalThis.document = dom.window.document;
-  globalThis.navigator = dom.window.navigator;
+  // globalThis.navigator 在 Node 21+ 是"只有 getter"的全局属性，直接赋值会抛 TypeError
+  // （CI 的 Node 22 上 90 条测试就是这么连带红的），defineProperty 才是跨版本写法。
+  Object.defineProperty(globalThis, 'navigator', { value: dom.window.navigator, configurable: true, writable: true });
   globalThis.CSS = dom.window.CSS;
   globalThis.fetch = dom.window.fetch;
   globalThis.chrome = dom.window.chrome;

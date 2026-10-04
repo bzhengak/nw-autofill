@@ -26,7 +26,9 @@ async function boot(profile) {
   globalThis.document = dom.window.document;
   globalThis.location = dom.window.location;
   globalThis.CSS = dom.window.CSS && dom.window.CSS.escape ? dom.window.CSS : Object.assign(dom.window.CSS || {}, { escape: s => String(s).replace(/([^\w-])/g, '\\$1') });
-  globalThis.navigator = dom.window.navigator;
+  // globalThis.navigator 在 Node 21+ 是"只有 getter"的全局属性，直接赋值会抛 TypeError
+  // （CI 的 Node 22 上 90 条测试就是这么连带红的），defineProperty 才是跨版本写法。
+  Object.defineProperty(globalThis, 'navigator', { value: dom.window.navigator, configurable: true, writable: true });
   globalThis.chrome = {
     runtime: {
       // 把扩展资源路径指回仓库文件：动态 import 才跑得起来（浏览器里这一步由 Chrome 完成）

@@ -11,7 +11,13 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 
 export function extensionIdFor(absolutePath) {
-  const clean = path.normalize(String(absolutePath || '')).replace(/[\\/]+$/, '');
+  // 分隔符先统一成 \，再走 win32 的 normalize：
+  // ① 这个 ID 本来就是给 Windows 上的 Edge/Chrome 用的（见文件头），路径语义要固定；
+  //    用平台相关的 path.normalize，同一串路径在 Linux 的 CI 上会算出另一个 ID
+  //    （2026-10-05 首跑 CI 红的第一条就是它 —— posix 根本不把 \ 当分隔符）。
+  // ② 对真正的 Windows 路径没有任何改变：原来 win32 的 normalize 结果一致。
+  const unified = String(absolutePath || '').replace(/[\\/]+/g, '\\');
+  const clean = path.win32.normalize(unified).replace(/\\+$/, '');
   const hex = createHash('sha256').update(clean, 'utf16le').digest('hex');
   return hex.slice(0, 32).split('').map(c => String.fromCharCode(97 + parseInt(c, 16))).join('');
 }

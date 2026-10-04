@@ -11,6 +11,7 @@ jobs:
   unit:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false   # 两个版本各自跑完，别一个红就把另一个取消掉（首跑时 20.x 显示成"取消"就是这个）
       matrix:
         node-version: [20.x, 22.x]
     steps:

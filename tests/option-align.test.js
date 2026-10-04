@@ -91,6 +91,25 @@ test('硬排除清单：姓名/姓/名/证件号/电话/家人那两栏，开了
     const f = by.get(path);
     assert.ok(valueShareBlocked(f), `${path}（${f.zh}）本该被"敏感"这道兜底拦下`);
   }
+  /**
+   * 用户 2026-10-04 的批复原话："生日和邮箱也不发，其余都可以。"
+   * 这两句就是这个决定的机器版本 —— 前半张清单钉住"兜底确实拦到了那几类"，
+   * 后半张钉住"它不许顺手把简历事实也拦了"（那些正是认选项要比对的栏位，
+   * 拦了就等于档 C 白勾，而且是以隐私的名义静默改窄）。
+   */
+  for (const path of ['basics.ethnicity', 'basics.religion', 'basics.children', 'hkGlobal.disability',
+    'contact.address', 'intent.salary', 'hkGlobal.expectedCtc', 'work.0.salary']) {
+    const f = by.get(path);
+    assert.ok(f, `用例里的栏位 ${path} 不存在：这条断言是空的`);
+    assert.equal(valueShareBlocked(f), '资料里标了敏感的槽位', `${path}（${f.zh}）应当由"敏感"兜底拦下`);
+  }
+  for (const path of ['basics.gender', 'basics.politicalStatus', 'education.0.degree', 'education.0.school',
+    'education.0.major', 'work.0.company', 'work.0.title', 'projects.0.name', 'languages.0.language',
+    'certifications.0.name', 'contact.city', 'intent.position', 'hkGlobal.workAuth', 'hkGlobal.visaType']) {
+    const f = by.get(path);
+    assert.ok(f, `用例里的栏位 ${path} 不存在：这条断言是空的`);
+    assert.equal(valueShareBlocked(f), '', `${path}（${f.zh}）是简历事实，不该被拦：那档 C 就白勾了`);
+  }
   // 独立审查（2026-10-04）点出的漏口：别人的名字与各类编号、长正文
   for (const path of ['education.0.supervisor', 'work.0.reportsTo', 'certifications.0.number',
     'education.0.studentNumber', 'work.0.summary', 'others.selfIntro']) {

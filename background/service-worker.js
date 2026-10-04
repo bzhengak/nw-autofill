@@ -383,7 +383,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const alignReq = buildOptionAlignRequest({ targets, allowValues });
       const alignLeaks = assertNoProfileValues(alignReq.text, aProfile, {
         exempt: [alignReq.vocabText], pageTokens: alignReq.pageTokens,
-        allowValues: alignReq.targets.filter(t => t.ourValue).map(t => t.ourValue),
+        // 豁免集只能是**这次真的进了请求体**的那几条：targets 本地一直带着 ourValue（档 A 折代号要用），
+        // 拿它当豁免集等于把所有可发栏位的取值都预先免掉 —— 自检闸就只剩形式了（独立审查 I4）。
+        allowValues: alignReq.sharedPaths.map(path => (alignReq.targets.find(t => t.path === path) || {}).ourValue || ''),
       });
       if (alignLeaks.length) { sendResponse({ ok: false, error: 'value_leak', leaks: alignLeaks.slice(0, 8), skipped }); return; }
       const alignBytes = new TextEncoder().encode(alignReq.text).length;

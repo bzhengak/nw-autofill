@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 
 import { buildOptionAlignRequest, parseOptionAlignReply, decideByToken, decisionsFromReply, applyOptionDecisions, findOptionByExpect } from '../core/option-align.js';
 import { assertNoProfileValues, AI_FORBIDDEN_KEY } from '../core/ai.js';
-import { shareableValue, valueShareBlocked } from '../core/ai-security.js';
+import { shareableValue, valueShareBlocked, VALUE_SHARE_NEVER_SECTIONS, PERSON_SECTIONS } from '../core/ai-security.js';
 import { buildFields, createEmptyProfile, setValueByPath } from '../core/profile-schema.js';
 import { fingerprint } from '../core/ledger.js';
 
@@ -80,9 +80,29 @@ test('硬排除清单：姓名/姓/名/证件号/电话/家人那两栏，开了
     assert.ok(valueShareBlocked(f), `${path}（${f.zh}）居然允许外发取值`);
   }
   for (const path of ['basics.gender', 'education.0.degree', 'hkGlobal.visaType', 'projects.0.name',
-    'work.0.company', 'certifications.0.name', 'contact.email', 'contact.city']) {
+    'work.0.company', 'certifications.0.name', 'contact.city']) {
     const f = by.get(path);
     assert.equal(valueShareBlocked(f), '', `${path}（${f.zh}）不该被拦：它不在用户给的清单里`);
+  }
+  // 这一条**比用户的清单严**，是刻意选的：资料里自己标了敏感的栏位不外发。
+  // 方向是"少发"，而且每一栏被拦的原因都会逐条报在界面上，不静默；
+  // 他要放开哪一栏，改 VALUE_SHARE_NEVER 或改标记即可（不是改调用方）。
+  for (const path of ['contact.email', 'basics.birthDate']) {
+    const f = by.get(path);
+    assert.ok(valueShareBlocked(f), `${path}（${f.zh}）本该被"敏感"这道兜底拦下`);
+  }
+  // 独立审查（2026-10-04）点出的漏口：别人的名字与各类编号、长正文
+  for (const path of ['education.0.supervisor', 'work.0.reportsTo', 'certifications.0.number',
+    'education.0.studentNumber', 'work.0.summary', 'others.selfIntro']) {
+    // 这里不许 continue：栏位名写错就等于这条断言不存在（上一版就是这么漏过去的）
+    const f = by.get(path);
+    assert.ok(f, `用例里的栏位 ${path} 在资料结构里不存在：这条断言是空的`);
+    assert.ok(valueShareBlocked(f), `${path}（${f.zh}）居然可发：那是别人的名字或一段正文`);
+  }
+  // 板块名必须真的存在（写错的规则恒不命中，比没写还坏）
+  const sections = new Set(SCHEMA.map(f => f.section));
+  for (const s of [...VALUE_SHARE_NEVER_SECTIONS, ...PERSON_SECTIONS]) {
+    assert.ok(sections.has(s), `排除清单里的板块名 ${s} 在资料结构里不存在（幻影规则）`);
   }
   // 拦下的那一栏即使被塞进 targets，shareableValue 也不给值（SW 靠它决定发不发）
   const p = createEmptyProfile();
@@ -99,30 +119,63 @@ test('硬排除清单：姓名/姓/名/证件号/电话/家人那两栏，开了
   assert.equal(shareableValue(p, 'intent.salary', { schemaFields: SCHEMA, forbiddenRe: AI_FORBIDDEN_KEY }).ok, false);
 });
 
-test('回答越界一律丢：清单外的代号、没问过的栏、页面上没有的下标', () => {
+test('回答越界一律丢：清单外的代号、没问过的栏、页面上没有的下标、它自己改口的任务', () => {
   const req = buildOptionAlignRequest({ targets: [targetWorkAuth, targetGender] });
   const good = JSON.stringify({ fields: [
     { index: 0, task: 'label', options: [{ i: 2, token: 'IANG' }, { i: 0, token: 'HK_PERMANENT_RESIDENT' }] },
-    { index: 1, task: 'pick', pick: 1 },
+    { index: 1, task: 'label', options: [{ i: 1, token: 'FEMALE' }] },
   ] });
   const ok = parseOptionAlignReply(good, { targets: req.targets });
+  assert.equal(ok.labels.length, 2);
   assert.equal(ok.labels[0].tokens[2], 'IANG');
-  assert.equal(ok.picks.length, 1, '下标在范围内的 pick 该被接受');
+  assert.equal(ok.picks.length, 0);
+  // 协议要害：我们没让它 pick（这一栏的取值根本没出门），它自己改口也不许算。
+  // 否则"代号相同才落笔"这条规矩由模型决定，档 A 就成了它可以随手写一栏的通道。
+  const talked = parseOptionAlignReply(
+    JSON.stringify({ fields: [{ index: 0, task: 'pick', pick: 2, reason: '我看着像' }] }), { targets: req.targets });
+  assert.equal(talked.picks.length, 0, 'label 任务的栏位接受了模型自己改口的 pick');
+  assert.ok(talked.dropped.some(d => d.why === 'task_mismatch'), `没记下任务不符：${JSON.stringify(talked.dropped)}`);
   const bad = JSON.stringify({ fields: [
     { index: 99, task: 'label', options: [] },
     { index: 0, task: 'label', options: [{ i: 1, token: 'MASTER_OR_SOMETHING' }, { i: 77, token: 'IANG' }] },
-    { index: 1, task: 'pick', pick: 9 },
   ] });
   const r = parseOptionAlignReply(bad, { targets: req.targets });
   assert.equal(r.picks.length, 0, '越界下标被接受了');
   assert.equal(r.labels.length, 0);
   const why = r.dropped.map(d => d.why);
-  for (const want of ['index_unknown', 'token_unknown', 'option_out_of_range', 'pick_out_of_range']) {
+  for (const want of ['index_unknown', 'token_unknown', 'option_out_of_range']) {
     assert.ok(why.includes(want), `没记下 ${want}：${why.join(',')}`);
   }
   assert.ok(parseOptionAlignReply('模型在那儿讲故事，没有 JSON', { targets: req.targets }).dropped[0].why === 'unparsable');
   const decl = parseOptionAlignReply(JSON.stringify({ fields: [{ index: 0, task: 'label', options: [{ i: 0, token: null }] }] }), { targets: req.targets });
   assert.equal(decl.declined.length, 1, '它说"归不进代号"是有效回答，要记成 declined');
+});
+
+test('档 C 的 pick 只在"我们让它挑"的栏位上算数；下标按发出去的条数校验（削档不越权）', () => {
+  const req = buildOptionAlignRequest({ targets: [targetGender], allowValues: true });
+  assert.equal(req.targets[0].askTask, 'pick');
+  const ok = parseOptionAlignReply(JSON.stringify({ fields: [{ index: 0, task: 'pick', pick: 1 }] }), { targets: req.targets });
+  assert.equal(ok.picks.length, 1);
+  assert.equal(ok.picks[0].expect, '女=2', '落成的是我们发出去的那一条原文');
+  // 反过来：pick 任务里它改口发 label，也不算
+  const off = parseOptionAlignReply(
+    JSON.stringify({ fields: [{ index: 0, task: 'label', options: [{ i: 1, token: 'FEMALE' }] }] }), { targets: req.targets });
+  assert.equal(off.labels.length, 0);
+  assert.ok(off.dropped.some(d => d.why === 'task_mismatch'));
+  // 体积削档之后：本地有 30 项、只发出去 2 项，模型指第 5 项必须丢
+  const trimmed = {
+    fp: 'x', path: 'basics.gender', label: '性别', space: 'gender', askTask: 'label',
+    options: Array.from({ length: 30 }, (_, i) => `OPT${i}`),
+    sentOptions: ['OPT0', 'OPT1'],
+  };
+  const r = parseOptionAlignReply(
+    JSON.stringify({ fields: [{ index: 0, task: 'label', options: [{ i: 5, token: 'MALE' }] }] }), { targets: [trimmed] });
+  assert.equal(r.labels.length, 0, '按本地全量校验下标：削档后模型可以指到我们没发出去的项');
+  assert.ok(r.dropped.some(d => d.why === 'option_out_of_range'));
+  // 构造函数把"发出去了哪几条"记在 target 上，且与请求体里的确实是同一份
+  const built = buildOptionAlignRequest({ targets: [{ ...targetWorkAuth, options: Array.from({ length: 60 }, (_, i) => `OPT${i}`) }] });
+  assert.ok(built.targets[0].sentOptions.length <= 30, `没削减时也该有上限：${built.targets[0].sentOptions.length}`);
+  assert.ok(built.text.includes(built.targets[0].sentOptions[0]), '发出去的和记下来的不是同一份');
 });
 
 test('代号相同才落笔：一项都对不上、或两项都说得通，都不落', () => {
@@ -204,4 +257,15 @@ test('按截断过的文字回找选项：撞成两项就不落，唯一命中�
   assert.equal(findOptionByExpect(opts, ''), null, '空文字等于"任意一项"，必须拒');
   // 自定义选项没有 value 时取文案本身
   assert.equal(findOptionByExpect(opts, '全日制自…')?.text, '全日制自考本科');
+  /**
+   * 真实链路上的 expect 是从映射表那一栏来的：那里文案裁到 40 字、码值裁到 24 字，
+   * 省略号落在**中间**（`长文案…=码值`）。只剥尾省略号的写法在这类栏上永远比不中，
+   * 表现是"AI 认出来了、页面却没动静"（独立审查 I5）。
+   */
+  const long = [{ text: 'Immigration Arrangements for Non-local Graduates (Returnee)', value: 'R' },
+    { text: 'Employment Visa tied to sponsor', value: 'S' }];
+  const clipped = 'Immigration Arrangements for Non-local Grad…=R';
+  assert.equal(findOptionByExpect(long, clipped)?.value, 'R', '裁过的文案对中不了真选项');
+  assert.equal(findOptionByExpect(long, 'Immigration Arrangements for Non-local Grad…')?.value, 'R');
+  assert.equal(findOptionByExpect(long, 'E…=S')?.value, 'S');
 });

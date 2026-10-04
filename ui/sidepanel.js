@@ -296,7 +296,7 @@ function render(data, meta = {}) {
   const noEn = (data?.gaps || []).filter(g => g.reason === 'missing_english_value');
   const banners = [];
   if (s.profileFilled === 0) {
-    banners.push('<div class="banner">简历资料是空的（0 项有值）：所以现在一个字段都填不了。先去「导入简历 Markdown」或「分类编辑」把资料灌进来，再来扫描。</div>');
+    banners.push('<div class="banner">简历资料是空的（0 项有值）：所以现在一个字段都填不了。先去「资料与设置」那一屏的「导入简历 Markdown」或「分类编辑」把资料灌进来，再来扫描。</div>');
   } else if (withheld.length) {
     banners.push(`<div class="banner">${withheld.length} 个敏感字段（证件号/手机号等）按你的设置没有写入。要自动填，就在上方「填写授权」里勾上「允许填写证件号等敏感字段」。</div>`);
   }
@@ -304,7 +304,7 @@ function render(data, meta = {}) {
   // 所以必须说清是哪几栏、以及两条出路（补英文值 / 开那个降级开关）。
   if (noEn.length) {
     banners.push(`<div class="banner">这一页是英文表单，${noEn.length} 个槽位只有中文写法，已故意留空（把「南京大学」写进 English name 就是这种事故）。`
-      + '去「分类编辑」切到 English 表单补齐；赶时间可勾「缺英文时写中文并标黄」。</div>');
+      + '去「资料与设置 → 分类编辑」切到 English 表单补齐；赶时间可勾「缺英文时写中文并标黄」。</div>');
   }
   /**
    * 整页目的闸拦下来的时候必须说人话：这一页被判定成什么、凭什么、以及"我确认是网申表"的出口。
@@ -834,7 +834,7 @@ $('btnMapAiPreview').onclick = async () => {
   const status = $('mapAiStatus');
   if (!lastMapping?.rows?.length) { status.textContent = '还没扫这一页：先「扫描并出映射表」，才有栏位档案可发。'; return; }
   const gate = aiMapReady();
-  if (!gate.ok) { status.textContent = `AI 还没配好（${gate.error}）—— 去下面「AI 兜底」那一段填端点、模型与 Key。`; return; }
+  if (!gate.ok) { status.textContent = `AI 还没配好（${gate.error}）—— 去下面「AI 兜底」那一段填端点、模型与 Key。`; goScreen('data'); return; }
   const { fields, valueStates } = aiMapPayloadFromTable();
   const res = await chrome.runtime.sendMessage({ type: 'nw:aiMapPage', tabId, fields, valueStates, preview: true });
   if (!res?.ok) { status.textContent = `预览失败：${res?.error || '未知原因'}`; lastAiMapPreview = null; $('btnMapAi').disabled = true; return; }
@@ -904,7 +904,7 @@ $('btnMapOptions').onclick = async () => {
   const status = $('mapAiStatus');
   if (!lastMapping?.rows?.length) { status.textContent = '还没扫这一页：先「扫描并出映射表」。'; return; }
   const gate = aiMapReady();
-  if (!gate.ok) { status.textContent = `AI 还没配好（${gate.error}）—— 去下面「AI 兜底」那一段填端点、模型与 Key。`; return; }
+  if (!gate.ok) { status.textContent = `AI 还没配好（${gate.error}）—— 去下面「AI 兜底」那一段填端点、模型与 Key。`; goScreen('data'); return; }
   const targets = alignTargetsFromTable();
   if (!targets.length) {
     status.textContent = '这一页没有需要 AI 认的下拉栏：要么本地已经认出来了，要么那一栏还没点开看到选项（勾「允许点开自定义下拉」再扫一次）。';
@@ -921,6 +921,11 @@ $('btnMapOptions').onclick = async () => {
   lastOptionDecisions = (res.decisions || []).length ? res.decisions : null;
   await run('preview', lastOptionDecisions ? { aiOptionDecisions: lastOptionDecisions } : {});
   // 落没落成不看 AI 回包，看紧随其后的那次预演扫描：决定是在那里并进计划的
+  // 削过档必须说出来：模型指不到没发出去的那一项，"它没认出来"和"我们没给它看"是两件事
+  if (res.trim && res.trim.level) {
+    status.textContent = `注意：这一轮选项被削过（${res.trim.why}），它只能在那几条里挑。`
+      + (res.trim.droppedTargets ? `整栏没发出去的有 ${res.trim.droppedTargets} 栏。` : '') + '　' + status.textContent;
+  }
   const got = lastScan?.aiOption || null;
   const refused = got?.refused || [];
   const sent = res.valuesSent || [];
@@ -1700,7 +1705,7 @@ function goScreen(next) {
 // 从填表那一屏点了只有资料屏才有的动作，自动切过去：收纳不该变成"按钮点了没反应"。
 $('tabFill').onclick = () => goScreen('fill');
 $('tabData').onclick = () => goScreen('data');
-// 从"填表"那一屏点了只有资料屏才有的动作（例如分类编辑里的按钮），自动切过去：
+// 面板上的提示如果说"去另一屏做某事"，就直接把那一屏切出来（下面 btnMapAi / btnMapOptions 两处）：
 
 // ── 诊断包：结构 + 没填的 + 映射表，一次生成一份 JSON ──────────────────
 // 这三样本来就一起用（我让你"把这三份一起发回来"，你却要按三个按钮、粘三段），
@@ -1825,4 +1830,18 @@ $('btnDiagSave').onclick = () => {
   const leaks = findLeaksInExport(diagJson, {});
   if (leaks.length) { $('diagStatus').textContent = '已拒绝下载：内容里出现像 API Key 的字符串（' + leaks.map(l => l.key).join(', ') + '）'; return; }
   downloadJson('nw-diag-' + new Date().toISOString().slice(0, 10) + '.json', diagJson);
+};
+
+// 想把它贴给别人看的时候，多数时候只要那一段保证无取值的表：给它一个单独出口，
+// 而不是让人把整包（含页面已显示的选中项）复制出去再手删。
+$('btnDiagMap').onclick = () => {
+  const mapping = gatherMapping();
+  if (!mapping.ok) { $('diagStatus').textContent = '映射表这一单独出不来：' + mapping.error; return; }
+  const json = JSON.stringify({ at: new Date().toISOString(), 映射表: mapping.data }, null, 1);
+  const leaks = findLeaksInExport(json, {});
+  if (leaks.length) { $('diagStatus').textContent = '已拒绝出表：内容里出现像 API Key 的字符串'; return; }
+  $('diagOut').value = json;
+  try { navigator.clipboard.writeText(json); }
+  catch { $('diagOut').select(); document.execCommand('copy'); }
+  $('diagStatus').textContent = `只出了映射表（${mapping.summary}）：已复制到剪贴板，文本框里也有一份。`;
 };

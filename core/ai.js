@@ -13,6 +13,20 @@ import { CONCEPTS, isKnownConcept, slotConcept } from './canonical.js';
 import { normalize } from './matching.js';
 import { fingerprint } from './ledger.js';
 
+/**
+ * AI 指认的槽位该给什么档位。
+ * 用户 2026-10-02 把"AI 选出来的非敏感栏不必一律黄字"改成按敏感度分档；
+ * 但**合规声明类**（在港工作权利、签证类别、是否需要担保、证件类别、国籍）不在那次放开之列：
+ * 这些句子说出去的是用户的法律身份，AI 走哪条路指认它都一样要人过一眼。
+ * 独立审查（2026-10-04）指出：`AI_FORBIDDEN_KEY` 把 visa 拆成 visa.*number 之后，
+ * 概念映射与缺口兜底这两条路可以绿字直接写"签证类别"—— 这个函数就是补那个洞的。
+ */
+export function aiTierFor(sf = {}) {
+  const path = String(sf.path || '');
+  const compliance = /(hkGlobal\.(workAuth|visaType|needSponsorship|idForWork|nationalIdCountry|taxResidency)|basics\.(idType|nationality|politicalStatus))/.test(path);
+  return sf.sensitive || compliance ? 'review' : 'auto';
+}
+
 /** 允许参与 AI 的缺口原因：本地词典答不上来的那三种 */
 export const AI_ELIGIBLE_REASONS = new Set(['no_candidate', 'required_no_candidate', 'conflict_unresolved']);
 
@@ -435,7 +449,7 @@ export function applyAiCandidates(plan, profile, candidates = [], opts = {}) {
       // 用户 2026-10-02 明确改了判："不用一律黄字，因为我都要检查一遍。"
       // 所以 AI 选的不再自动降级成 review —— 但 aiChosen 标记与"这是 AI 建议"的说明照留，
       // 撤销与审计仍然认得这一笔；敏感字段仍走 review（那是另一道闸，不是置信度问题）。
-      score: 0, tier: sf.sensitive ? 'review' : 'auto', aiChosen: true,
+      score: 0, tier: aiTierFor(sf), aiChosen: true,
       label: g.label, note: `本地词典没有这个词，AI 按语义建议用「${sf.zh}」${c.reason ? `（${c.reason}）` : ''}`
         + (c.nExpanded ? '；这一条属于第几条经历是我们补的（AI 交回的是带 N 的归并路径），不是 AI 定的' : '')
         + (sf.sensitive ? '，请核对' : ''),
@@ -693,7 +707,7 @@ export function applyPageMapSuggestions(plan, profile, suggestions = [], opts = 
     assignments.push({
       ...a,
       path: sf.path, value, profileType: sf.type, sensitive: sf.sensitive,
-      score: 0, tier: sf.sensitive ? 'review' : 'auto', aiChosen: true,
+      score: 0, tier: aiTierFor(sf), aiChosen: true,
       aiOverrode: { path: a.path, zh: a.zh || a.path, why: a.note || '' },
       note: `${mkNote(s, sf)}；覆盖了本地那个没把握的判定`,
     });
@@ -713,7 +727,7 @@ export function applyPageMapSuggestions(plan, profile, suggestions = [], opts = 
     added++;
     assignments.push({
       index, path: s._sf.path, value: s._value, profileType: s._sf.type, sensitive: s._sf.sensitive,
-      label: g.label, score: 0, tier: s._sf.sensitive ? 'review' : 'auto', aiChosen: true,
+      label: g.label, score: 0, tier: aiTierFor(s._sf), aiChosen: true,
       note: `${mkNote(s, s._sf)}`,
     });
   }

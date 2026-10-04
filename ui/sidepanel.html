@@ -101,7 +101,7 @@
   <label class="chk"><input type="checkbox" id="allowCustomSelect">允许点开自定义下拉并选中（会真的点击页面控件）</label>
   <label class="chk"><input type="checkbox" id="enZhFallback">英文表单遇到只有中文写法的栏位：写中文并标黄（默认不写，列入"需要你处理"）</label>
   <label class="chk"><input type="checkbox" id="allowAddRows">允许补经历行：资料里段数比页面给的行多时，替我点页面上的「+ 添加一段」（会真的点击控件；每轮最多 3 行，点了没长出来立刻停）</label>
-  <label class="chk"><input type="checkbox" id="allowAiValues">允许 AI 看取值来认下拉选项：只在这次要填的那些下拉里，把"我打算写进这一栏的那条值"发出去比对（勾选即可用，不必逐次确认）。<b>永远不发</b>：证件号、电话、姓名与单独的姓/名（含家属、紧急联系人、推荐人）、经历正文与声明勾选</label>
+  <label class="chk"><input type="checkbox" id="allowAiValues">允许 AI 看取值来认下拉选项：只在这次要填的那些下拉里，把"我打算写进这一栏的那条值"发出去比对（勾选即可用，不必逐次确认）。<b>仍然不发</b>：姓名与单独的姓/名（本人、家属、紧急联系人、推荐人、导师、汇报对象）、电话与各类编号（证件号、护照号、学号、证书编号）、微信号、经历正文与自述、以及资料里任何标了敏感的栏位</label>
   <div class="note" id="authNote">
     每一条各管一件事：改敏感内容、动页面控件、降级填中文、让 AI 看到取值。默认都不动 ——
     关掉时对应栏位进「需要你处理」，不是"悄悄少填"。它们以前藏在「编辑 / 导入 JSON」里，很多人根本找不到。
@@ -176,6 +176,8 @@
     <button id="btnDiag">生成诊断包（只读，不改页面）</button>
     <button id="btnDiagCopy" disabled>复制到剪贴板</button>
     <button id="btnDiagSave" disabled>下载 JSON</button>
+    <button id="btnDiagMap">只出映射表（这一段保证无取值）</button>
+    <label class="note">要发给别人看时优先用这一个：另两段带着页面上已显示的选中项。</label>
     <label class="chk"><input type="checkbox" id="diagAll">把已填的也带上</label>
   </div>
   <div class="stats" id="diagStatus">尚未生成。这一份是排查"这一页为什么填不上"用的：三段各自独立，缺一段会写明原因。</div>

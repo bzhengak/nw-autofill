@@ -76,9 +76,14 @@ export function buildOptionAlignRequest({ targets = [], allowValues = false, max
         section: String(t.section || '').slice(0, 40),
         slot: String(t.slotZh || '').slice(0, 30),
       };
-      if (cap.o) q.options = (t.options || []).slice(0, cap.o).map(x => String(x).slice(0, cap.oc));
+      // 这一栏**到底发出去了哪几条选项**要记在 target 上：削减档位之后，
+      // 模型指到第 15 项而本地有 30 项时，那不是"越界"，是我们根本没把第 15 项给它看。
+      t.sentOptions = cap.o ? (t.options || []).slice(0, cap.o).map(x => String(x).slice(0, cap.oc)) : [];
+      if (cap.o) q.options = t.sentOptions;
       if (q.task === 'pick') q.ourValue = String(t.ourValue ?? '').slice(0, 60);
       else if (t.space) q.space = t.space;
+      // 我们问它的是什么任务，就只有那一种回答算数（不看模型自己改口，见 parse）
+      t.askTask = q.task;
       return q;
     });
     text = `${system}\n\n${JSON.stringify({ fields: questions, vocabulary: vocab })}`;
@@ -145,16 +150,27 @@ export function parseOptionAlignReply(raw, { targets = [] } = {}) {
     const idx = Number(item?.index);
     const target = Number.isInteger(idx) ? targets[idx] : null;
     if (!target) { dropped.push({ why: 'index_unknown', index: item?.index }); continue; }
-    const wantsPick = item.task === 'pick' || item.pick !== undefined;
-    if (wantsPick) {
+    // 只认我们**问过**的那种任务：模型自己改口 pick 就等于绕开"代号相同才落笔"的协议
+    const asked = target.askTask || (target.ourValue ? 'pick' : 'label');
+    const answered = item.task === 'pick' || item.pick !== undefined ? 'pick' : 'label';
+    if (answered !== asked) {
+      dropped.push({ why: 'task_mismatch', index: idx, asked, answered });
+      continue;
+    }
+    // 校验下标一律按"这一栏实际发出去的条数"：削档之后本地全量是个更大的集合
+    const sent = Array.isArray(target.sentOptions) ? target.sentOptions.length : (target.options || []).length;
+    if (answered === 'pick') {
       if (item.pick === null || item.pick === undefined || item.pick === '') {
         declined.push({ index: idx, fp: target.fp, task: 'pick', reason: String(item.reason || '').slice(0, 40) });
         continue;
       }
       const p = Number(item.pick);
-      const n = (target.options || []).length;
-      if (!inRange(p, n)) { dropped.push({ why: 'pick_out_of_range', index: idx, pick: item.pick, options: n }); continue; }
-      picks.push({ index: idx, fp: target.fp, optionIndex: p, expect: String(target.options[p] ?? ''), reason: String(item.reason || '').slice(0, 40) });
+      if (!inRange(p, sent)) {
+        dropped.push({ why: sent ? 'pick_out_of_range' : 'options_trimmed', index: idx, pick: item.pick, options: sent });
+        continue;
+      }
+      const expect = String((target.sentOptions && target.sentOptions[p]) ?? target.options?.[p] ?? '');
+      picks.push({ index: idx, fp: target.fp, optionIndex: p, expect, reason: String(item.reason || '').slice(0, 40) });
       continue;
     }
     const known = new Set((spaceOf(target.space)?.tokens || []).map(x => x.t));
@@ -164,7 +180,7 @@ export function parseOptionAlignReply(raw, { targets = [] } = {}) {
     for (const o of (Array.isArray(item.options) ? item.options : [])) {
       const oi = Number(o?.i ?? o?.index);
       const tok = String(o?.token ?? o?.t ?? '').trim();
-      if (!inRange(oi, (target.options || []).length)) { dropped.push({ why: 'option_out_of_range', index: idx, option: o?.i }); continue; }
+      if (!inRange(oi, sent)) { dropped.push({ why: sent ? 'option_out_of_range' : 'options_trimmed', index: idx, option: o?.i }); continue; }
       if (!tok || tok === 'null') continue;                        // "这项归不进代号"是有效回答，不计数
       if (!known.has(tok)) { dropped.push({ why: 'token_unknown', index: idx, token: tok.slice(0, 24) }); continue; }
       tokens[oi] = tok; counted++;
@@ -231,11 +247,26 @@ export function decisionsFromReply({ req, picks = [], labels = [] } = {}) {
  */
 export function findOptionByExpect(opts = [], expect = '') {
   const norm = s => String(s ?? '').replace(/[\u0000-\u001f\s]+/g, ' ').trim().toLowerCase();
-  const e = norm(expect).replace(/…$/, '');
-  if (!e) return null;
-  const exact = opts.find(o => norm(optionForm(o)) === e);
+  // 省略号只可能出现在**切分之后那一段的末尾**（`裁过的文案…=码值`），所以只剥尾部
+  const strip = s => norm(s).replace(/…+$/, '');
+  const raw = norm(expect);
+  if (!raw) return null;
+  // `文案=码值` 里再切一刀：文案被裁短时分隔符还在，但"整串前缀"这条判据会失效
+  const cut = raw.lastIndexOf('=');
+  const valuePart = strip(cut > 0 ? raw.slice(cut + 1) : '');
+  const textPart = strip(cut > 0 ? raw.slice(0, cut) : raw);
+  if (!textPart) return null;
+  const hit = o => {
+    const t = strip(o?.text ?? (typeof o === 'string' ? o : ''));
+    if (!t || !t.startsWith(textPart)) return false;
+    if (!valuePart) return true;
+    const v = strip(o?.value ?? '');
+    return !v || v === valuePart;                    // 页面上那项没有码值时不拿它为难
+  };
+  const exact = opts.find(o => strip(o?.text ?? (typeof o === 'string' ? o : '')) === textPart
+    && (!valuePart || strip(o?.value ?? '') === valuePart));
   if (exact) return exact;
-  const pre = opts.filter(o => norm(optionForm(o)).startsWith(e));
+  const pre = opts.filter(hit);
   return pre.length === 1 ? pre[0] : (pre.length > 1 ? { ambiguous: true } : null);
 }
 
@@ -276,7 +307,7 @@ export function applyOptionDecisions(plan, decisions = [], { fields = [] } = {})
     if (!a) { refused.push({ fp: short, why: 'no_assignment', index: i }); continue; }
     if (a.skip) { refused.push({ fp: short, why: 'skipped', index: i }); continue; }
     if (a.optionValue) { refused.push({ fp: short, why: 'already_local', index: i }); continue; }
-    if (f.multi) { refused.push({ fp: short, why: 'multi', index: i }); continue; }
+    if (f.multi || f.el?.multiple) { refused.push({ fp: short, why: f.multi ? 'multi' : 'multi_select', index: i }); continue; }
     const picked = findOptionByExpect(f.options || [], d.expect);
     if (!picked || picked.ambiguous) {
       refused.push({ fp: short, why: picked ? 'expect_ambiguous' : 'option_gone', index: i, expect: String(d.expect || '').slice(0, 40) });

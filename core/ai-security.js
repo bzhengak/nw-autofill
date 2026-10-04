@@ -323,39 +323,49 @@ export function redact(text, secret) {
  * 所以这里是"默认放开 + 硬排除"，而不是"默认关闭 + 逐条放开"：
  * 加新字段不需要动这段代码，但把某个人的姓名写进请求永远需要改这里 —— 而那会被测试钉住。
  *
- * 两条不是他清单里、但沿用仓库既有名单的（会在界面上逐条列出来，不静默）：
- *  · records / declaration 两段（经历正文与声明勾选）；
- *  · core/ai.js 的 AI_FORBIDDEN_KEY 那批路径（证件号形状、薪酬期望、犯罪记录…）。
- * 之所以不静默：他说得很清楚"拿不准就留空并说清楚，不要静默降级"。
+ * 三条不是他清单里、但刻意更严的（都会逐条报出来，不静默）：
+ *  · records / others 两段（政审正文与自述原文）—— 板块名以 SECTIONS 里真存在的为准；
+ *  · 资料里自己标了 'S'（敏感）的槽位；
+ *  · core/ai.js 的 AI_FORBIDDEN_KEY 那批路径（薪酬期望、犯罪记录…）。
+ * 之所以宁可严一点也要说出来：他说得很清楚"拿不准就留空并说清楚，不要静默降级"。
+ * 独立审查（2026-10-04）指出第一版只按路径与栏名判，漏了导师/汇报对象/证书编号/长正文这几类 ——
+ * 都是"另一个人的名字"或"一段自述"，性质与他排除的那几件同类。
  */
 export const VALUE_SHARE_NEVER = [
-  { why: '证件号码类（身份证/护照/HKID/税号）', re: /(idNumber|passport|idForWork|hkid|ssn|socialSecurity|taxId|nationalId|identityNumber)/i },
+  { why: '证件号与各类编号（身份证/护照/HKID/税号/学号/学位证号/证书编号）', re: /(idNumber|passport|idForWork|hkid|ssn|socialSecurity|taxId|nationalId|identityNumber|studentNumber|diplomaNumber|certNumber|licenceNumber|[nN]umber$)/i },
   { why: '电话类（含备用电话、紧急联系人电话、家人电话、区号与分机）', re: /(phone|mobile|telephone|fax|dialCode|extension|referenceContact)|tel$/i },
   { why: '即时通讯账号（微信号这类可反查到人的把手）', re: /(wechat|whatsapp|lineId|telegram)/i },
   // 一眼就是"某个人的名字"的路径写法。**不含泛用 `.name`**：`projects.0.name` 是项目名称，
   // 用户明确说项目名称可以发；把它一起拦等于偷偷比他的清单更严（下一条规则按板块补回来）。
-  { why: '姓名类（英文键名点明是人的名字）', re: /(lastName|firstName|surname|givenName|fullName|preferredName|formerName|nameEn|nameZh|emergencyName|referralName|referenceName|contactName|guardianName)/i },
+  { why: '姓名类（英文键名点明是人的名字：本人、家人、导师、汇报对象、推荐人、内推人）', re: /(lastName|firstName|surname|givenName|fullName|preferredName|formerName|nameEn|nameZh|emergencyName|referralName|referenceName|contactName|guardianName|supervisor|advisor|reportsTo|reportTo|referrer|referee|managerName|hrName)/i },
+  { why: '推荐人整组（第三方的姓名与联系方式）', re: /(^|\.)references?([.\d]|$)/i },
 ];
-/** 中文栏名说它是"谁的姓名"：家属姓名 / 紧急联系人姓名 / 推荐人 1 姓名 全都算 */
-export const VALUE_SHARE_NEVER_ZH = /(姓名|^姓$|^名$|常用名|曾用名|姓氏)$/;
+/** 中文栏名说它是"谁的姓名 / 哪个编号 / 哪种联系方式"：家属姓名、证书编号、联系电话… 全都算 */
+export const VALUE_SHARE_NEVER_ZH = /(姓名|电话|手机|联系|编号|^姓$|^名$|常用名|曾用名|姓氏|证件)$/;
 /** 裸 `.name` 落在这些板块里 = 是一个人的名字；落在 projects/competitions/certifications 里 = 是一样东西的名称 */
-export const PERSON_SECTIONS = new Set(['basics', 'contact', 'family', 'intent', 'hkGlobal', 'recommendations']);
-export const VALUE_SHARE_NEVER_SECTIONS = new Set(['records', 'declaration']);
+export const PERSON_SECTIONS = new Set(['basics', 'contact', 'family', 'intent', 'hkGlobal']);
+/** 整段不外发的板块：档案与政审（正文）、补充信息（自述原文） */
+export const VALUE_SHARE_NEVER_SECTIONS = new Set(['records', 'others']);
 
 /**
- * @param {object} field buildFields() 出来的槽位描述（含 path / zh / section / type）
+ * @param {object} field buildFields() 出来的槽位描述（含 path / zh / section / type / sensitive）
  * @returns {string} 空串 = 可以发；非空 = 不发的原因（要显示给用户看）
  */
 export function valueShareBlocked(field = {}) {
   const path = String(field.path || '');
   const zh = String(field.zh || '').trim();
   const section = String(field.section || '');
+  const type = String(field.type || '').toLowerCase();
   if (!path) return '不是资料里的槽位';
-  if (VALUE_SHARE_NEVER_SECTIONS.has(section)) return '经历正文/声明勾选类（整段不外发）';
+  if (VALUE_SHARE_NEVER_SECTIONS.has(section)) return '正文/自述类整段不外发';
   for (const r of VALUE_SHARE_NEVER) if (r.re.test(path)) return r.why;
   if (/\.name$/i.test(path) && PERSON_SECTIONS.has(section)) return '姓名类';
-  if (String(field.type || '').toLowerCase() === 'tel') return '电话类控件';
-  if (VALUE_SHARE_NEVER_ZH.test(zh)) return '姓名类';
+  if (type === 'tel') return '电话类控件';
+  if (type === 'textarea') return '长正文（自述/描述）类';
+  if (VALUE_SHARE_NEVER_ZH.test(zh)) return `栏名说它是敏感项（${zh}）`;
+  // 最后一道：资料里自己标了敏感的一律不发。这比用户的清单严，但方向是"少发"，
+  // 且逐条报原因；要放开某一栏就改这里或改标记，不在调用方开口子。
+  if (field.sensitive) return '资料里标了敏感的槽位';
   return '';
 }
 

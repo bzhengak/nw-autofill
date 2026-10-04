@@ -190,7 +190,7 @@ test('诊断包三端都在：按钮有 id、面板会发两条消息、内容�
   const html = read('../ui/sidepanel.html');
   const panel = read('../ui/sidepanel.js');
   const content = read('../dom/content.js');
-  for (const id of ['btnDiag', 'btnDiagCopy', 'btnDiagSave', 'diagAll', 'diagOut', 'diagStatus']) {
+  for (const id of ['btnDiag', 'btnDiagCopy', 'btnDiagSave', 'btnDiagMap', 'diagAll', 'diagOut', 'diagStatus']) {
     assert.ok(html.includes(`id="${id}"`), `HTML 里没有 id="${id}"，面板脚本拿到的就是 null`);
     if (id !== 'diagOut') assert.ok(panel.includes(`$('${id}')`), `面板没用到 ${id}`);
   }

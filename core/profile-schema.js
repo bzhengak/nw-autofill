@@ -465,6 +465,13 @@ function parseField(tuple, sectionKey, indexInSection) {
   const options = flags.startsWith('O:') || flags.includes('O:')
     ? OPTION_SETS[(flags.match(/O:(\w+)/) || [])[1]] || []
     : [];
+  /**
+   * 标记位**按整段取**，不用 includes：老写法 `flags.includes('S')` 把
+   * `O:paperStatus` / `O:gradStatus` 也算成敏感（'Status' 里有个大写 S）。
+   * 这条不是洁癖：档 C 的"敏感栏不外发"、填写侧的"敏感要另勾一道"都建在这个位上，
+   * 误判会让'已发表/在投'这类枚举既要多勾一个框，又被当成不该外发的东西。
+   */
+  const flagSet = new Set(String(flags).split(';').map(x => x.trim()).filter(Boolean));
   return {
     path: indexInSection === null ? `${sectionKey}.${key}` : `${sectionKey}.${indexInSection}.${key}`,
     key,
@@ -474,8 +481,8 @@ function parseField(tuple, sectionKey, indexInSection) {
     labels: labels.map(l => String(l).trim().toLowerCase()),
     type,
     options,
-    sensitive: flags.includes(SENSITIVE),
-    multi: flags.includes(MULTI),
+    sensitive: flagSet.has(SENSITIVE),
+    multi: flagSet.has(MULTI),
   };
 }
 

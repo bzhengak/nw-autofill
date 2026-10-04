@@ -992,3 +992,9 @@ Important 里那条**「动了手不报告」**最扎眼：`rowExpansion` 一路
 于是档 A 本地折代号永远拿不到值；以及大小写 —— 扫描器把 option 文案统一转小写，
 回找真选项时按原文整串比，判成 `option_gone`（与 2026-10-02 的 Awarding Body 同族）。
 细节与变异检查结果记在 docs/AI-VALUE-ALIGNMENT.md 第 5b 节。
+第三轮独立审查（同日）带回 3 Critical / 5 Important / 3 Minor，全收：
+最值钱的是 C1 —— **模型在 label 任务里自己改口 pick 就能落笔**，也就是"代号相同才落笔"这条协议
+由被问的一方决定；其次是 C2（削档之后按本地全量校验下标）与 C3（硬排除清单漏了导师/汇报对象/各类编号/长正文，
+并补上一条"资料里标 sensitive 的一律不发"的兜底，比用户的清单严、方向是少发）。
+还有一条元教训：**用例里的 `if (!field) continue` 会让断言凭空消失** —— 摘掉规则后测试照样绿，
+改成 `assert.ok(field, …)` 才 RED。详见 docs/AI-VALUE-ALIGNMENT.md 第 5c 节。

@@ -32,12 +32,19 @@ jobs:
           set -e
           tail -n 12 /tmp/nw-test.log
           if [ "$code" -ne 0 ]; then
-            echo "::group::失败的用例（共 $(grep -c '^not ok ' /tmp/nw-test.log) 条，列前 40 条）"
-            grep '^not ok ' /tmp/nw-test.log | head -40
+            # 这一段里 head / grep 提前收尾都会给上游 SIGPIPE（退出码非 0），
+            # 而 Actions 的 bash 是 -e -o pipefail：不关掉 -e 的话，
+            # 诊断打到第一条列表就自己断了（上一跑就是这样，只看到 40 个名字，看不到原因）。
+            set +e
+            total=$(grep -c '^not ok ' /tmp/nw-test.log)
+            echo "::group::失败的用例（共 $total 条，列前 40 条）"
+            grep '^not ok ' /tmp/nw-test.log | sed -n '1,40p'
+            echo '--- 失败原因分布（看是共性还是散点）---'
+            grep -A 14 '^not ok ' /tmp/nw-test.log | grep -E "^\s+(error|code|name):" | sed 's/^\s*//' | sort | uniq -c | sort -rn | sed -n '1,25p'
+            echo '--- 按文件汇总 ---'
+            grep -A 14 '^not ok ' /tmp/nw-test.log | grep -oE "tests[/\\\\][A-Za-z0-9._-]+\.js" | sort | uniq -c | sort -rn
             echo '--- 第一条失败的完整报错 ---'
             grep -A 28 -m 1 '^not ok ' /tmp/nw-test.log
-            echo '--- 按文件汇总 ---'
-            grep -A 20 -m 99 '^not ok ' /tmp/nw-test.log | grep -oE "tests[/\\\\][A-Za-z0-9._-]+\.js" | sort | uniq -c | sort -rn
             echo '::endgroup::'
           fi
           exit $code

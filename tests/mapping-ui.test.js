@@ -40,7 +40,7 @@ function scanData(profile, fields, opts = {}) {
   };
 }
 
-function boot({ data, rules = {}, putResult = null, ai = false, aiCandidates = null } = {}) {
+function boot({ data, rules = {}, putResult = null, ai = false, aiCandidates = null, stateProfile = null } = {}) {
   const dom = new JSDOM(html, { url: 'chrome-extension://nwtest/ui/sidepanel.html', pretendToBeVisual: true });
   const sent = [];
   dom.window.CSS = dom.window.CSS || {};
@@ -57,8 +57,15 @@ function boot({ data, rules = {}, putResult = null, ai = false, aiCandidates = n
         if (msg.type === 'nw:siteRulesForgetSite') return { ok: true, count: 0 };
         if (msg.type === 'nw:aiPreview') return { ok: true, text: '要问的字段清单', bytes: 40, asks: 2, endpoint: BASE };
         if (msg.type === 'nw:aiAsk') return { ok: true, candidates: aiCandidates || [], dropped: [], declined: [], rawChars: 30, snippet: '', endpoint: BASE };
+        // 诊断包另两段的上游：给形状对得上、内容够小的回包（真跑由 tests/extension.test.js 的穿线测盯）
+        if (msg.type === 'nw:probe') {
+          return { ok: true, data: { at: 'now', url: 'https://job.example.test/apply', probeBuild: 't', isTopFrame: true, totals: { controls: 1, visible: 1, selects: 0, radios: 0, fileInputs: 0, iframes: 0, shadowHosts: 0 }, topLibrary: 'none', sections: [], fields: [], emptyHints: { gateButtons: [] }, frameReport: null } };
+        }
+        if (msg.type === 'nw:unfilledMap') {
+          return { ok: true, data: { at: 'now', url: 'https://job.example.test/apply', build: 't', profileFilled: 4, totals: { controls: 1, exported: 1, withOptions: 0, optionCount: 0, filledSkipped: 0 }, byReason: { gap: 1 }, legend: [], rows: [] } };
+        }
         return {
-          ok: true, profile: createEmptyProfile(), settings: ai
+          ok: true, profile: stateProfile || createEmptyProfile(), settings: ai
             ? { aiBaseUrl: BASE, aiModel: 'm', aiConsentOrigin: 'https://api.example.test' } : {},
           tabId: 1,
           hasAiKey: ai, aiKeyOrigin: 'https://api.example.test', aiKeyPersisted: false, aiKeyLength: 24,
@@ -243,12 +250,60 @@ test('页面标签是不可信输入：映射表里只当文字，不生成元�
   assert.match(host.textContent, /onerror/, '原文要能看见（那是诊断线索），但只能是文字');
 });
 
-test('导出映射表：走的是脱敏视图，屏幕上的回读值不进文件', async () => {
+test('两屏真的会切换：默认只见「填这张表」，点第二个标签才换过来', async () => {
+  const { p, fields } = fixture();
+  const { doc } = boot({ data: scanData(p, fields) });
+  await loadSidePanel();
+  await settle();
+  click(doc, 'btnScan');            // 先扫一次：要验的是"切屏会不会把刚算出来的表洗掉"
+  await settle();
+  assert.equal(doc.getElementById('screenFill').hidden, false, '第一屏默认就该藏着');
+  assert.equal(doc.getElementById('screenData').hidden, true, '第二屏默认露出来了：收纳等于没做');
+  doc.getElementById('tabData').click();
+  await settle();
+  assert.equal(doc.getElementById('screenData').hidden, false, '点「资料与设置」没换屏');
+  assert.equal(doc.getElementById('screenFill').hidden, true, '换屏后第一屏还露着：两屏叠在一起');
+  doc.getElementById('tabFill').click();
+  await settle();
+  assert.equal(doc.getElementById('screenFill').hidden, false);
+  // 切屏不许把状态洗掉：映射表还在，也不需要重新扫
+  assert.ok(doc.getElementById('mapTable').textContent.length > 0, '切一次屏就把这张表清空了');
+});
+
+test('映射表某行的说明里混进了取值：诊断包拒绝收这一段，并把原因说出来（不是静默少一段）', async () => {
   const p = createEmptyProfile();
   setValueByPath(p, 'contact.phone', '13800001234');
   const fields = [pf({ label: '学校名称', name: 'school', id: 's1' })];
   const data = scanData(p, fields);
-  // 模拟写完之后：屏幕上那版表里带着回读值，导出那版必须剥掉
+  const table = buildMappingTable({
+    fields, plan: planFill(fields, p, { mode: 'full' }), schemaFields: SCHEMA, origin: 'https://job.example.test', results: [],
+  });
+  // 模拟"某处把取值拼进了说明文字"（note 会随导出离开本机，这正是 findValueLeaks 存在的理由）
+  table.rows[0].decision.note = '按你的资料写的：13800001234';
+  data.mapping = table;
+  const { doc } = boot({ data, stateProfile: p });
+  await loadSidePanel();
+  await settle();
+  click(doc, 'btnScan');
+  await settle();
+  click(doc, 'btnDiag');
+  await settle();
+  await settle();
+  const out = doc.getElementById('diagOut').value;
+  const parsed = JSON.parse(out);
+  assert.equal(parsed['映射表'], undefined, '带取值的映射表居然进了包');
+  assert.ok(!out.includes('13800001234'), `整份文件里出现了取值：${out.slice(0, 200)}`);
+  assert.ok((parsed.missing || []).join(' ').includes('取值'), `missing 里没写清为什么少一段：${JSON.stringify(parsed.missing)}`);
+  // 另两段照旧进包：一段被拦不等于整包作废
+  assert.ok(parsed['页面结构'] && parsed['没填的与选项'], '拦下一段时把另外两段也丢了');
+});
+
+test('诊断包：映射表那一段走的是脱敏视图，屏幕上的回读值不进文件', async () => {
+  const p = createEmptyProfile();
+  setValueByPath(p, 'contact.phone', '13800001234');
+  const fields = [pf({ label: '学校名称', name: 'school', id: 's1' })];
+  const data = scanData(p, fields);
+  // 模拟写完之后：屏幕上那版表里带着回读值，进包那一版必须剥掉
   data.mapping = buildMappingTable({
     fields, plan: planFill(fields, p, { mode: 'full' }), schemaFields: SCHEMA, origin: 'https://job.example.test',
     results: [{ index: 0, status: 'green', path: 'contact.phone', actual: '13800001234' }],
@@ -256,18 +311,26 @@ test('导出映射表：走的是脱敏视图，屏幕上的回读值不进文�
   const { doc } = boot({ data });
   await loadSidePanel();
   await settle();
-  click(doc, 'btnScan');
+  click(doc, 'btnScan');          // 先扫一次：诊断包的映射表那一段用的就是这张表
   await settle();
-  click(doc, 'btnMapExport');
+  click(doc, 'btnDiag');
   await settle();
-  const out = doc.getElementById('mapOut').value;
-  assert.ok(out, '没导出内容');
-  assert.ok(!out.includes('13800001234'), `导出里带了回读值：${out.slice(0, 200)}`);
+  await settle();
+  const out = doc.getElementById('diagOut').value;
+  assert.ok(out, '没生成诊断包');
+  assert.ok(!out.includes('13800001234'), `包里带了回读值：${out.slice(0, 200)}`);
   const parsed = JSON.parse(out);
-  assert.deepEqual(Object.keys(parsed).sort(), ['rows', 'stats']);
-  assert.ok(parsed.rows[0].label !== undefined && !('actual' in parsed.rows[0]));
-  // 面板导出的那一串必须**逐字节等于**脱敏视图：中间只要有人偷偷加了字段（比如回读值），这条就红
-  assert.equal(out, JSON.stringify(plainMappingTable(data.mapping), null, 1));
+  // 三段各自独立：结构 / 没填的 / 映射表 —— 少一段就是丢功能，不是"精简过了"
+  assert.deepEqual(Object.keys(parsed).filter(k => k !== 'at' && k !== 'url' && k !== 'legend' && k !== 'missing').sort(),
+    ['没填的与选项', '页面结构', '映射表'].sort(), JSON.stringify(Object.keys(parsed)));
+  const table = parsed['映射表'];
+  assert.deepEqual(Object.keys(table).sort(), ['rows', 'stats']);
+  assert.ok(!('actual' in table.rows[0]), '脱敏视图里出现了回读值字段');
+  // 面板进包的那一串必须**逐字节等于**脱敏视图：中间只要有人偷偷加了字段（比如回读值），这条就红
+  assert.equal(JSON.stringify(table), JSON.stringify(plainMappingTable(data.mapping)));
+  // 状态行说清了"哪几段进来了"，而不是只说"已生成"
+  assert.match(doc.getElementById('diagStatus').textContent, /映射表 \d+ 行/);
+  assert.equal(doc.getElementById('btnDiagSave').disabled, false, '包生成好了却不让下载');
 });
 
 test('「本站已记住几条」列的是这一页命中的那些，不是整桶', async () => {

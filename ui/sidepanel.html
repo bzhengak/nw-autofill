@@ -73,6 +73,11 @@
   .mwhy { color: var(--muted); }
   #mapWarn .witem { display:block; margin:4px 0; }
   #mapWarn .wact { color: var(--muted); display:block; }
+  /* 两屏切换：默认只露"填这张表"，其余收进「资料与设置」，一次填写要看见的板块少一半 */
+  .tabs { display:flex; gap:8px; margin:10px 0 2px; border-bottom:1px solid var(--line); }
+  .tab { background:none; border:none; border-bottom:2px solid transparent; border-radius:0;
+    padding:6px 8px; font-weight:600; color:var(--muted); cursor:pointer; }
+  .tab.on { color:var(--fg, #111); border-bottom-color:#22a06b; }
 </style>
 </head>
 <body>
@@ -80,6 +85,11 @@
   <div class="locked">硬约束：本扩展不点提交按钮、不解验证码、不做测评、不上传附件。程序化提交（<code>form.submit()</code> / <code>requestSubmit()</code> / 脚本派发的 submit 事件）由主世界闸门拦下；你自己点击提交不受影响。</div>
 
   <div class="row">
+  <div class="tabs" id="tabs">
+    <button class="tab on" id="tabFill" type="button">填这张表</button>
+    <button class="tab" id="tabData" type="button">资料与设置</button>
+  </div>
+  <section id="screenFill">
     <button class="primary" id="btnScan">扫描并填写</button>
     <button id="btnPreview">只预演不写入</button>
     <button id="btnUndo">回滚本次填写</button>
@@ -116,7 +126,6 @@
     <button class="primary" id="btnMapFill" disabled>按此映射填写</button>
     <button id="btnMapRules">本站已记住几条</button>
     <button id="btnMapForget">忘记本站的改判</button>
-    <button id="btnMapExport">导出映射表（无取值）</button>
   </div>
   <div class="row">
     <button id="btnMapAiPreview">预览要发给 AI 的栏位档案</button>
@@ -130,8 +139,9 @@
     勾「记住到本站」才会落盘（按站点分桶，只在这一个站点生效，里面没有任何简历取值）。
   </div>
   <div id="mapTable"></div>
-  <textarea id="mapOut" spellcheck="false" style="min-height:70px" readonly placeholder="尚未导出"></textarea>
 
+  </section>
+  <section id="screenData" hidden>
   <h2>导入简历 Markdown</h2>
   <textarea id="mdText" spellcheck="false" placeholder="把你的简历 Markdown 全文粘贴到这里" style="min-height:90px"></textarea>
   <div class="row">
@@ -161,26 +171,17 @@
     <div id="extractResults"></div>
   </details>
 
-  <h2>站点结构导出（只读，不读取你填的内容）</h2>
+  <h2>导出这一页的诊断包（一份文件：结构 + 没填的 + 映射表）</h2>
   <div class="row">
-    <button id="btnProbe">导出本页字段结构</button>
-    <button id="btnProbeCopy" disabled>复制到剪贴板</button>
-    <button id="btnProbeSave" disabled>下载 JSON</button>
+    <button id="btnDiag">生成诊断包（只读，不改页面）</button>
+    <button id="btnDiagCopy" disabled>复制到剪贴板</button>
+    <button id="btnDiagSave" disabled>下载 JSON</button>
+    <label class="chk"><input type="checkbox" id="diagAll">把已填的也带上</label>
   </div>
-  <div class="note" id="probeMeta">用于给新站点写适配器：导出后把 JSON 发给维护者即可。</div>
-  <textarea id="probeOut" spellcheck="false" style="min-height:70px" readonly placeholder="尚未导出"></textarea>
-
-  <h2>没填上的字段与选项对照（这一页为什么填不上）</h2>
-  <div class="row">
-    <button id="btnUnfilled">导出没填的字段与选项</button>
-    <button id="btnUnfilledCopy" disabled>复制到剪贴板</button>
-    <button id="btnUnfilledSave" disabled>下载 JSON</button>
-    <label class="note"><input type="checkbox" id="unfilledAll"> 把已填的也带上</label>
-  </div>
-  <div class="note" id="unfilledMeta">radio / checkbox / 下拉这类"有备选项"的栏位，导出里会带上
-    <b>选项文案 ↔ 提交码值</b>的对照（例如「是」↔ <code>1</code>）—— 这一列是写站点规则唯一缺的东西，
-    也是你自己核对"页面到底要什么值"最直接的表。没扫过的话它会先只读地算一遍计划，不写任何东西。</div>
-  <textarea id="unfilledOut" spellcheck="false" style="min-height:70px" readonly placeholder="尚未导出"></textarea>
+  <div class="stats" id="diagStatus">尚未生成。这一份是排查"这一页为什么填不上"用的：三段各自独立，缺一段会写明原因。</div>
+  <textarea id="diagOut" spellcheck="false" style="width:100%;height:64px" readonly></textarea>
+  <p class="note">里面只有页面自己的文字、槽位名与依据；<b>映射表那一段不含任何取值</b>（生成时会当场检查，命中就拒绝出包）。
+  「没填的」那一段带着 currentValue（页面上已显示的选中项，可能是站点预填或你自己点的），发给别人前自己过一眼。</p>
 
   <h2>资料体检</h2>
   <div class="stats" id="auditStats">尚未体检</div>
@@ -353,6 +354,8 @@ Edge:   %LOCALAPPDATA%\Microsoft\Edge\User Data\&lt;配置文件&gt;\Local Exten
     </p>
     <pre id="aiPreviewText" class="hint" hidden></pre>
   </details>
+
+  </section>
 
   <script type="module" src="sidepanel.js"></script>
 </body>

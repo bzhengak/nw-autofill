@@ -413,7 +413,6 @@ let lastAiCandidates = null;       // 「问 AI」给出的那批候选：写入
 let scanOrigin = '';
 let lastMapping = null;            // 最近一次扫描的映射表（导出与"已记住几条"都读它）
 let panelNotice = '';          // 「映射表先行」把填写钮变成出表时的那句话
-let mapJson = '';
 
 function mappingFirstOn() {
   const el = $('mappingFirst');
@@ -932,27 +931,6 @@ $('btnMapOptions').onclick = async () => {
     + ((res.skipped || []).length ? `；没问 ${res.skipped.length} 栏（${res.skipped.slice(0, 2).map(s => `「${s.label}」${s.why}`).join('；')}）` : '')
     + (refused.length ? `；本地拒收 ${refused.length} 条（原因：${refused.slice(0, 3).map(x => x.why).join('、')}；表里那一栏没动）` : '')
     + `　${formatTiming(res.timing) || ''}`;
-};
-
-$('btnMapExport').onclick = () => {
-  if (!lastMapping?.rows?.length) { panelNotice = '还没有映射表可导出（先扫一次这一页）。'; $('mapOut').value = ''; refreshMapSummary(); return; }
-  mapJson = JSON.stringify(plainMappingTable(lastMapping), null, 1);
-  const values = Object.values(flattenValues(lastState?.profile || {}));
-  // 两道检查一起过：Key 形状（findLeaksInExport）+ 取值本身（长度分档，说明文字里更严）
-  const leaks = [...findLeaksInExport(mapJson, {}).map(l => `${l.key}…（像 Key）`), ...findValueLeaks(JSON.parse(mapJson), values)];
-  if (leaks.length) {
-    panelNotice = `已拒绝导出：表里出现了资料取值（${leaks.slice(0, 4).join('、')}）。请把这一句连同构建号发回来。`;
-    $('mapOut').value = '';
-    refreshMapSummary();
-    return;
-  }
-  $('mapOut').value = mapJson;
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([mapJson], { type: 'application/json' }));
-  a.download = `mapping-${new Date().toISOString().slice(0, 10)}.json`;
-  a.click();
-  panelNotice = `已导出 ${lastMapping.rows.length} 行映射表：里面只有页面文字、槽位名与依据，没有你的任何取值。`;
-  refreshMapSummary();
 };
 
 
@@ -1707,107 +1685,144 @@ function renderExtractResults(res) {
   $('extractStatus').textContent = '下面是逐字摘录的结果，勾完点「写入勾选项」才会进资料';
 }
 
-let probeJson = '';
-$('btnProbe').onclick = async () => {
+
+// ── 两屏：填这张表 / 资料与设置 ──────────────────────────────────────
+// 用户 2026-10-04："现在的插件页面太复杂，需要点的东西太多"。分屏只做**收纳**，
+// 不删功能、不改默认值：切来切去状态都还在（lastScan、映射表、诊断包都不重新算）。
+const SCREENS = { fill: $('screenFill'), data: $('screenData') };
+const TABS = { fill: $('tabFill'), data: $('tabData') };
+let screen = 'fill';
+function goScreen(next) {
+  screen = SCREENS[next] ? next : 'fill';
+  for (const k of Object.keys(SCREENS)) if (SCREENS[k]) SCREENS[k].hidden = k !== screen;
+  for (const k of Object.keys(TABS)) if (TABS[k]) TABS[k].classList.toggle('on', k === screen);
+}
+// 从填表那一屏点了只有资料屏才有的动作，自动切过去：收纳不该变成"按钮点了没反应"。
+$('tabFill').onclick = () => goScreen('fill');
+$('tabData').onclick = () => goScreen('data');
+// 从"填表"那一屏点了只有资料屏才有的动作（例如分类编辑里的按钮），自动切过去：
+
+// ── 诊断包：结构 + 没填的 + 映射表，一次生成一份 JSON ──────────────────
+// 这三样本来就一起用（我让你"把这三份一起发回来"，你却要按三个按钮、粘三段），
+// 所以收成一个出口。生成逻辑照旧：探针那一段还得说清"取的是哪个框"，那段话不能丢。
+let diagJson = '';
+
+function probeSummaryHtml(d, fr) {
+  let html = '探针 ' + escapeHtml(d.probeBuild || '(旧版)')
+    + (d.isTopFrame === false ? ' · 非顶层框' : ' · 顶层框')
+    + ' · 控件 <b>' + d.totals.controls + '</b> · 可见 <b>' + d.totals.visible + '</b> · 下拉 ' + d.totals.selects
+    + ' · 单选 ' + d.totals.radios + ' · 文件 ' + d.totals.fileInputs + ' · iframe ' + d.totals.iframes
+    + ' · Shadow ' + d.totals.shadowHosts + ' · 组件库判定: <b>' + d.topLibrary + '</b>'
+    + (fr ? ` · 取自 frame#${fr.chosen}${fr.merged > 1 ? ' 并合并 ' + fr.merged + ' 个框' : ''}（共遍历 ${fr.tried.length} 个框）` : '');
+  if (d.totals.controls) return html;
+  // 空结果必须自己说清"取的是哪个框"，否则用户只知道失败、维护者只能靠猜
+  const picked = fr?.tried?.find(x => x.frameId === fr.chosen);
+  const framesTxt = fr?.tried?.length
+    ? '各框控件数：' + fr.tried.map(x => '#' + x.frameId + ' ' + x.controls).join('，')
+    : (d.probeBuild
+      ? '（框清单缺失：探针是新版但枚举 frame 失败，多为扩展需要重新授权，请在 edge://extensions 重新加载一次）'
+      : '（探针是旧版：请在 edge://extensions 点「重新加载」，关掉侧边栏再重开，然后刷新目标页面）');
+  const sub = (d.iframeMap || []).filter(x => x.sameOrigin && x.controls > 0)
+    .map(x => '同源 iframe 有 ' + x.controls + ' 个控件（name=' + (x.frameName || '无名') + '）');
+  const gates = (d.emptyHints?.gateButtons || []).filter(Boolean);
+  return html + '<br><span style="color:var(--warn-fg);background:var(--warn-bg);border:1px solid var(--warn-line);border-radius:4px;padding:2px 6px;display:inline-block">'
+    + '这个框里没有表单控件（URL: ' + escapeHtml(picked?.url || d.url || '未知') + '）。'
+    + escapeHtml(framesTxt)
+    + (sub.length ? '。' + escapeHtml(sub.join('；')) + ' → 表单可能在首方 iframe 里' : '')
+    + (gates.length ? '。页面上有像入口的按钮：「' + escapeHtml(gates.slice(0, 5).join('」「')) + '」→ 先点它出现表单，再点一次生成' : '')
+    + (d.emptyHints?.loginWall ? '。页面文案疑似登录墙，先确认已登录' : '')
+    + (d.emptyHints?.customElementHosts ? `。另有 ${d.emptyHints.customElementHosts} 个自定义元素拿不到 shadow（可能是 closed shadow，探针读不到内部）` : '')
+    + '。这一段一起发我。</span>';
+}
+
+async function gatherProbe() {
   const tab = await activeTab();
   tabId = tab?.id;
-  $('probeMeta').textContent = '正在只读扫描页面结构…';
   const res = await chrome.runtime.sendMessage({ type: 'nw:probe', tabId });
-  if (!res?.ok) { $('probeMeta').textContent = '本页无响应：' + (res?.error || '未知错误') + '（刚装扩展请刷新目标页面）'; return; }
+  if (!res?.ok || !res.data) return { ok: false, error: res?.error || '本页没回应（刚重载过扩展请刷新目标页面）' };
   const d = res.data;
   const fr = res.frameReport || null;
-  probeJson = JSON.stringify({
+  const json = JSON.stringify({
     at: d.at, url: d.url, titleChars: d.titleChars, framework: d.framework,
     componentLibs: d.componentLibs, topLibrary: d.topLibrary, totals: d.totals,
     sections: d.sections, fields: d.fields,
     probeBuild: d.probeBuild, isTopFrame: d.isTopFrame, iframeMap: d.iframeMap,
     emptyHints: d.totals?.controls ? undefined : d.emptyHints,
-    frames: fr?.tried || undefined,
-    note: d.note,
+    frames: fr?.tried || undefined, note: d.note,
   }, null, 1);
-  $('probeOut').value = probeJson;
-  $('btnProbeCopy').disabled = false;
-  $('btnProbeSave').disabled = false;
-  $('probeMeta').innerHTML = '探针 ' + escapeHtml(d.probeBuild || '(旧版)') + (d.isTopFrame === false ? ' · 非顶层框' : ' · 顶层框')
-    + ' · 控件 <b>' + d.totals.controls + '</b> · 可见 <b>' + d.totals.visible + '</b> · 下拉 ' + d.totals.selects
-    + ' · 单选 ' + d.totals.radios + ' · 文件 ' + d.totals.fileInputs + ' · iframe ' + d.totals.iframes
-    + ' · Shadow ' + d.totals.shadowHosts + ' · 组件库判定: <b>' + d.topLibrary + '</b>'
-    + (fr ? ` · 取自 frame#${fr.chosen}${fr.merged > 1 ? ' 并合并 ' + fr.merged + ' 个框' : ''}（共遍历 ${fr.tried.length} 个框）` : '');
-  // 空结果必须自己说清"取的是哪个框"，否则用户只知道失败、维护者只能靠猜
-  if (!d.totals.controls) {
-    const picked = fr?.tried?.find(x => x.frameId === fr.chosen);
-    const framesTxt = fr?.tried?.length
-      ? '各框控件数：' + fr.tried.map(x => '#' + x.frameId + ' ' + x.controls).join('，')
-      : (d.probeBuild
-        ? '（框清单缺失：探针是新版但枚举 frame 失败，多为扩展需要重新授权，请在 edge://extensions 重新加载一次）'
-        : '（探针是旧版：请在 edge://extensions 点「重新加载」，关掉侧边栏再重开，然后刷新目标页面）');
-    const sub = (d.iframeMap || []).filter(x => x.sameOrigin && x.controls > 0)
-      .map(x => '同源 iframe 有 ' + x.controls + ' 个控件（name=' + (x.frameName || '无名') + '）');
-    // 分步向导（智联校园等）要先点『填写/继续填写』才渲染表单：直接把页面上的按钮文案念出来，
-    // 而不是让人对着"0 个控件"猜扩展坏没坏。
-    const gates = (d.emptyHints?.gateButtons || []).filter(Boolean);
-    $('probeMeta').innerHTML += '<br><span style="color:var(--warn-fg);background:var(--warn-bg);border:1px solid var(--warn-line);border-radius:4px;padding:2px 6px;display:inline-block">'
-      + '这个框里没有表单控件（URL: ' + escapeHtml(picked?.url || d.url || '未知') + '）。'
-      + escapeHtml(framesTxt)
-      + (sub.length ? '。' + escapeHtml(sub.join('；')) + ' → 表单可能在首方 iframe 里' : '')
-      + (gates.length ? '。页面上有像入口的按钮：「' + escapeHtml(gates.slice(0, 5).join('」「')) + '」→ 先点它出现表单，再点一次导出' : '')
-      + (d.emptyHints?.loginWall ? '。页面文案疑似登录墙，先确认已登录' : '')
-      + (d.emptyHints?.customElementHosts ? `。另有 ${d.emptyHints.customElementHosts} 个自定义元素拿不到 shadow（可能是 closed shadow，探针读不到内部）` : '')
-      + '。把这一段一起发我。</span>';
-  }
-};
-$('btnProbeCopy').onclick = async () => {
-  try { await navigator.clipboard.writeText(probeJson); $('probeMeta').textContent = '已复制，直接粘贴给维护者即可。'; }
-  catch { $('probeOut').select(); document.execCommand('copy'); $('probeMeta').textContent = '已选中并尝试复制。'; }
-};
-$('btnProbeSave').onclick = () => {
-  // 导出守卫：这份文件是要粘贴给别人看的。今天它只含结构，但"只含结构"必须是被检查的事实，
-  // 而不是"我记得没写进去"。命中任何像 Key 的东西就拒绝导出。
-  const leaks = findLeaksInExport(probeJson, {});
-  if (leaks.length) {
-    $('probeMeta').textContent = '已拒绝导出：内容里出现像 API Key 的字符串（' + leaks.map(l => l.key).join(', ') + '）';
-    return;
-  }
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([probeJson], { type: 'application/json' }));
-  a.download = 'page-structure-' + new Date().toISOString().slice(0, 10) + '.json';
-  a.click();
-};
+  return { ok: true, data: JSON.parse(json), summary: probeSummaryHtml(d, fr), totals: d.totals };
+}
 
-// ── 没填上的字段与「选项文案 ↔ 码值」对照表 ──
-// 用户实测里最费话的一轮就是"这页 28 个 checkbox 一个都没勾上"：面板只报字段名，
-// 而决定能不能填上的是页面上每个选项的可见文字和它自己的提交码。这一份把两者一起摊开。
-let unfilledJson = '';
-$('btnUnfilled').onclick = async () => {
+async function gatherUnfilled(includeFilled) {
   const tab = await activeTab();
   tabId = tab?.id;
-  $('unfilledMeta').textContent = '正在核对这一页哪些没填上（没扫过会先只读地算一遍，不写任何东西）…';
-  const res = await chrome.runtime.sendMessage({ type: 'nw:unfilledMap', tabId, includeFilled: $('unfilledAll').checked });
-  if (!res?.ok || !res.data) {
-    $('unfilledMeta').textContent = '本页没回应：' + (res?.error || '未知错误') + '（刚重载过扩展请刷新目标页面，再打开侧边栏）';
+  const res = await chrome.runtime.sendMessage({ type: 'nw:unfilledMap', tabId, includeFilled });
+  if (!res?.ok || !res.data) return { ok: false, error: res?.error || '本页没回应' };
+  return { ok: true, data: res.data, summary: escapeHtml(describeUnfilledMap(res.data))
+    + (res.data.profileFilled === 0 ? '｜<b>资料是空的（0 项有值）</b>：先回「资料与设置 → 分类编辑」把简历灌进来' : '') };
+}
+
+/** 映射表那一段：走的是与单独导出同一份 plainMappingTable + 同一套取值自检 */
+function gatherMapping() {
+  if (!lastMapping?.rows?.length) return { ok: false, error: '这一页还没扫过（先「扫描并出映射表」）' };
+  const table = plainMappingTable(lastMapping);
+  const values = Object.values(flattenValues(lastState?.profile || {}));
+  const leaks = findValueLeaks(table, values);
+  if (leaks.length) return { ok: false, error: `表里出现了资料取值（${leaks.slice(0, 4).join('、')}），已拒绝进包` };
+  return { ok: true, data: table, summary: `${table.rows.length} 行` };
+}
+
+$('btnDiag').onclick = async () => {
+  const status = $('diagStatus');
+  status.textContent = '正在生成（只读，不改页面）：结构 → 没填的 → 映射表…';
+  const parts = {};
+  const missing = [];
+  const probe = await gatherProbe();
+  if (probe.ok) parts['页面结构'] = probe.data; else missing.push('结构：' + probe.error);
+  const unfilled = await gatherUnfilled($('diagAll').checked);
+  if (unfilled.ok) parts['没填的与选项'] = unfilled.data; else missing.push('没填的：' + unfilled.error);
+  const mapping = gatherMapping();
+  if (mapping.ok) parts['映射表'] = mapping.data; else missing.push('映射表：' + mapping.error);
+  const bundle = {
+    at: new Date().toISOString(),
+    url: (unfilled.ok ? unfilled.data.url : '') || (probe.ok ? probe.data.url : ''),
+    legend: [
+      '三段各自独立：哪一段没进来，missing 里写着原因（不是"扩展坏了"）',
+      '页面结构：控件在哪、标签从哪来、组件库判定',
+      '没填的与选项：status/reason/note + 每个选项的「可见文案 ↔ 提交码值」对照',
+      '映射表：这一页每一栏我们判给谁、凭什么、要不要动 —— 这一段不含任何取值',
+    ],
+    missing,
+    ...parts,
+  };
+  const json = JSON.stringify(bundle, null, 1);
+  // 出包前的最后一道：整份文件里不许有 Key 形状的东西（取值检查在上面已经按段做过）
+  const keyLeaks = findLeaksInExport(json, {});
+  if (keyLeaks.length) {
+    status.textContent = '已拒绝生成：内容里出现像 API Key 的字符串（' + keyLeaks.map(l => l.key).join(', ') + '）';
+    diagJson = ''; $('diagOut').value = '';
+    $('btnDiagCopy').disabled = true; $('btnDiagSave').disabled = true;
     return;
   }
-  unfilledJson = JSON.stringify(res.data, null, 1);
-  $('unfilledOut').value = unfilledJson;
-  $('btnUnfilledCopy').disabled = false;
-  $('btnUnfilledSave').disabled = false;
-  $('unfilledMeta').innerHTML = escapeHtml(describeUnfilledMap(res.data))
-    + (res.data.profileFilled === 0 ? '<br><b>资料是空的（0 项有值）</b>：这种情况"没填上"多半与站点无关，先去「分类编辑」把简历灌进来。' : '');
+  diagJson = json;
+  $('diagOut').value = json;
+  $('btnDiagCopy').disabled = false;
+  $('btnDiagSave').disabled = false;
+  status.innerHTML = '一份文件，三段齐全度：'
+    + [probe.ok ? `结构 ${probe.totals?.controls ?? 0} 个控件` : '结构缺失',
+       unfilled.ok ? `没填的 ${unfilled.data.totals?.exported ?? 0} 栏` : '没填的缺失',
+       mapping.ok ? `映射表 ${mapping.summary}` : '映射表缺失'].join(' · ')
+    + (missing.length ? '<br>没进来的：' + escapeHtml(missing.join('；')) : '')
+    + (probe.ok ? '<br>' + probe.summary : '')
+    + '<br>复制或下载都行。<b>映射表那一段不含取值</b>；「没填的」那一段带着 currentValue（页面上已显示的选中项），发人前自己过一眼。';
 };
-$('btnUnfilledCopy').onclick = async () => {
-  try { await navigator.clipboard.writeText(unfilledJson); $('unfilledMeta').textContent += ' 已复制。'; }
-  catch { $('unfilledOut').select(); document.execCommand('copy'); $('unfilledMeta').textContent += ' 已选中并尝试复制。'; }
+
+$('btnDiagCopy').onclick = async () => {
+  try { await navigator.clipboard.writeText(diagJson); $('diagStatus').textContent += ' 已复制。'; }
+  catch { $('diagOut').select(); document.execCommand('copy'); $('diagStatus').textContent += ' 已选中并尝试复制。'; }
 };
-$('btnUnfilledSave').onclick = () => {
-  const leaks = findLeaksInExport(unfilledJson, {});
-  if (leaks.length) {
-    $('unfilledMeta').textContent = '已拒绝导出：内容里出现像 API Key 的字符串（' + leaks.map(l => l.key).join(', ') + '）';
-    return;
-  }
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([unfilledJson], { type: 'application/json' }));
-  a.download = 'unfilled-options-' + new Date().toISOString().slice(0, 10) + '.json';
-  a.click();
-  $('unfilledMeta').textContent = `已下载 unfilled-options-${new Date().toISOString().slice(0, 10)}.json。`
-    + '提醒一句：里面的 currentValue 是页面上已经显示的选中项（可能是你自己点的），要发给别人前自己过一眼。';
+$('btnDiagSave').onclick = () => {
+  const leaks = findLeaksInExport(diagJson, {});
+  if (leaks.length) { $('diagStatus').textContent = '已拒绝下载：内容里出现像 API Key 的字符串（' + leaks.map(l => l.key).join(', ') + '）'; return; }
+  downloadJson('nw-diag-' + new Date().toISOString().slice(0, 10) + '.json', diagJson);
 };

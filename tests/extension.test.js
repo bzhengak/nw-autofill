@@ -182,22 +182,57 @@ test('资料落库前要过 ensureEnSkeleton：英文骨架不能只活在界面
 });
 
 /**
- * 「导出没填的字段与选项」这条链的穿线检查：面板按钮 → nw:unfilledMap → 内容脚本 → 纯函数。
+ * 「诊断包」这条链的穿线检查：一个按钮 → nw:probe + nw:unfilledMap → 内容脚本 → 两份纯函数。
  * 这一层的 bug 一直是"每个函数都对、按钮点了没反应"，所以按 id 与消息名对撞，而不是只测函数。
+ * 2026-10-04 三个导出（结构 / 没填的 / 映射表）合成一份文件：段数变了，穿线断言跟着改成"一段都不能少"。
  */
-test('nw:unfilledMap 三端都在：按钮有 id、面板会发、内容脚本会接', () => {
+test('诊断包三端都在：按钮有 id、面板会发两条消息、内容脚本两条都接', () => {
   const html = read('../ui/sidepanel.html');
   const panel = read('../ui/sidepanel.js');
   const content = read('../dom/content.js');
-  for (const id of ['btnUnfilled', 'btnUnfilledCopy', 'btnUnfilledSave', 'unfilledAll', 'unfilledOut', 'unfilledMeta']) {
+  for (const id of ['btnDiag', 'btnDiagCopy', 'btnDiagSave', 'diagAll', 'diagOut', 'diagStatus']) {
     assert.ok(html.includes(`id="${id}"`), `HTML 里没有 id="${id}"，面板脚本拿到的就是 null`);
-    if (id !== 'unfilledOut') assert.ok(panel.includes(`$('${id}')`), `面板没用到 ${id}`);
+    if (id !== 'diagOut') assert.ok(panel.includes(`$('${id}')`), `面板没用到 ${id}`);
   }
-  assert.match(panel, /type: 'nw:unfilledMap'/, '面板没有把这条消息发出去');
-  assert.match(content, /msg\?\.type === 'nw:unfilledMap'/, '内容脚本没接这条消息');
+  for (const type of ['nw:probe', 'nw:unfilledMap']) {
+    assert.match(panel, new RegExp(`type: '${type}'`), `面板没把 ${type} 发出去：诊断包会缺一段`);
+    assert.match(content, new RegExp(`msg\\?\\.type === '${type}'`), `内容脚本没接 ${type}`);
+    // 三端齐全不等于链路通：后台的转发白名单里必须有它（上一轮 unknown_message 就是这么来的）
+    assert.match(read('../background/service-worker.js'), new RegExp(`['"]${type}['"]`), `后台没转发 ${type}`);
+  }
   // 没扫过时它必须走"只读算一遍"，不能顺手写页面
   const branch = content.slice(content.indexOf("msg?.type === 'nw:unfilledMap'"));
   assert.match(branch.slice(0, 1400), /dryRun: true/, '没扫过时先算计划这一步会真的写页面');
+  // 三个旧按钮必须真的没了：留着就是"页面还是那么长"，只是多套了一层壳
+  for (const gone of ['btnUnfilled"', 'btnProbe"', 'btnMapExport"']) {
+    assert.ok(!html.includes(`id="${gone}`), `旧导出按钮还在：${gone}`);
+  }
+});
+
+/**
+ * 两屏收纳：功能一个都不能少，但"填一张表要看见的板块"只剩四个。
+ * 断言按板块归属判，不按"看起来短了"判 —— 后者把整段挪进折叠区也能骗过。
+ */
+test('侧边栏分两屏：填表那一屏只留四个板块，其余全在资料与设置里', () => {
+  const html = read('../ui/sidepanel.html');
+  const panel = read('../ui/sidepanel.js');
+  const cut = html.indexOf('id="screenData"');
+  assert.ok(cut > 0, '没有「资料与设置」那一屏');
+  const fill = html.slice(0, cut);
+  const data = html.slice(cut);
+  const h2 = s => (s.match(/<h2>/g) || []).length;
+  assert.ok(h2(fill) <= 5, `填表那一屏还摆着 ${h2(fill)} 个板块，收纳没生效`);
+  for (const keep of ['填写授权', '本次结果', '需要你处理', '本页映射表']) {
+    assert.ok(fill.includes(keep), `填表那一屏少了「${keep}」—— 它是主线，不该被收走`);
+  }
+  for (const move of ['导入简历 Markdown', '资料体检', '分类编辑', '保险箱', '诊断包']) {
+    assert.ok(data.includes(move), `「${move}」还留在填表那一屏`);
+  }
+  for (const id of ['screenFill', 'screenData', 'tabFill', 'tabData']) {
+    assert.ok(html.includes(`id="${id}"`), `缺 id="${id}"：切屏逻辑拿到的是 null`);
+    if (id !== 'screenFill') assert.ok(panel.includes(id) || panel.includes(`'${id}'`), `面板没用到 ${id}`);
+  }
+  assert.match(panel, /function goScreen/, '没有切屏函数：那两个标签是死按钮');
 });
 
 /** 用户实测：点「导出没填的字段与选项」回的是 unknown_message —— 面板发了、内容脚本也接了，

@@ -202,6 +202,27 @@ test('tools/ext-id.mjs：ID 是路径 UTF-16LE 的 SHA-256 前 32 位，逐位�
 });
 
 /**
+ * 2026-10-05 独立审查点出的两条：
+ * ① 把分隔符统一成 \ 时，UNC 路径开头那两个反斜杠被一起压掉了 —— 从网络共享目录加载扩展
+ *    是真会发生的，压掉就等于换了个 ID，用户会以为"资料丢了"。
+ * ② 空串 / 相对路径照样哈希，得到一个 32 位、看着完全像真的 ID。这种输入该当场拒绝。
+ */
+test('tools/ext-id.mjs：UNC 前缀保住；非绝对路径当场报错，不给"看着像真的"ID', async () => {
+  const { extensionIdFor } = await import('../tools/ext-id.mjs');
+  const { createHash } = await import('node:crypto');
+  const pathMod = await import('node:path');
+  const map = (clean) => createHash('sha256').update(clean, 'utf16le').digest('hex')
+    .slice(0, 32).split('').map(c => String.fromCharCode(97 + parseInt(c, 16))).join('');
+  const unc = pathMod.win32.join('\\\\', 'nas01', 'share', 'nw-autofill');   // \\nas01\share\nw-autofill
+  assert.equal(extensionIdFor(unc), map(unc), `UNC 路径要按原样的 \\server\\share 算：${unc}`);
+  assert.notEqual(extensionIdFor(unc), map(unc.slice(2)), '把开头的 \\\\ 压成 \\ 就成另一个 ID 了');
+  for (const bad of ['', '   ', 'relative/path', 'nw-autofill', null, undefined]) {
+    assert.throws(() => extensionIdFor(bad), /绝对路径|目录成分/,
+      `这种输入不该算出一个像真的 ID：${JSON.stringify(bad)}`);
+  }
+});
+
+/**
  * optionRules 是"替用户勾选项"的规则，形状必须卡死：
  * 一份写歪了的规则（把 yes 写成两边都命中、或 path 指向不存在的槽位）会把整页勾成同一个答案。
  */

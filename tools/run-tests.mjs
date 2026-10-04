@@ -9,27 +9,51 @@
  *    把 .reference/ 里 fork 来的上游测试也一起跑了（本地 632 条 vs 真身 562 条），
  *    而那批文件是 gitignore 的，CI 上根本不存在 —— 数量对不上，判分也就不可信。
  *
- * 明确列出 tests/ 下的 *.test.js，跨平台、跨 Node 版本跑的都是同一批。
+ * 递归扫 tests/（不是一层）：将来谁把测试放进子目录、或者写成 *.spec.js，
+ * 只扫一层会"少跑一批还全绿"，这正是本项目被咬过的那类问题（装配层是死的）。
+ * 一个都没找到时报错退出，绝不静默变成"全过"。
+ * 额外支持透传参数：`npm test -- --test-name-pattern 裸词` 只会跑匹配的那几条。
  */
-import { readdirSync } from 'node:fs';
+import { readdirSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const root = path.resolve(fileURLToPath(import.meta.url), '..', '..');
 const testDir = path.join(root, 'tests');
+// 与 tests/extension.test.js 里那条"扫测试文件"的守卫保持同一套后缀，别一边宽一边窄
+const TEST_FILE = /\.(test|spec)\.(js|mjs|cjs)$/;
+const SKIP_DIRS = new Set(['node_modules', '.git', '.output', '.reference']);
 
-const files = readdirSync(testDir)
-  .filter((f) => /\.test\.(js|mjs|cjs)$/.test(f))
-  .sort()
-  .map((f) => path.join('tests', f));
+function walk(dir) {
+  const out = [];
+  for (const ent of readdirSync(dir, { withFileTypes: true })) {
+    if (ent.isDirectory()) {
+      if (SKIP_DIRS.has(ent.name)) continue;
+      out.push(...walk(path.join(dir, ent.name)));
+    } else if (TEST_FILE.test(ent.name)) {
+      out.push(path.relative(root, path.join(dir, ent.name)));
+    }
+  }
+  return out;
+}
 
-if (files.length === 0) {
-  console.error(`tests/ 里一个 .test.js 都没找到（${testDir}）：这不是"全过"，这是没跑。`);
+if (!existsSync(testDir)) {
+  console.error(`tests/ 目录不存在（${testDir}）：这不是"全过"，这是没地方跑。`);
   process.exit(1);
 }
 
-const res = spawnSync(process.execPath, ['--test', ...files], { cwd: root, stdio: 'inherit' });
+const files = walk(testDir).sort();
+if (files.length === 0) {
+  console.error(`tests/ 下一个测试文件都没找到（后缀要匹配 ${TEST_FILE}）：这不是"全过"，这是没跑。`);
+  process.exit(1);
+}
+
+// 让 CI 能拿这个数与 `git ls-files` 对账：少跑一批文件时，对账那条会红，而不是静默全绿
+console.log(`[run-tests] 扫到 ${files.length} 个测试文件`);
+
+const extra = process.argv.slice(2);
+const res = spawnSync(process.execPath, ['--test', ...extra, ...files], { cwd: root, stdio: 'inherit' });
 if (res.error) {
   console.error('node --test 没起来：', res.error.message);
   process.exit(1);

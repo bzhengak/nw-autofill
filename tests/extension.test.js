@@ -262,14 +262,23 @@ test('仓库里不许有临时脚本（tmp-*.mjs / tmp-*.txt）', () => {
  */
 test('测试里不许给 Node 自带的全局直接赋值（navigator 等在 Node 21+ 只有 getter）', () => {
   const dir = fileURLToPath(new URL('./', import.meta.url));
-  const files = fs.readdirSync(dir).filter(n => n.endsWith('.test.js'));
+  // 后缀与 tools/run-tests.mjs 用同一套，别一边宽一边窄；递归扫，子目录里的测试也躲不掉
+  const files = fs.readdirSync(dir, { recursive: true })
+    .map(n => String(n))
+    .filter(n => /\.(test|spec)\.(js|mjs|cjs)$/.test(n));
   // 目录扫空了这条断言就恒过，比没写还坏（幻影规则）
   assert.ok(files.length > 20, `只扫到 ${files.length} 个测试文件，路径不对：${dir}`);
+  const NAMES = 'navigator|crypto|performance|localStorage|sessionStorage';
+  const pats = [
+    new RegExp(`^\\s*globalThis\\.(${NAMES})\\s*=`),          // globalThis.navigator = ...
+    new RegExp(`^\\s*globalThis\\[['"](${NAMES})['"]\\]\\s*=`), // globalThis['navigator'] = ...
+    new RegExp(`^\\s*(${NAMES})\\s*=`),                        // 裸赋值（没有 globalThis. 前缀）
+    /Object\.assign\(\s*globalThis\s*,\s*\{[^}]*\b(navigator|crypto|performance)\b/,
+  ];
   const bad = [];
-  const re = /^\s*globalThis\.(navigator|crypto|performance|localStorage|sessionStorage)\s*=/;
   for (const f of files) {
-    fs.readFileSync(`${dir}${f}`, 'utf8').split(/\r?\n/).forEach((line, i) => {
-      if (re.test(line)) bad.push(`${f}:${i + 1} → ${line.trim()}`);
+    fs.readFileSync(path.join(dir, f), 'utf8').split(/\r?\n/).forEach((line, i) => {
+      if (pats.some(re => re.test(line))) bad.push(`${f}:${i + 1} → ${line.trim()}`);
     });
   }
   assert.deepEqual(bad, [], `这些行在 Node 22 上会让整个测试文件变红：\n${bad.join('\n')}`);

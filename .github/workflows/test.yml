@@ -22,22 +22,33 @@ jobs:
       - run: npm install --no-audit --no-fund
       - name: 单元测试
         shell: bash
-        # 直接把 npm test 丢给 Actions 的话，屏幕上只有"# fail 91"这种数字，
-        # 数字不能定位问题。所以失败时把"哪几条红了 + 第一条的完整报错"折叠打印出来，
-        # 一次展开就能看出是共性问题还是散点问题。
+        # 只把 npm test 丢给 Actions 的话，屏幕上只有"# fail 91"这种数字，数字不能定位问题。
+        # 所以失败时把"哪几条红了 + 原因分布 + 第一条完整报错"折叠打印出来，
+        # 一次展开就能看出是共性问题还是散点问题（首跑就是靠这句看出 90/91 同一个原因的）。
         run: |
           set +e
           npm test > /tmp/nw-test.log 2>&1
           code=$?
-          set -e
-          tail -n 12 /tmp/nw-test.log
+          # 对账：git 里登记的测试文件数 必须等于 实际跑的文件数。
+          # 光看 npm 的退出码不够 —— 少扫一批文件时它照样是 0（"每个函数都对、整条链路没跑"那一类）。
+          inGit=$(git ls-files 'tests/*' | grep -cE '\.(test|spec)\.(js|mjs|cjs)$')
+          ran=$(sed -n 's/^\[run-tests\] 扫到 \([0-9][0-9]*\) 个测试文件.*/\1/p' /tmp/nw-test.log)
+          if [ -z "$ran" ]; then
+            echo "::error::输出里找不到 [run-tests] 的文件数，对账失效（入口脚本改了吗？）"
+            code=1; ran=0
+          elif [ "$ran" != "$inGit" ]; then
+            echo "::error::测试少跑了一批：git 登记 $inGit 个文件，实际跑了 $ran 个"
+            git ls-files 'tests/*' | grep -E '\.(test|spec)\.(js|mjs|cjs)$' | sed 's#^#  git 里有: #'
+            code=1
+          else
+            echo "对账通过：$ran 个测试文件全部在册"
+          fi
+          tail -n 12 /tmp/nw-test.log || true
           if [ "$code" -ne 0 ]; then
             # 这一段里 head / grep 提前收尾都会给上游 SIGPIPE（退出码非 0），
-            # 而 Actions 的 bash 是 -e -o pipefail：不关掉 -e 的话，
-            # 诊断打到第一条列表就自己断了（上一跑就是这样，只看到 40 个名字，看不到原因）。
-            set +e
-            total=$(grep -c '^not ok ' /tmp/nw-test.log)
-            echo "::group::失败的用例（共 $total 条，列前 40 条）"
+            # 而 Actions 的 bash 带 -e -o pipefail：不关掉 -e 的话诊断会自己断在半路
+            # （2026-10-05 那一版就是只打出了 40 个名字、原因那截没了）。
+            echo "::group::失败的用例（共 $(grep -c '^not ok ' /tmp/nw-test.log) 条，列前 40 条）"
             grep '^not ok ' /tmp/nw-test.log | sed -n '1,40p'
             echo '--- 失败原因分布（看是共性还是散点）---'
             grep -A 14 '^not ok ' /tmp/nw-test.log | grep -E "^\s+(error|code|name):" | sed 's/^\s*//' | sort | uniq -c | sort -rn | sed -n '1,25p'

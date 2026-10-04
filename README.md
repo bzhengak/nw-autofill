@@ -492,6 +492,8 @@ Edge:   %LOCALAPPDATA%\Microsoft\Edge\User Data\<配置文件>\Local Extension S
 
 ## 开发
 
+进度与欠账（哪些验收项已过、哪些只有仿真证据、下一步顺序）记在 [docs/PROGRESS.md](docs/PROGRESS.md)。
+
 ```bash
 npm install            # 只装 jsdom，用于离线评测
 npm test               # core/ 纯函数单测

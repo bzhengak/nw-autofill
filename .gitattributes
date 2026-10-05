@@ -1,0 +1,13 @@
+# 全部文本文件按 LF 检出。
+# 为什么现在钉死：2026-10-05 把仓库推上 GitHub 后做了一次"全新克隆 → 装依赖 → 跑测试"，
+# 结果红了一条 —— Windows 的 core.autocrlf=true 会把检出内容变成 CRLF，
+# 而 tests/extension.test.js 里有按源码文本开固定宽度窗口的断言（indexOf + slice(0, 1400)），
+# 每行多一个 \r 就把要找的那句挤出窗口。仓库里的 blob 本来就全是 LF，这一步只是让
+# "检出什么"等于"提交了什么"，Linux/CI 侧不受影响。
+* text=auto eol=lf
+
+# 图标以后会加进来，先声明成二进制，别让归一化把文件改坏
+*.png binary
+*.jpg binary
+*.ico binary
+*.gif binary

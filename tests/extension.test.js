@@ -8,7 +8,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = f => fileURLToPath(new URL(f, import.meta.url));
-const read = f => fs.readFileSync(root(f), 'utf8');
+// 读源码文本一律先归一行尾：这些断言会 indexOf + slice 开一个固定宽度的窗口，
+// Windows 上 core.autocrlf=true 检出成 CRLF 时每行多一个字符，窗口一移就把要找的那句挤出去
+// （2026-10-05 全新克隆实测红在 'dryRun: true' 那条上）。仓库另有 .gitattributes 钉 LF，
+// 但那道闸管不住"用户本地改过 autocrlf"这种情况。
+const read = f => fs.readFileSync(root(f), 'utf8').replace(/\r\n/g, '\n');
 const manifest = JSON.parse(read('../manifest.json'));
 
 const MODULE_IDS = ['scanner', 'filler', 'matcher', 'safety', 'schema', 'matching', 'probe'];

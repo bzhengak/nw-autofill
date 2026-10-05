@@ -52,8 +52,10 @@ GitHub Actions 双版本 Node 已真跑绿），
    验法不是"看一眼最新文件"，而是扫**全部可达对象**（741 个 blob + 所有 commit/tree，残留 0），
    再从新仓库**全新克隆**装依赖跑一遍（569 条全绿），并确认旧 SHA 现在返回 "No commit found"。
    仓库 id 也换了（旧 → 新），fork 数 0、私有。
-   **只剩一个尾巴**：改写前的完整历史备份在仓库外的 `nw-autofill-pre-rewrite.bundle`，
-   **那个文件里仍然带着旧姓名与旧手机号** —— 新历史已验证无误，可以直接删掉它。
+   **尾巴已收（2026-10-05）**：那份备份 `nw-autofill-pre-rewrite.bundle` 已删除。删之前先确认
+   `git ls-remote origin HEAD` 与本地 HEAD 一致（新仓不依赖它），删完 `git fsck --unreachable`
+   也没有游离对象，本地只剩 master 一条真 ref。这台机器上带旧身份的最后一份拷贝，
+   是这场排障会话自己的日志（为定位问题打印过手机号与校名）—— 要清就清会话记录，不在仓库范围内。
    **顺带被这次验证抓出来的一条真 bug**：全新克隆在 Windows 上按 `core.autocrlf=true` 检出成 CRLF，
    而 `tests/extension.test.js` 有一条按源码文本开固定宽度窗口的断言，行尾多一个 `\r` 就把要找的句子
    挤出窗口 → 别人拿到的代码是红的。已加 `.gitattributes`（`text=auto eol=lf`）钉住检出，

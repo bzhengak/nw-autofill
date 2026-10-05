@@ -35,7 +35,10 @@ test('真值在仓库里时必须报出来，并点名文件（这条就是"尺�
 });
 
 test('资料里的值不在仓库里时判干净（不许反过来一律报泄露）', () => {
-  const { code, out } = runTool({ contact: { email: 'zz-不存在-9f8e7d@example.invalid' } });
+  // 哨兵必须**运行时生成**：写成字面量的话它就躺在本文件里，工具报"泄露"反而是对的
+  // （第一版就是这么自打脸的）。
+  const absent = `zz-${Math.random().toString(36).slice(2, 12)}@example.invalid`;
+  const { code, out } = runTool({ contact: { email: absent } });
   assert.equal(code, 0, `不该有泄露却报了：${out}`);
   assert.match(out, /没有真实取值出现在仓库里/);
 });
